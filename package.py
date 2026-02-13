@@ -245,7 +245,7 @@ def main():
                 elif os.path.isdir(fp):
                     shutil.rmtree(fp)
         else:
-            print(f"Error: Output directory {output_dir} already exists. Use --overwrite-output to replace it.")
+            print(f"Error: Output directory {output_dir} already exists. Use --clobber to replace it.")
             sys.exit(1)
     else:
         os.makedirs(output_dir)
