@@ -142,11 +142,20 @@ def stream():
     def event_stream():
         while True:
             line = logs_queue.get()
-            if line == "EOF\n":
+            if line.strip() == "EOF":
                 yield f"data: {line}\n\n"
                 break
-            # Use data: prefix for SSE
-            yield f"data: {line}\n\n"
+            
+            # SSE protocol: each line of a multi-line message must start with 'data: '
+            # We split by '\n' and send a data: line for every single part.
+            # For example, if line is "\n🚀 Tiling\n", parts will be ["", "🚀 Tiling", ""]
+            # Sending these as data segments ensures the browser gets "\n🚀 Tiling\n" total.
+            parts = line.split('\n')
+            for part in parts:
+                yield f"data: {part}\n"
+            
+            # Send the double-newline to terminate the SSE message
+            yield "\n"
             
     return Response(event_stream(), mimetype="text/event-stream")
 
