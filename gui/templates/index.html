@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geo Packager GUI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono&display=swap"
+        rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background: radial-gradient(circle at top left, #1a1a2e, #16213e, #0f3460);
+            min-height: 100vh;
+            color: #e9ecef;
+        }
+
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+        }
+
+        .input-accent:focus {
+            ring: 2px;
+            ring-color: #4cc9f0;
+            border-color: #4cc9f0;
+            outline: none;
+        }
+
+        .terminal {
+            font-family: 'JetBrains Mono', monospace;
+            background: rgba(0, 0, 0, 0.4);
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.1);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .optional {
+            color: #94a3b8;
+        }
+    </style>
+</head>
+
+<body class="p-8">
+    <div class="max-w-4xl mx-auto">
+        <header class="mb-10 text-center">
+            <h1
+                class="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500 mb-2">
+                Geo Packager</h1>
+            <p class="text-slate-400">High-performance raster processing with real-time feedback</p>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <!-- Configuration Column -->
+            <div class="glass p-6 space-y-6">
+                <section>
+                    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                        <span class="p-1 rounded bg-blue-500/20 text-blue-400 text-sm">01</span> Targets
+                    </h2>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Input GeoTIFF</label>
+                            <div class="flex gap-2">
+                                <input type="text" id="input_file" placeholder="/path/to/raster.tif"
+                                    class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent"
+                                    onkeydown="if(event.key==='Enter') run()">
+                                <button onclick="browse('file')"
+                                    class="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition-colors">Browse</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1 optional italic">Output Directory
+                                (Optional)</label>
+                            <div class="flex gap-2">
+                                <input type="text" id="output_dir" placeholder="Default: <input_dir>/<name>_tiles"
+                                    class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                                <button onclick="browse('dir')"
+                                    class="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition-colors">Browse</button>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" id="clobber"
+                                class="rounded border-slate-700 bg-slate-900/50 text-blue-500">
+                            <label for="clobber" class="text-sm">Overwrite existing output</label>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                        <span class="p-1 rounded bg-purple-500/20 text-purple-400 text-sm">02</span> Transformations
+                    </h2>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Scale
+                                Factor</label>
+                            <input type="number" id="scale" value="1.0" step="0.0001"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Downsize %</label>
+                            <input type="number" id="downsize_percent" placeholder="e.g. 25"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 mt-3">
+                        <div>
+                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Anchor X</label>
+                            <input type="number" id="anchor_x" placeholder="None"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Anchor Y</label>
+                            <input type="number" id="anchor_y" placeholder="None"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 mt-3">
+                        <div>
+                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Shift X</label>
+                            <input type="number" id="shift_x" placeholder="None"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Shift Y</label>
+                            <input type="number" id="shift_y" placeholder="None"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                        <span class="p-1 rounded bg-cyan-500/20 text-cyan-400 text-sm">03</span> Tiling
+                    </h2>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Tile Size
+                                (Px)</label>
+                            <input type="number" id="tile_size" value="20000"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">CPU Load %</label>
+                            <input type="number" id="load" value="100" min="1" max="100"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                        </div>
+                    </div>
+                </section>
+
+                <button id="run_btn" onclick="run()"
+                    class="w-full py-4 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 font-bold rounded-xl transition-all transform active:scale-95 shadow-lg shadow-blue-500/20">
+                    🚀 Run Packager
+                </button>
+            </div>
+
+            <!-- Output Column -->
+            <div class="glass flex flex-col overflow-hidden h-[600px] md:h-auto">
+                <div class="p-3 border-b border-white/10 flex justify-between items-center bg-white/5">
+                    <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Live Process Logs</span>
+                    <div id="status_indicator" class="flex items-center gap-2 text-xs text-slate-500">
+                        <div class="w-2 h-2 rounded-full bg-slate-700"></div> Idle
+                    </div>
+                </div>
+                <div id="terminal" class="terminal flex-1 overflow-y-auto p-4 text-emerald-400 whitespace-pre-wrap">
+                    Waiting for process...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function browse(mode) {
+            fetch(`/browse?mode=${mode}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.path) {
+                        if (mode === 'file') document.getElementById('input_file').value = data.path;
+                        else document.getElementById('output_dir').value = data.path;
+                    }
+                });
+        }
+
+        // Initialize defaults on load
+        window.addEventListener('DOMContentLoaded', () => {
+            fetch('/defaults')
+                .then(res => res.json())
+                .then(defaults => {
+                    for (const [key, val] of Object.entries(defaults)) {
+                        const el = document.getElementById(key);
+                        if (el) {
+                            el.placeholder = val;
+                        }
+                    }
+                });
+        });
+
+        let eventSource = null;
+
+        function run() {
+            try {
+                const btn = document.getElementById('run_btn');
+                const terminal = document.getElementById('terminal');
+                const status = document.getElementById('status_indicator');
+
+                const params = {
+                    input_file: document.getElementById('input_file').value,
+                    output_dir: document.getElementById('output_dir').value,
+                    clobber: document.getElementById('clobber').checked,
+                    scale: document.getElementById('scale').value,
+                    anchor_x: document.getElementById('anchor_x').value,
+                    anchor_y: document.getElementById('anchor_y').value,
+                    shift_x: document.getElementById('shift_x').value,
+                    shift_y: document.getElementById('shift_y').value,
+                    downsize_percent: document.getElementById('downsize_percent').value,
+                    tile_size: document.getElementById('tile_size').value,
+                    load: document.getElementById('load').value
+                };
+
+                console.log("Collected params:", params);
+
+                if (!params.input_file) {
+                    alert("Please select an input file first!");
+                    return;
+                }
+
+                btn.disabled = true;
+                btn.classList.add('opacity-50', 'cursor-not-allowed');
+                terminal.innerHTML = "Initializing pipeline...\n";
+                status.innerHTML = '<div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div> Processing';
+
+                // Start the process
+                fetch('/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.command) {
+                            terminal.innerHTML = `<span class="text-blue-400">🚀 Executing:</span> <span class="text-slate-300 font-mono text-xs">${data.command}</span>\n\n`;
+                        }
+
+                        // Connect to the stream
+                        if (eventSource) eventSource.close();
+
+                        eventSource = new EventSource('/stream');
+
+                        eventSource.onmessage = (e) => {
+                            if (e.data.trim() === "EOF") {
+                                eventSource.close();
+                                eventSource = null; // Mark as closed intentionally
+                                btn.disabled = false;
+                                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                                status.innerHTML = '<div class="w-2 h-2 rounded-full bg-blue-500"></div> Done';
+                                return;
+                            }
+                            terminal.innerHTML += e.data;
+                            terminal.scrollTop = terminal.scrollHeight;
+                        };
+
+                        eventSource.onerror = (err) => {
+                            // Only show error if it wasn't a graceful EOF
+                            if (eventSource) {
+                                console.error("EventSource failed:", err);
+                                terminal.innerHTML += "⚠️  Connection to log stream lost. Check server logs.\n";
+                                eventSource.close();
+                                eventSource = null;
+                                btn.disabled = false;
+                                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                                status.innerHTML = '<div class="w-2 h-2 rounded-full bg-red-500"></div> Connection Error';
+                            }
+                        };
+                    });
+            } catch (err) {
+                console.error("Error in run():", err);
+                alert("GUI Error: " + err.message);
+            }
+        }
+
+        // Simple drag and drop implementation
+        window.addEventListener('dragover', (e) => e.preventDefault());
+        window.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const file = e.dataTransfer.files[0];
+            if (file) {
+                // Browsers don't give the full path for security, 
+                // but since this is local we can try to get the name at least 
+                // or the user can use the Browse button for accurate paths.
+                document.getElementById('input_file').value = file.path || file.name;
+            }
+        });
+    </script>
+</body>
+
+</html>
