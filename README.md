@@ -1,63 +1,68 @@
-# Master Raster Packager (Playground)
+# Geo Packager
 
-This directory contains high-performance utilities for preparing large GeoTIFF deliverables using GDAL.
+High-performance GDAL wrappers for fast and easy preparation of large-scale GeoTIFF deliverables.
 
-## 🚀 Utilities
+## 🛠 Setup & Quick Start
 
-### 1. `package.py`
-A parallelized pipeline for scaling, shifting, downsizing, tiling, and cleaning rasters.
-
-**Key Features:**
-- **Adaptive Downsizing**: Automatically applies 30% downsizing for input files > 20GB (unless a manual scale is specified).
-- **Smart Tiling**: Parallelized tile generation with automatic detection and removal of empty (alpha=0) tiles.
-- **Zero-Padded Naming**: Sequential numbering with padding (e.g., `_01.tif`, `_001.tif`) for consistent sorting.
-- **macOS Metadata Safety**: Automatically ignores `._*` files on macOS-formatted volumes.
-- **Robustness**: Interrupts and cleans up partial output if disk space is exhausted or a write error occurs.
-
-**Usage:**
-```bash
-conda run -n gdal --no-capture-output python package.py <input.tiff> [options]
-```
-- `--output-dir`: Output directory (default: same parent as input file).
-- `--clobber`: Overwrites output directory if it exists.
-- `--scale`: Scale factor (instant VRT).
-- `--downsize-percent`: Downsize resolution (e.g., 25 for 0.25x pixels).
-- `--shift-x` / `--shift-y`: Easting/Northing translation.
-- `--tile-size`: Pixel size of output tiles (default 20,000).
-
-### 2. `app.py` (GUI)
-A Flask-based graphical interface for `package.py` with real-time log streaming and native file picking.
-
-**Usage:**
-```bash
-conda run -n gdal --no-capture-output python app.py
-```
-Open your browser to `http://127.0.0.1:5001`.
-
-### 3. `compare.py`
-A metadata verification tool (sub-second) to confirm transformations.
-
-**Usage:**
-```bash
-conda run -n gdal --no-capture-output python compare.py <original.tif> <processed_dir_or_vrt>
-```
-- **Relative Transformation Analysis**: Calculate "Origin Shift" and "Edge Drift" as residuals *after* accounting for the measured scale factor. 
-- **Anchor Logic**: Correctly identifies the scaling anchor point assuming zero residual shift.
-- **Reporting**: Prints "(No Shift)" and "(No Drift)" if the transformation is a mathematically pure scale about the coordinate origin (0,0).
+1.  **Environment**: Run `bash setup_env.sh` to create the `gdal` environment.
+2.  **Activate**: Run `conda activate gdal`.
+3.  **Launch GUI**: Run `./app.py` and open `http://127.0.0.1:5001` in your browser.
 
 ---
 
-## 🛠 Setup & Workflow
+## 🚀 Components
 
-1.  **Environment**: Run `bash setup_env.sh` to create the `gdal` environment (installs GDAL, Flask, and Tkinter).
-2.  **Process**: Use `package.py` to create your tiled deliverable.
-3.  **Verify**: Use `compare.py` to perform Quality Control on the output.
+### 1. `app.py` (GUI Dashboard)
+A Flask-based graphical interface for `package.py` featuring real-time log streaming, logic grouping, and native macOS file/directory pickers.
 
-### Example Workflow
+**Usage:**
+```bash
+python app.py
+```
+
+### 2. `package.py` (The Engine)
+A parallelized pipeline for scaling, shifting, downsizing, tiling, and cleaning rasters.
+
+**Key Features:**
+- **Adaptive Downsizing**: Automatically applies 30% downsizing for input files > 20GB (unless overridden).
+- **Smart Tiling**: Parallel generation with automatic detection and removal of empty (alpha=0) tiles.
+- **Sequential Naming**: Zero-padded numbering (e.g., `_001.tif`) for consistent file sorting.
+- **macOS Safety**: Ignores `._*` metadata files on Apple-formatted volumes.
+- **Error Handling**: Gracefully cleans up partial output if a process is interrupted.
+
+**Usage:**
+```bash
+python package.py <input.tiff> [options]
+```
+- `--output-dir`: Output directory (default: `<input_dir>/<name>_tiles`).
+- `--clobber`: Overwrites output directory if it exists.
+- `--scale`: Grid-to-ground scale factor.
+- `--downsize-percent`: Resolution reduction (e.g., 25 for 0.25x pixels).
+- `--shift-x` / `--shift-y`: Easting/Northing translation shift.
+- `--tile-size`: Pixel size of output tiles (default 20,000).
+
+### 3. `compare.py` (Validation)
+A metadata verification tool to confirm transformations and analyze residuals.
+
+**Usage:**
+```bash
+python compare.py <original.tif> <processed_dir_or_vrt>
+```
+- **Residual Analysis**: Calculates "Origin Shift" and "Edge Drift" *after* accounting for the measured scale factor. 
+- **Anchor Logic**: Identifies the scaling anchor point assuming zero residual shift.
+
+---
+
+## 🏁 Example CLI Workflow
+
+Assuming the `gdal` environment is active:
+
 ```bash
 # Package with 0.9996 scale and +100ft shift, downsizing to 25% resolution
-conda run -n gdal --no-capture-output python package.py data.tif --scale 0.9996 --shift-x 100 --downsize-percent 25 --clobber
+python package.py data.tif --scale 0.9996 --shift-x 100 --downsize-percent 25 --clobber
 
-# Verify results
-conda run -n gdal --no-capture-output python compare.py data.tif data_tiles/
+# Verify the results against the original
+python compare.py data.tif data_tiles/
 ```
+
+
