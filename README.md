@@ -25,7 +25,16 @@ conda run -n gdal --no-capture-output python package.py <input.tiff> [options]
 - `--shift-x` / `--shift-y`: Easting/Northing translation.
 - `--tile-size`: Pixel size of output tiles (default 20,000).
 
-### 2. `compare.py`
+### 2. `app.py` (GUI)
+A Flask-based graphical interface for `package.py` with real-time log streaming and native file picking.
+
+**Usage:**
+```bash
+conda run -n gdal --no-capture-output python app.py
+```
+Open your browser to `http://127.0.0.1:5001`.
+
+### 3. `compare.py`
 A metadata verification tool (sub-second) to confirm transformations.
 
 **Usage:**
@@ -40,7 +49,7 @@ conda run -n gdal --no-capture-output python compare.py <original.tif> <processe
 
 ## 🛠 Setup & Workflow
 
-1.  **Environment**: Run `bash setup_env.sh` to create the `gdal` (requires GDAL via Homebrew).
+1.  **Environment**: Run `bash setup_env.sh` to create the `gdal` environment (installs GDAL, Flask, and Tkinter).
 2.  **Process**: Use `package.py` to create your tiled deliverable.
 3.  **Verify**: Use `compare.py` to perform Quality Control on the output.
 
