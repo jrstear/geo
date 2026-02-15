@@ -171,9 +171,22 @@ def browse():
 import tkinter as tk
 from tkinter import filedialog
 import sys
+import os
+import platform
 
 root = tk.Tk()
 root.withdraw()
+
+# Platform-specific window focus
+system_platform = platform.system()
+if system_platform == "Darwin":
+    # Force this process to the front on macOS
+    os.system(f'''/usr/bin/osascript -e 'tell application "System Events" to set frontmost of every process whose unix id is {{os.getpid()}} to true' ''')
+elif system_platform == "Windows":
+    # Lift and force focus on Windows
+    root.lift()
+    root.focus_force()
+
 root.attributes('-topmost', True)
 
 if "{mode}" == "file":
