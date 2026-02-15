@@ -10,8 +10,8 @@ from flask import Flask, render_template, request, Response, jsonify
 
 app = Flask(__name__)
 
-# Path to the package.py script (assumed to be in the parent directory)
-PACKAGE_SCRIPT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "package.py"))
+# Path to the package.py script (assumed to be in the same directory)
+PACKAGE_SCRIPT = os.path.abspath(os.path.join(os.path.dirname(__file__), "package.py"))
 
 # Persistent storage for process logs
 logs_queue = queue.Queue()
