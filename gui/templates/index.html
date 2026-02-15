@@ -65,13 +65,14 @@
     </style>
 </head>
 
-<body class="p-8">
-    <div class="max-w-4xl mx-auto">
-        <header class="mb-10 text-center">
-            <h1
-                class="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500 mb-2">
-                Geo Packager</h1>
-            <p class="text-slate-400">High-performance raster processing with real-time feedback</p>
+<body class="p-4 bg-slate-950">
+    <div class="max-w-[95%] mx-auto">
+        <header class="mb-6 text-center">
+            <div class="flex items-baseline justify-center gap-4">
+                <h1 class="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500">
+                    Geo Packager</h1>
+                <p class="text-slate-400">Parallelized raster packaging via gdal</p>
+            </div>
         </header>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -93,8 +94,17 @@
                             </div>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium mb-1 optional italic">Output Directory
-                                (Optional)</label>
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="block text-sm font-medium optional italic">Output Directory
+                                    (Optional)</label>
+                                <div class="flex items-center gap-2">
+                                    <input type="checkbox" id="clobber"
+                                        class="rounded border-slate-700 bg-slate-900/50 text-blue-500">
+                                    <label for="clobber"
+                                        class="text-[11px] text-slate-400 uppercase font-semibold">Overwrite
+                                        existing</label>
+                                </div>
+                            </div>
                             <div class="flex gap-2">
                                 <input type="text" id="output_dir" placeholder="Default: <input_dir>/<name>_tiles"
                                     class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
@@ -102,72 +112,71 @@
                                     class="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition-colors">Browse</button>
                             </div>
                         </div>
-                        <div class="flex items-center gap-2">
-                            <input type="checkbox" id="clobber"
-                                class="rounded border-slate-700 bg-slate-900/50 text-blue-500">
-                            <label for="clobber" class="text-sm">Overwrite existing output</label>
-                        </div>
                     </div>
                 </section>
 
                 <section>
-                    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                    <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
                         <span class="p-1 rounded bg-purple-500/20 text-purple-400 text-sm">02</span> Transformations
                     </h2>
-                    <div class="grid grid-cols-2 gap-4">
+                    <!-- Row 1: Downsize, Shift X, Shift Y -->
+                    <div class="grid grid-cols-3 gap-3">
                         <div>
-                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Scale
+                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Downsize
+                                %</label>
+                            <input type="number" id="downsize_percent" placeholder="e.g. 25"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Shift X</label>
+                            <input type="number" id="shift_x" placeholder="0.0"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Shift Y</label>
+                            <input type="number" id="shift_y" placeholder="0.0"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
+                        </div>
+                    </div>
+                    <!-- Row 2: Scale, Anchor X, Anchor Y -->
+                    <div class="grid grid-cols-3 gap-3 mt-3">
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Scale
                                 Factor</label>
                             <input type="number" id="scale" step="0.0001"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
                         </div>
                         <div>
-                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Downsize %</label>
-                            <input type="number" id="downsize_percent" placeholder="e.g. 25"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-4 mt-3">
-                        <div>
-                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Anchor X</label>
-                            <input type="number" id="anchor_x" placeholder="None"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Anchor
+                                X</label>
+                            <input type="number" id="anchor_x" placeholder="0.0"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
                         </div>
                         <div>
-                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Anchor Y</label>
-                            <input type="number" id="anchor_y" placeholder="None"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-4 mt-3">
-                        <div>
-                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Shift X</label>
-                            <input type="number" id="shift_x" placeholder="None"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Shift Y</label>
-                            <input type="number" id="shift_y" placeholder="None"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Anchor
+                                Y</label>
+                            <input type="number" id="anchor_y" placeholder="0.0"
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
                         </div>
                     </div>
                 </section>
 
                 <section>
-                    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                    <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
                         <span class="p-1 rounded bg-cyan-500/20 text-cyan-400 text-sm">03</span> Tiling
                     </h2>
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Tile Size
+                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Tile Size
                                 (Px)</label>
                             <input type="number" id="tile_size"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
                         </div>
                         <div>
-                            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">CPU Load %</label>
+                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">CPU Load
+                                %</label>
                             <input type="number" id="load" min="1" max="100"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
+                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
                         </div>
                     </div>
                 </section>
