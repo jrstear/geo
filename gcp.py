@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# NOTE: WebODM's interactive GCP interface currently only supports a simplified 
+# 4-column CSV/TXT format (Label, Easting, Northing, Elevation) for initial 
+# loading. Providing additional columns like 'im_x', 'im_y', or 'image_name' 
+# during the initial import may result in a "No points" error in the UI.
 import csv
 import subprocess
 import sys
