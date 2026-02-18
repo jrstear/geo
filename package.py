@@ -154,7 +154,7 @@ def main():
     parser = argparse.ArgumentParser(description="Parallel Raster Packager (Scale, Shift, Downsize, Tile, Clean).")
     parser.add_argument("input_file", help="Input GeoTIFF file.")
     parser.add_argument("--output-dir", help="Output directory (default: <input_dir>/<input_basename>_tiles)")
-    parser.add_argument("--clobber", action="store_true", help="Overwrite output directory if it exists")
+    parser.add_argument("--clobber", action="store_true", help="Overwrite conflicting files in output directory")
     
     # transformation / georeferencing options
     parser.add_argument("--scale", type=float, default=1.0, help="Grid-to-ground scale factor (default 1.0)")
@@ -235,20 +235,32 @@ def main():
         base_name = os.path.splitext(input_filename)[0]
         output_dir = os.path.join(input_dir, f"{base_name}_tiles")
     
-    if os.path.exists(output_dir):
-        if args.clobber:
-            print(f"⚠️  Output directory {output_dir} exists. Overwriting...")
-            for f in os.listdir(output_dir):
-                fp = os.path.join(output_dir, f)
-                if os.path.isfile(fp) or os.path.islink(fp):
-                    os.unlink(fp)
-                elif os.path.isdir(fp):
-                    shutil.rmtree(fp)
-        else:
-            print(f"Error: Output directory {output_dir} already exists. Use --clobber to replace it.")
-            sys.exit(1)
-    else:
-        os.makedirs(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Conflict check
+    vrt_index_path = os.path.join(output_dir, "index.vrt")
+    base_prefix = os.path.splitext(input_filename)[0]
+    
+    # We check if index.vrt exists OR if any final numbered tiles exist
+    # (Since total tile count depends on cleaning, we just check for the first few)
+    potentially_conflicting = [vrt_index_path]
+    for i in range(1, 10): # Check first few as a proxy
+        potentially_conflicting.append(os.path.join(output_dir, f"{base_prefix}_{i}.tif"))
+        potentially_conflicting.append(os.path.join(output_dir, f"{base_prefix}_{i:02d}.tif"))
+        potentially_conflicting.append(os.path.join(output_dir, f"{base_prefix}_{i:03d}.tif"))
+
+    conflicts = [f for f in potentially_conflicting if os.path.exists(f)]
+    
+    if conflicts and not args.clobber:
+        print(f"Error: Conflicting files found in {output_dir}:")
+        for c in conflicts[:5]:
+            print(f"  - {os.path.basename(c)}")
+        if len(conflicts) > 5:
+            print(f"  ... and {len(conflicts)-5} more.")
+        print("Use --clobber to overwrite them.")
+        sys.exit(1)
+    elif conflicts:
+         print(f"⚠️  Conflicts detected in {output_dir}. Overwriting relevant files...")
 
     # Step 3: Parallel Tiling
     ds = gdal.Open(input_to_tile)
@@ -310,30 +322,33 @@ def main():
                     print(f"Warning: Could not remove XML {f}: {e}")
 
     # Step 4.6: Sequential Renaming
-    print(f"🏷️  Renaming remaining tiles using prefix: {os.path.splitext(input_filename)[0]}...")
-    current_tiles = [f for f in os.listdir(output_dir) if f.lower().endswith('.tif') and not f.startswith('._')]
+    print(f"🏷️  Renaming remaining tiles using prefix: {base_prefix}...")
+    
+    # CRITICAL: We only rename the tiles WE created in THIS run
+    current_run_tiles = [f for f in tile_paths if os.path.exists(f)]
+    
     # Sort to maintain spatial order. Filenames are tile_x_y.tif
-    def sort_key(f):
+    def sort_key(f_path):
+        f = os.path.basename(f_path)
         try:
             parts = f.replace('.tif', '').split('_')
-            # Expecting ['tile', x, y]
             if len(parts) >= 3:
                 return (int(parts[-1]), int(parts[-2]))
         except (ValueError, IndexError):
             pass
         return f
-    current_tiles.sort(key=sort_key)
+    current_run_tiles.sort(key=sort_key)
     
     base_prefix = os.path.splitext(input_filename)[0]
     final_tiles = []
     
     # Calculate padding based on total tiles
-    total_tiles = len(current_tiles)
+    total_tiles = len(current_run_tiles)
     padding = len(str(total_tiles)) if total_tiles >= 10 else 1
     
-    for i, old_name in enumerate(current_tiles, 1):
+    for i, old_path in enumerate(current_run_tiles, 1):
         new_name = f"{base_prefix}_{i:0{padding}d}.tif"
-        old_path = os.path.join(output_dir, old_name)
+        old_path = os.path.abspath(old_path)
         new_path = os.path.join(output_dir, new_name)
         
         # Also handle XML if it exists
