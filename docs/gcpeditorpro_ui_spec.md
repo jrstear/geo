@@ -152,22 +152,42 @@ high-resolution images.
 
 ---
 
-## Research Needed (R2)
+## R2 Research Findings (confirmed from GCPEditorPro source)
 
-Before implementing G1–G5, explore these files to understand the data model:
+### Data Model (storage.service.ts)
 
-| File | Purpose |
-|------|---------|
-| `src/app/storage.service.ts` | Central state: `gcps`, `imageGcps`, `images`, `projection` |
-| `src/app/gcps-utils.service.ts` | `GCP`, `ImageGcp` type definitions |
-| `src/app/load-config-txt/load-config-txt.component.ts` | How .txt is parsed into storage |
-| `src/app/images-tagger/images-tagger.component.ts` | Current image-tagger logic |
-| `src/app/smartimage/smartimage.component.ts` | Pin rendering on images |
-| `src/app/gcps-map/gcps-map.component.ts` | GCP list page |
+- `storage.gcps: GCP[]` — `{ name, northing, easting, elevation }`
+- `storage.imageGcps: ImageGcp[]` — `{ geoX, geoY, geoZ, imX, imY, imgName, gcpName }`
+- `imX === 0 && imY === 0` is confirmed "not tagged" sentinel (existing code uses this)
 
-Key questions for R2:
-1. How does load-config-txt populate `storage.imageGcps`? Can we inject estimates there?
-2. Is `ImageGcp.imX/imY == 0` the "not tagged" sentinel? (Yes, from existing code)
-3. How does SmartimageComponent render pins? Is pin color configurable?
-4. What is the `.txt` file path available to the Angular app? (Electron vs web mode)
-5. In Electron mode, what file system APIs are available for writing .confirmed.json?
+### Injection Point (G1)
+
+`load-config-txt.component.ts` **line 167** — after `txtParseResult` is assigned.
+Insert `.estimates.json` sidecar check and `storage.imageGcps` population here.
+
+### SmartimageComponent — Pin Color (G3)
+
+Pin color is NOT currently configurable. Need to add:
+```typescript
+@Input() pinColor: string = 'yellow';   // 'yellow' | 'green'
+```
+to `smartimage.component.ts` and use it in the pin rendering logic.
+
+### File System Access for Sidecar (G3)
+
+- **Electron mode**: IPC via `main.js` — use `ipcRenderer.invoke('write-file', path, content)`
+- **Web mode**: FileReader API only (can read, but cannot write sidecar files without user interaction / download)
+  - Workaround for web: store confirmed state in `localStorage` keyed by filename hash
+
+### GCP List Badge (G4)
+
+Update `GcpInfo` class (in `gcps-map.component.ts` or shared types) to add:
+```typescript
+confirmCount: number;
+totalCount: number;
+```
+Then update the `gcps-map` template to show `{{ gcp.confirmCount }}/{{ gcp.totalCount }}` badge.
+
+### Implementation Order
+
+G3 (sidecar + confirmed field) → G1 (pre-populate) → G2 (zoom view) → G4 (badge) → G5 (zoom buttons)

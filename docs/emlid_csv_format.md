@@ -16,7 +16,7 @@ Example file: `~/stratus/ghostrider/emlid.csv`
 | `Description` | (empty) | Optional; ignore. |
 | `Longitude` | `-106.1613153` | WGS84 decimal degrees. **Use for footprint matching.** |
 | `Latitude` | `35.39123866` | WGS84 decimal degrees. **Use for footprint matching.** |
-| `Ellipsoidal height` | `6134.472` | Ellipsoidal (not geoid) height. Ignore for most uses. |
+| `Ellipsoidal height` | `6134.472` | WGS84 ellipsoidal height (ft). **Required for pixel projection** (Mode A/B). Convert ft→m. |
 | `Origin` | `Global` | `Global` = RTK w/ network correction. |
 | `Tilt angle` | `0.4` | Receiver tilt in degrees; ignore. |
 | `Easting RMS` | `0.038` | Horizontal precision (ftUS). |
