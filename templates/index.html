@@ -63,7 +63,7 @@
             <div class="flex items-baseline justify-center gap-4">
                 <h1 class="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500">
                     Geo Packager</h1>
-                <p class="text-slate-400">Parallelized raster packaging via gdal</p>
+                <p class="text-slate-400">Package contour, surface, and raster geo-photogrammetry deliverables.</p>
             </div>
         </header>
 
@@ -74,7 +74,6 @@
                 <!-- 01 Shared Parameters -->
                 <div class="card-shared">
                     <h2 class="text-sm font-bold mb-3 flex items-center gap-2 text-purple-300 uppercase tracking-wider">
-                        <span class="px-1.5 py-0.5 rounded bg-purple-500/30 text-purple-300 text-xs font-bold">01</span>
                         Shared Parameters
                     </h2>
                     <div class="grid grid-cols-3 gap-3">
@@ -110,9 +109,14 @@
 
                 <!-- 02 Contour DXF -->
                 <div class="card-contour">
-                    <h2 class="text-sm font-bold mb-3 flex items-center gap-2 text-cyan-300 uppercase tracking-wider">
-                        <span class="px-1.5 py-0.5 rounded bg-cyan-500/30 text-cyan-300 text-xs font-bold">02</span>
-                        Contour .DXF
+                    <h2 class="text-sm font-bold mb-3 flex items-center justify-between text-cyan-300 uppercase tracking-wider">
+                        <span class="flex items-center gap-2">
+                            Contour .DXF
+                        </span>
+                        <label class="flex items-center gap-1.5 cursor-pointer normal-case text-xs font-semibold text-cyan-400/70">
+                            <input type="checkbox" id="contour_clobber" class="rounded border-cyan-700 bg-cyan-900/50 text-cyan-500">
+                            Overwrite
+                        </label>
                     </h2>
                     <div class="space-y-3">
                         <div>
@@ -132,11 +136,16 @@
                     </div>
                 </div>
 
-                <!-- 03 TIN XML -->
+                <!-- 03 SURFACE TIN XML -->
                 <div class="card-tin">
-                    <h2 class="text-sm font-bold mb-3 flex items-center gap-2 text-emerald-300 uppercase tracking-wider">
-                        <span class="px-1.5 py-0.5 rounded bg-emerald-500/30 text-emerald-300 text-xs font-bold">03</span>
-                        TIN .XML
+                    <h2 class="text-sm font-bold mb-3 flex items-center justify-between text-emerald-300 uppercase tracking-wider">
+                        <span class="flex items-center gap-2">
+                            SURFACE TIN .XML
+                        </span>
+                        <label class="flex items-center gap-1.5 cursor-pointer normal-case text-xs font-semibold text-emerald-400/70">
+                            <input type="checkbox" id="tin_clobber" class="rounded border-emerald-700 bg-emerald-900/50 text-emerald-500">
+                            Overwrite
+                        </label>
                     </h2>
                     <div class="space-y-3">
                         <div>
@@ -174,16 +183,20 @@
                     </div>
                 </div>
 
-                <!-- 04 TIF -->
+                <!-- 04 ORTHOMOSAIC TIF -->
                 <div class="card-tif">
-                    <h2 class="text-sm font-bold mb-3 flex items-center gap-2 text-blue-300 uppercase tracking-wider">
-                        <span class="px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-300 text-xs font-bold">04</span>
-                        TIF
-                        <span class="normal-case text-xs text-slate-500 font-normal">(optional if 02 or 03 filled)</span>
+                    <h2 class="text-sm font-bold mb-3 flex items-center justify-between text-blue-300 uppercase tracking-wider">
+                        <span class="flex items-center gap-2">
+                            Orthomosaic .TIF
+                        </span>
+                        <label class="flex items-center gap-1.5 cursor-pointer normal-case text-xs font-semibold text-blue-400/70">
+                            <input type="checkbox" id="clobber" class="rounded border-blue-700 bg-blue-900/50 text-blue-500">
+                            Overwrite
+                        </label>
                     </h2>
                     <div class="space-y-3">
                         <div>
-                            <label class="block text-[10px] font-semibold uppercase text-blue-400/70 mb-1">Input GeoTIFF</label>
+                            <label class="block text-[10px] font-semibold uppercase text-blue-400/70 mb-1">Input TIF</label>
                             <div class="flex gap-2">
                                 <input type="text" id="tif_file" placeholder="/path/to/raster.tif"
                                     class="w-full border rounded-lg px-3 py-2 text-sm text-slate-200"
@@ -197,12 +210,6 @@
                                 <label class="block text-[10px] font-semibold uppercase text-blue-400/70">Output Dir
                                     <span class="normal-case font-normal text-slate-500 ml-1">(optional)</span>
                                 </label>
-                                <div class="flex items-center gap-2">
-                                    <input type="checkbox" id="clobber"
-                                        class="rounded border-blue-700 bg-blue-900/50 text-blue-500">
-                                    <label for="clobber"
-                                        class="text-[11px] text-blue-400/70 uppercase font-semibold">Clobber/Overwrite</label>
-                                </div>
                             </div>
                             <div class="flex gap-2">
                                 <input type="text" id="output_dir" placeholder="Default: <input_dir>/<name>_tiles"
@@ -231,8 +238,8 @@
                     </div>
                 </div>
 
-                <button id="run_btn" onclick="run()"
-                    class="w-full py-4 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 font-bold rounded-xl transition-all transform active:scale-95 shadow-lg shadow-blue-500/20">
+                <button id="run_btn" onclick="run()" disabled
+                    class="w-full py-4 bg-gradient-to-r from-blue-600 to-cyan-500 font-bold rounded-xl transition-all transform active:scale-95 shadow-lg shadow-blue-500/20 opacity-40 cursor-not-allowed">
                     🚀 Run All Selected
                 </button>
             </div>
@@ -258,8 +265,22 @@
                 .then(data => {
                     if (data.path) {
                         document.getElementById(targetId).value = data.path;
+                        updateRunBtn();
                     }
                 });
+        }
+
+        // Enable/disable Run button based on whether any input file is filled
+        function updateRunBtn() {
+            const hasInput = ['contour_file', 'tin_file', 'tif_file'].some(
+                id => document.getElementById(id).value.trim() !== ''
+            );
+            const btn = document.getElementById('run_btn');
+            btn.disabled = !hasInput;
+            btn.classList.toggle('opacity-40',        !hasInput);
+            btn.classList.toggle('cursor-not-allowed', !hasInput);
+            btn.classList.toggle('hover:from-blue-500', hasInput);
+            btn.classList.toggle('hover:to-cyan-400',   hasInput);
         }
 
         // Initialize defaults on load
@@ -274,6 +295,11 @@
                         }
                     }
                 });
+
+            // Watch the three file inputs
+            ['contour_file', 'tin_file', 'tif_file'].forEach(id => {
+                document.getElementById(id).addEventListener('input', updateRunBtn);
+            });
         });
 
         let eventSource = null;
@@ -292,13 +318,15 @@
                     shift_x:  document.getElementById('shift_x').value,
                     shift_y:  document.getElementById('shift_y').value,
                     // Contour DXF
-                    contour_file:   document.getElementById('contour_file').value,
-                    contour_suffix: document.getElementById('contour_suffix').value,
+                    contour_file:    document.getElementById('contour_file').value,
+                    contour_suffix:  document.getElementById('contour_suffix').value,
+                    contour_clobber: document.getElementById('contour_clobber').checked,
                     // TIN XML
                     tin_file:       document.getElementById('tin_file').value,
                     tin_suffix:     document.getElementById('tin_suffix').value,
                     tin_max_mb:     document.getElementById('tin_max_mb').value,
                     tin_output_dir: document.getElementById('tin_output_dir').value,
+                    tin_clobber:    document.getElementById('tin_clobber').checked,
                     // TIF
                     tif_file:         document.getElementById('tif_file').value,
                     output_dir:       document.getElementById('output_dir').value,
