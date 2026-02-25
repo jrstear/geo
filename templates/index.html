@@ -23,12 +23,22 @@
             border-radius: 16px;
         }
 
-        .input-accent:focus {
-            ring: 2px;
-            ring-color: #4cc9f0;
-            border-color: #4cc9f0;
-            outline: none;
-        }
+        /* Section tinted cards */
+        .card-shared  { background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.25); border-radius: 12px; padding: 14px 16px; }
+        .card-contour { background: rgba(6, 182, 212, 0.08);  border: 1px solid rgba(6, 182, 212, 0.25);  border-radius: 12px; padding: 14px 16px; }
+        .card-tin     { background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 12px; padding: 14px 16px; }
+        .card-tif     { background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25);  border-radius: 12px; padding: 14px 16px; }
+
+        /* Inputs inherit their card's tint for the bg */
+        .card-shared  input { background: rgba(168, 85, 247, 0.06); border-color: rgba(168, 85, 247, 0.3); }
+        .card-contour input { background: rgba(6, 182, 212, 0.06);  border-color: rgba(6, 182, 212, 0.3); }
+        .card-tin     input { background: rgba(16, 185, 129, 0.06); border-color: rgba(16, 185, 129, 0.3); }
+        .card-tif     input { background: rgba(59, 130, 246, 0.06); border-color: rgba(59, 130, 246, 0.3); }
+
+        .card-shared  input:focus { border-color: #a855f7; outline: none; }
+        .card-contour input:focus { border-color: #06b6d4; outline: none; }
+        .card-tin     input:focus { border-color: #10b981; outline: none; }
+        .card-tif     input:focus { border-color: #3b82f6; outline: none; }
 
         .terminal {
             font-family: 'JetBrains Mono', monospace;
@@ -37,31 +47,13 @@
             line-height: 1.4;
         }
 
-        ::-webkit-scrollbar {
-            width: 8px;
-        }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
 
-        ::-webkit-scrollbar-track {
-            background: rgba(0, 0, 0, 0.1);
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 4px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: rgba(255, 255, 255, 0.2);
-        }
-
-        .optional {
-            color: #94a3b8;
-        }
-
-        ::placeholder {
-            color: #64748b !important;
-            opacity: 0.7;
-        }
+        .optional { color: #94a3b8; }
+        ::placeholder { color: #64748b !important; opacity: 0.7; }
     </style>
 </head>
 
@@ -77,113 +69,171 @@
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
             <!-- Configuration Column -->
-            <div class="glass p-6 space-y-6">
-                <section>
-                    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
-                        <span class="p-1 rounded bg-blue-500/20 text-blue-400 text-sm">01</span> Targets
+            <div class="glass p-6 space-y-4">
+
+                <!-- 01 Shared Parameters -->
+                <div class="card-shared">
+                    <h2 class="text-sm font-bold mb-3 flex items-center gap-2 text-purple-300 uppercase tracking-wider">
+                        <span class="px-1.5 py-0.5 rounded bg-purple-500/30 text-purple-300 text-xs font-bold">01</span>
+                        Shared Parameters
                     </h2>
-                    <div class="space-y-4">
+                    <div class="grid grid-cols-3 gap-3">
                         <div>
-                            <label class="block text-sm font-medium mb-1">Input GeoTIFF</label>
+                            <label class="block text-[10px] font-semibold uppercase text-purple-400/70 mb-1">Scale Factor</label>
+                            <input type="number" id="scale" step="0.0001"
+                                class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200 color-scheme-dark">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-purple-400/70 mb-1">Anchor X</label>
+                            <input type="number" id="anchor_x" placeholder="0.0"
+                                class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-purple-400/70 mb-1">Anchor Y</label>
+                            <input type="number" id="anchor_y" placeholder="0.0"
+                                class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3 mt-3">
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-purple-400/70 mb-1">Shift X</label>
+                            <input type="number" id="shift_x" placeholder="0.0"
+                                class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-purple-400/70 mb-1">Shift Y</label>
+                            <input type="number" id="shift_y" placeholder="0.0"
+                                class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 02 Contour DXF -->
+                <div class="card-contour">
+                    <h2 class="text-sm font-bold mb-3 flex items-center gap-2 text-cyan-300 uppercase tracking-wider">
+                        <span class="px-1.5 py-0.5 rounded bg-cyan-500/30 text-cyan-300 text-xs font-bold">02</span>
+                        Contour .DXF
+                    </h2>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-cyan-400/70 mb-1">Input DXF</label>
                             <div class="flex gap-2">
-                                <input type="text" id="input_file" placeholder="/path/to/raster.tif"
-                                    class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent"
+                                <input type="text" id="contour_file" placeholder="/path/to/contour.dxf"
+                                    class="w-full border rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <button onclick="browse('dxf', 'contour_file')"
+                                    class="px-3 py-2 bg-cyan-900/40 hover:bg-cyan-800/50 border border-cyan-500/30 rounded-lg text-sm text-cyan-300 transition-colors whitespace-nowrap">Browse</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-cyan-400/70 mb-1">Output Suffix</label>
+                            <input type="text" id="contour_suffix" placeholder="_geo"
+                                class="w-full border rounded-lg px-3 py-2 text-sm text-slate-200">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 03 TIN XML -->
+                <div class="card-tin">
+                    <h2 class="text-sm font-bold mb-3 flex items-center gap-2 text-emerald-300 uppercase tracking-wider">
+                        <span class="px-1.5 py-0.5 rounded bg-emerald-500/30 text-emerald-300 text-xs font-bold">03</span>
+                        TIN .XML
+                    </h2>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-emerald-400/70 mb-1">Input XML</label>
+                            <div class="flex gap-2">
+                                <input type="text" id="tin_file" placeholder="/path/to/tin.xml"
+                                    class="w-full border rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <button onclick="browse('xml', 'tin_file')"
+                                    class="px-3 py-2 bg-emerald-900/40 hover:bg-emerald-800/50 border border-emerald-500/30 rounded-lg text-sm text-emerald-300 transition-colors whitespace-nowrap">Browse</button>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-[10px] font-semibold uppercase text-emerald-400/70 mb-1">Output Suffix</label>
+                                <input type="text" id="tin_suffix" placeholder="_geo"
+                                    class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-semibold uppercase text-emerald-400/70 mb-1">Max Tile Size (MB)</label>
+                                <input type="number" id="tin_max_mb" placeholder="0 = no tiling" min="0" step="1"
+                                    class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-emerald-400/70 mb-1">Output Dir for Tiles
+                                <span class="normal-case font-normal text-slate-500 ml-1">(optional)</span>
+                            </label>
+                            <div class="flex gap-2">
+                                <input type="text" id="tin_output_dir" placeholder="Default: <input_dir>/<name>_tiles"
+                                    class="w-full border rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <button onclick="browse('dir', 'tin_output_dir')"
+                                    class="px-3 py-2 bg-emerald-900/40 hover:bg-emerald-800/50 border border-emerald-500/30 rounded-lg text-sm text-emerald-300 transition-colors whitespace-nowrap">Browse</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 04 TIF -->
+                <div class="card-tif">
+                    <h2 class="text-sm font-bold mb-3 flex items-center gap-2 text-blue-300 uppercase tracking-wider">
+                        <span class="px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-300 text-xs font-bold">04</span>
+                        TIF
+                        <span class="normal-case text-xs text-slate-500 font-normal">(optional if 02 or 03 filled)</span>
+                    </h2>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-blue-400/70 mb-1">Input GeoTIFF</label>
+                            <div class="flex gap-2">
+                                <input type="text" id="tif_file" placeholder="/path/to/raster.tif"
+                                    class="w-full border rounded-lg px-3 py-2 text-sm text-slate-200"
                                     onkeydown="if(event.key==='Enter') run()">
-                                <button onclick="browse('file')"
-                                    class="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition-colors">Browse</button>
+                                <button onclick="browse('tif', 'tif_file')"
+                                    class="px-3 py-2 bg-blue-900/40 hover:bg-blue-800/50 border border-blue-500/30 rounded-lg text-sm text-blue-300 transition-colors whitespace-nowrap">Browse</button>
                             </div>
                         </div>
                         <div>
                             <div class="flex items-center justify-between mb-1">
-                                <label class="block text-sm font-medium optional italic">Output Directory
-                                    (Optional)</label>
+                                <label class="block text-[10px] font-semibold uppercase text-blue-400/70">Output Dir
+                                    <span class="normal-case font-normal text-slate-500 ml-1">(optional)</span>
+                                </label>
                                 <div class="flex items-center gap-2">
                                     <input type="checkbox" id="clobber"
-                                        class="rounded border-slate-700 bg-slate-900/50 text-blue-500">
+                                        class="rounded border-blue-700 bg-blue-900/50 text-blue-500">
                                     <label for="clobber"
-                                        class="text-[11px] text-slate-400 uppercase font-semibold">Clobber/Overwrite
-                                        conflicting files</label>
+                                        class="text-[11px] text-blue-400/70 uppercase font-semibold">Clobber/Overwrite</label>
                                 </div>
                             </div>
                             <div class="flex gap-2">
                                 <input type="text" id="output_dir" placeholder="Default: <input_dir>/<name>_tiles"
-                                    class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm input-accent">
-                                <button onclick="browse('dir')"
-                                    class="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition-colors">Browse</button>
+                                    class="w-full border rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <button onclick="browse('dir', 'output_dir')"
+                                    class="px-3 py-2 bg-blue-900/40 hover:bg-blue-800/50 border border-blue-500/30 rounded-lg text-sm text-blue-300 transition-colors whitespace-nowrap">Browse</button>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-3">
+                            <div>
+                                <label class="block text-[10px] font-semibold uppercase text-blue-400/70 mb-1">Downsize %</label>
+                                <input type="number" id="downsize_percent" placeholder="25"
+                                    class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-semibold uppercase text-blue-400/70 mb-1">Tile Size (Px)</label>
+                                <input type="number" id="tile_size"
+                                    class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-semibold uppercase text-blue-400/70 mb-1">CPU Load %</label>
+                                <input type="number" id="load" min="1" max="100"
+                                    class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
                             </div>
                         </div>
                     </div>
-                </section>
-
-                <section>
-                    <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
-                        <span class="p-1 rounded bg-purple-500/20 text-purple-400 text-sm">02</span> Transformations
-                    </h2>
-                    <!-- Row 1: Downsize, Shift X, Shift Y -->
-                    <div class="grid grid-cols-3 gap-3">
-                        <div>
-                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Downsize
-                                %</label>
-                            <input type="number" id="downsize_percent" placeholder="25"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Shift X</label>
-                            <input type="number" id="shift_x" placeholder="0.0"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Shift Y</label>
-                            <input type="number" id="shift_y" placeholder="0.0"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
-                        </div>
-                    </div>
-                    <!-- Row 2: Scale, Anchor X, Anchor Y -->
-                    <div class="grid grid-cols-3 gap-3 mt-3">
-                        <div>
-                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Scale
-                                Factor</label>
-                            <input type="number" id="scale" step="0.0001"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Anchor
-                                X</label>
-                            <input type="number" id="anchor_x" placeholder="0.0"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Anchor
-                                Y</label>
-                            <input type="number" id="anchor_y" placeholder="0.0"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
-                        </div>
-                    </div>
-                </section>
-
-                <section>
-                    <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
-                        <span class="p-1 rounded bg-cyan-500/20 text-cyan-400 text-sm">03</span> Tiling
-                    </h2>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Tile Size
-                                (Px)</label>
-                            <input type="number" id="tile_size"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-semibold uppercase text-slate-500 mb-1">CPU Load
-                                %</label>
-                            <input type="number" id="load" min="1" max="100"
-                                class="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-sm input-accent">
-                        </div>
-                    </div>
-                </section>
+                </div>
 
                 <button id="run_btn" onclick="run()"
                     class="w-full py-4 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 font-bold rounded-xl transition-all transform active:scale-95 shadow-lg shadow-blue-500/20">
-                    🚀 Run Packager
+                    🚀 Run All Selected
                 </button>
             </div>
 
@@ -202,13 +252,12 @@
     </div>
 
     <script>
-        function browse(mode) {
+        function browse(mode, targetId) {
             fetch(`/browse?mode=${mode}`)
                 .then(r => r.json())
                 .then(data => {
                     if (data.path) {
-                        if (mode === 'file') document.getElementById('input_file').value = data.path;
-                        else document.getElementById('output_dir').value = data.path;
+                        document.getElementById(targetId).value = data.path;
                     }
                 });
         }
@@ -236,23 +285,33 @@
                 const status = document.getElementById('status_indicator');
 
                 const params = {
-                    input_file: document.getElementById('input_file').value,
-                    output_dir: document.getElementById('output_dir').value,
-                    clobber: document.getElementById('clobber').checked,
-                    scale: document.getElementById('scale').value,
+                    // Shared
+                    scale:    document.getElementById('scale').value,
                     anchor_x: document.getElementById('anchor_x').value,
                     anchor_y: document.getElementById('anchor_y').value,
-                    shift_x: document.getElementById('shift_x').value,
-                    shift_y: document.getElementById('shift_y').value,
+                    shift_x:  document.getElementById('shift_x').value,
+                    shift_y:  document.getElementById('shift_y').value,
+                    // Contour DXF
+                    contour_file:   document.getElementById('contour_file').value,
+                    contour_suffix: document.getElementById('contour_suffix').value,
+                    // TIN XML
+                    tin_file:       document.getElementById('tin_file').value,
+                    tin_suffix:     document.getElementById('tin_suffix').value,
+                    tin_max_mb:     document.getElementById('tin_max_mb').value,
+                    tin_output_dir: document.getElementById('tin_output_dir').value,
+                    // TIF
+                    tif_file:         document.getElementById('tif_file').value,
+                    output_dir:       document.getElementById('output_dir').value,
+                    clobber:          document.getElementById('clobber').checked,
                     downsize_percent: document.getElementById('downsize_percent').value,
-                    tile_size: document.getElementById('tile_size').value,
-                    load: document.getElementById('load').value
+                    tile_size:        document.getElementById('tile_size').value,
+                    load:             document.getElementById('load').value,
                 };
 
                 console.log("Collected params:", params);
 
-                if (!params.input_file) {
-                    alert("Please select an input file first!");
+                if (!params.tif_file && !params.contour_file && !params.tin_file) {
+                    alert("Please fill in at least one input file (TIF, DXF, or XML).");
                     return;
                 }
 
@@ -267,7 +326,12 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(params)
                 })
-                    .then(res => res.json())
+                    .then(res => {
+                        if (!res.ok) {
+                            return res.json().then(err => { throw new Error(err.error || `HTTP ${res.status}`); });
+                        }
+                        return res.json();
+                    })
                     .then(data => {
                         if (data.command) {
                             terminal.innerHTML = `<span class="text-blue-400">🚀 Executing:</span> <span class="text-slate-300 font-mono text-xs">${data.command}</span>\n\n`;
@@ -281,7 +345,7 @@
                         eventSource.onmessage = (e) => {
                             if (e.data.trim() === "EOF") {
                                 eventSource.close();
-                                eventSource = null; // Mark as closed intentionally
+                                eventSource = null;
                                 btn.disabled = false;
                                 btn.classList.remove('opacity-50', 'cursor-not-allowed');
                                 status.innerHTML = '<div class="w-2 h-2 rounded-full bg-blue-500"></div> Done';
@@ -292,7 +356,6 @@
                         };
 
                         eventSource.onerror = (err) => {
-                            // Only show error if it wasn't a graceful EOF
                             if (eventSource) {
                                 console.error("EventSource failed:", err);
                                 terminal.innerHTML += "⚠️  Connection to log stream lost. Check server logs.\n";
@@ -303,6 +366,12 @@
                                 status.innerHTML = '<div class="w-2 h-2 rounded-full bg-red-500"></div> Connection Error';
                             }
                         };
+                    })
+                    .catch(err => {
+                        terminal.innerHTML = `❌ Error: ${err.message}\n`;
+                        btn.disabled = false;
+                        btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                        status.innerHTML = '<div class="w-2 h-2 rounded-full bg-red-500"></div> Error';
                     });
             } catch (err) {
                 console.error("Error in run():", err);
@@ -316,10 +385,7 @@
             e.preventDefault();
             const file = e.dataTransfer.files[0];
             if (file) {
-                // Browsers don't give the full path for security, 
-                // but since this is local we can try to get the name at least 
-                // or the user can use the Browse button for accurate paths.
-                document.getElementById('input_file').value = file.path || file.name;
+                document.getElementById('tif_file').value = file.path || file.name;
             }
         });
     </script>

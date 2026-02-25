@@ -21,7 +21,7 @@ def get_defaults():
     defaults = {}
     if not os.path.exists(PACKAGE_SCRIPT):
         return defaults
-        
+
     try:
         with open(PACKAGE_SCRIPT, 'r') as f:
             content = f.read()
@@ -36,7 +36,7 @@ def get_defaults():
                 defaults[name] = val
     except Exception as e:
         print(f"⚠️ Warning: Could not parse defaults from package.py: {e}")
-        
+
     return defaults
 
 def run_package_command(args):
@@ -50,7 +50,7 @@ def run_package_command(args):
 
     cmd = [sys.executable, PACKAGE_SCRIPT] + args
     print(f"🚀 Launching command: {' '.join(cmd)}")
-    
+
     try:
         process = subprocess.Popen(
             cmd,
@@ -61,19 +61,19 @@ def run_package_command(args):
             universal_newlines=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1"}
         )
-        
+
         for line in process.stdout:
             print(f"  [OUT] {line.strip()}")
             logs_queue.put(line)
-        
+
         process.wait()
         print(f"✅ Process finished with code {process.returncode}")
-        
+
         if process.returncode == 0:
             logs_queue.put("✨ Success! Task completed.\n")
         else:
             logs_queue.put(f"❌ Process exited with error code {process.returncode}\n")
-            
+
     except Exception as e:
         msg = f"❌ Critical Error: {str(e)}\n"
         print(msg)
@@ -93,34 +93,58 @@ def defaults():
 def run():
     data = request.json
     print(f"📥 Received run request with data: {data}")
-    
-    defaults = get_defaults()
-    
-    # Build command line arguments
-    args = [data["input_file"]]
-    
+
+    # Validate: at least one input required
+    tif_file     = (data.get("tif_file")     or "").strip()
+    contour_file = (data.get("contour_file") or "").strip()
+    tin_file     = (data.get("tin_file")     or "").strip()
+
+    if not tif_file and not contour_file and not tin_file:
+        return jsonify({"error": "At least one input file (TIF, DXF, or XML) is required."}), 400
+
+    pkg_defaults = get_defaults()
+    args = []
+
     def add_arg(key, flag):
         val = data.get(key)
         if val is not None and str(val).strip() != "":
-            # Only add if it's different from the default
-            default_val = defaults.get(key)
+            default_val = pkg_defaults.get(key)
             if default_val is None or str(val).strip() != str(default_val).strip():
                 args.extend([flag, str(val)])
 
-    if data.get("output_dir"):
-        args += ["--output-dir", data["output_dir"]]
-    
-    if data.get("clobber"):
-        args.append("--clobber")
-        
-    add_arg("scale", "--scale")
+    # ── TIF positional arg + TIF-specific options ──────────────────────────────
+    if tif_file:
+        args.append(tif_file)
+
+        if data.get("output_dir"):
+            args += ["--output-dir", data["output_dir"]]
+
+        if data.get("clobber"):
+            args.append("--clobber")
+
+        add_arg("downsize_percent", "--downsize-percent")
+        add_arg("tile_size", "--tile-size")
+        add_arg("load", "--load")
+
+    # ── Shared transform args (apply to all input types) ──────────────────────
+    add_arg("scale",    "--scale")
     add_arg("anchor_x", "--anchor-x")
     add_arg("anchor_y", "--anchor-y")
-    add_arg("shift_x", "--shift-x")
-    add_arg("shift_y", "--shift-y")
-    add_arg("downsize_percent", "--downsize-percent")
-    add_arg("tile_size", "--tile-size")
-    add_arg("load", "--load")
+    add_arg("shift_x",  "--shift-x")
+    add_arg("shift_y",  "--shift-y")
+
+    # ── Contour DXF args ───────────────────────────────────────────────────────
+    if contour_file:
+        args += ["--contour-file", contour_file]
+        add_arg("contour_suffix", "--contour-suffix")
+
+    # ── TIN XML args ───────────────────────────────────────────────────────────
+    if tin_file:
+        args += ["--tin-file", tin_file]
+        add_arg("tin_suffix",     "--tin-suffix")
+        add_arg("tin_max_mb",     "--tin-max-mb")
+        if (data.get("tin_output_dir") or "").strip():
+            args += ["--tin-output-dir", data["tin_output_dir"].strip()]
 
     # Final command for display
     full_command = f"{os.path.basename(sys.executable)} {os.path.basename(PACKAGE_SCRIPT)} {' '.join(args)}"
@@ -129,13 +153,12 @@ def run():
     print("🧹 Clearing logs queue...")
     while not logs_queue.empty():
         logs_queue.get()
-        
+
     print("🧵 Starting background thread...")
     thread = threading.Thread(target=run_package_command, args=(args,))
     thread.start()
-    
-    return jsonify({"status": "started", "command": full_command})
 
+    return jsonify({"status": "started", "command": full_command})
 
 
 @app.route("/stream")
@@ -146,7 +169,7 @@ def stream():
             if line.strip() == "EOF":
                 yield f"data: {line}\n\n"
                 break
-            
+
             # SSE protocol: each line of a multi-line message must start with 'data: '
             # We split by '\n' and send a data: line for every single part.
             # For example, if line is "\n🚀 Tiling\n", parts will be ["", "🚀 Tiling", ""]
@@ -154,17 +177,27 @@ def stream():
             parts = line.split('\n')
             for part in parts:
                 yield f"data: {part}\n"
-            
+
             # Send the double-newline to terminate the SSE message
             yield "\n"
-            
+
     return Response(event_stream(), mimetype="text/event-stream")
 
 @app.route("/browse")
 def browse():
     """Triggers a native file/folder picker using tkinter in a separate process to avoid macOS threading crashes."""
-    mode = request.args.get("mode", "file")
-    
+    mode = request.args.get("mode", "dir")
+
+    # Build the filedialog call based on mode
+    if mode == "tif":
+        dialog_call = 'filedialog.askopenfilename(title="Select Input GeoTIFF", filetypes=[("GeoTIFF", "*.tif *.tiff")])'
+    elif mode == "dxf":
+        dialog_call = 'filedialog.askopenfilename(title="Select Contour DXF", filetypes=[("DXF", "*.dxf")])'
+    elif mode == "xml":
+        dialog_call = 'filedialog.askopenfilename(title="Select TIN LandXML", filetypes=[("LandXML", "*.xml")])'
+    else:  # dir
+        dialog_call = 'filedialog.askdirectory(title="Select Output Directory")'
+
     # Python script to run in a subprocess
     # This ensures tkinter runs on its own main thread
     script = f"""
@@ -189,10 +222,7 @@ elif system_platform == "Windows":
 
 root.attributes('-topmost', True)
 
-if "{mode}" == "file":
-    path = filedialog.askopenfilename(title="Select Input GeoTIFF", filetypes=[("GeoTIFF", "*.tif *.tiff")])
-else:
-    path = filedialog.askdirectory(title="Select Output Directory")
+path = {dialog_call}
 
 root.destroy()
 if path:
