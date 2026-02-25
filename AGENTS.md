@@ -9,6 +9,11 @@ Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for a
 - `bd close <id>` - Complete work
 - `bd sync` - Sync with git (run at session end)
 
+## Documentation
+
+- Use the `docs/` directory for detailed design documents, strategy memos, and `.md` files.
+- Reference relevant documentation in the `notes` or `comments` of the corresponding bead.
+
 For full workflow details: `bd prime`
 
 ## Landing the Plane (Session Completion)
