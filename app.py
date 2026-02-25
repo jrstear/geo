@@ -137,6 +137,8 @@ def run():
     if contour_file:
         args += ["--contour-file", contour_file]
         add_arg("contour_suffix", "--contour-suffix")
+        if data.get("contour_clobber"):
+            args.append("--contour-clobber")
 
     # ── TIN XML args ───────────────────────────────────────────────────────────
     if tin_file:
@@ -145,6 +147,8 @@ def run():
         add_arg("tin_max_mb",     "--tin-max-mb")
         if (data.get("tin_output_dir") or "").strip():
             args += ["--tin-output-dir", data["tin_output_dir"].strip()]
+        if data.get("tin_clobber"):
+            args.append("--tin-clobber")
 
     # Final command for display
     full_command = f"{os.path.basename(sys.executable)} {os.path.basename(PACKAGE_SCRIPT)} {' '.join(args)}"

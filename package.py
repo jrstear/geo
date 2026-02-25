@@ -428,12 +428,14 @@ def main():
     # Contour DXF options
     parser.add_argument("--contour-file", help="Input .dxf contour file")
     parser.add_argument("--contour-suffix", default="_geo", help="Output suffix for contour DXF (default: _geo)")
+    parser.add_argument("--contour-clobber", action="store_true", help="Overwrite existing contour output file")
 
     # TIN XML options
     parser.add_argument("--tin-file", help="Input LandXML .xml TIN file")
     parser.add_argument("--tin-suffix", default="_geo", help="Output suffix for single TIN file (default: _geo)")
     parser.add_argument("--tin-max-mb", type=float, default=0.0, help="Max output XML size in MB; if exceeded, tile (default: 0 = no limit)")
     parser.add_argument("--tin-output-dir", help="Output directory for TIN tiles")
+    parser.add_argument("--tin-clobber", action="store_true", help="Overwrite existing TIN output file or tile directory")
 
     args = parser.parse_args()
 
@@ -449,6 +451,12 @@ def main():
             sys.exit(1)
         contour_base = os.path.splitext(contour_in)[0]
         contour_out = f"{contour_base}{args.contour_suffix}.dxf"
+        if os.path.exists(contour_out) and not args.contour_clobber:
+            print(f"Error: Output already exists: {contour_out}")
+            print("Use --contour-clobber to overwrite.")
+            sys.exit(1)
+        elif os.path.exists(contour_out):
+            print(f"⚠️  Overwriting existing: {os.path.basename(contour_out)}")
         print(f"📐 Processing contour DXF: {os.path.basename(contour_in)}")
         transform_dxf(contour_in, contour_out,
                       args.scale, args.anchor_x, args.anchor_y,
@@ -461,6 +469,27 @@ def main():
         if not os.path.exists(tin_in):
             print(f"Error: TIN file not found: {tin_in}")
             sys.exit(1)
+        # Pre-check for conflicts (mirror TIF behaviour)
+        tin_input_dir = os.path.dirname(os.path.abspath(tin_in))
+        tin_basename  = os.path.splitext(os.path.basename(tin_in))[0]
+        file_size_mb  = os.path.getsize(tin_in) / (1024 * 1024)
+        will_tile     = (args.tin_max_mb > 0) and (file_size_mb > args.tin_max_mb)
+        if will_tile:
+            tin_out_check = args.tin_output_dir if args.tin_output_dir else os.path.join(tin_input_dir, f"{tin_basename}_tiles")
+            if os.path.isdir(tin_out_check) and os.listdir(tin_out_check) and not args.tin_clobber:
+                print(f"Error: Output tile directory already exists and is non-empty: {tin_out_check}")
+                print("Use --tin-clobber to overwrite.")
+                sys.exit(1)
+            elif os.path.isdir(tin_out_check) and os.listdir(tin_out_check):
+                print(f"⚠️  Overwriting existing tile directory: {tin_out_check}")
+        else:
+            tin_out_check = os.path.join(tin_input_dir, f"{tin_basename}{args.tin_suffix}.xml")
+            if os.path.exists(tin_out_check) and not args.tin_clobber:
+                print(f"Error: Output already exists: {tin_out_check}")
+                print("Use --tin-clobber to overwrite.")
+                sys.exit(1)
+            elif os.path.exists(tin_out_check):
+                print(f"⚠️  Overwriting existing: {os.path.basename(tin_out_check)}")
         print(f"🗺️  Processing TIN XML: {os.path.basename(tin_in)}")
         process_tin(tin_in,
                     args.scale, args.anchor_x, args.anchor_y,

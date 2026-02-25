@@ -9,7 +9,7 @@ then
 fi
 
 echo "Creating 'gdal' environment..."
-conda create -n gdal -c conda-forge gdal flask tk pyproj python=3.10 -y
+conda create -n gdal -c conda-forge gdal flask tk pyproj ezdxf python=3.10 -y
 
 echo "Done! Activate the environment with:"
 echo "    conda activate gdal"
