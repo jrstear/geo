@@ -403,9 +403,9 @@ def process_tin(input_path, scale, anchor_x, anchor_y, shift_x, shift_y,
 
 def main():
     parser = argparse.ArgumentParser(description="Parallel Raster Packager (Scale, Shift, Downsize, Tile, Clean).")
-    parser.add_argument("input_file", nargs='?', help="Input GeoTIFF file (optional if --contour-file or --tin-file provided)")
+    parser.add_argument("--tif-file", help="Input GeoTIFF file")
     parser.add_argument("--output-dir", help="Output directory (default: <input_dir>/<input_basename>_tiles)")
-    parser.add_argument("--clobber", action="store_true", help="Overwrite conflicting files in output directory")
+    parser.add_argument("--tif-clobber", action="store_true", help="Overwrite conflicting files in output directory")
 
     # transformation / georeferencing options
     parser.add_argument("--scale", type=float, default=1.0, help="Grid-to-ground scale factor (default 1.0)")
@@ -440,8 +440,8 @@ def main():
     args = parser.parse_args()
 
     # Validate: at least one input must be provided
-    if not args.input_file and not args.contour_file and not args.tin_file:
-        parser.error("At least one of: input_file, --contour-file, --tin-file must be provided.")
+    if not args.tif_file and not args.contour_file and not args.tin_file:
+        parser.error("At least one of --tif-file, --contour-file, --tin-file must be provided.")
 
     # ── Contour DXF processing ──────────────────────────────────────────────────
     if args.contour_file:
@@ -499,20 +499,20 @@ def main():
         print(f"✨ TIN done.")
 
     # ── TIF processing ──────────────────────────────────────────────────────────
-    if args.input_file:
+    if args.tif_file:
         # Step 0: Validation
-        if not os.path.exists(args.input_file):
-            print(f"Error: {args.input_file} not found.")
+        if not os.path.exists(args.tif_file):
+            print(f"Error: {args.tif_file} not found.")
             sys.exit(1)
 
-        ds = gdal.Open(args.input_file)
+        ds = gdal.Open(args.tif_file)
         original_gsd = abs(ds.GetGeoTransform()[1])
-        original_size_gb = os.path.getsize(args.input_file) / (1024**3)
+        original_size_gb = os.path.getsize(args.tif_file) / (1024**3)
         ds = None
 
         # Calculate Resampling Factor
         resample_factor = 1.0
-        input_size_gb = os.path.getsize(args.input_file) / (1024**3)
+        input_size_gb = os.path.getsize(args.tif_file) / (1024**3)
 
         if args.downsize_percent:
             resample_factor = args.downsize_percent / 100.0
@@ -528,10 +528,10 @@ def main():
             print(f"🐘 Input file is large ({input_size_gb:.1f}GB). Defaulting to 30% downsizing to preserve disk space...")
             resample_factor = 0.30
 
-        input_filename = os.path.basename(args.input_file)
+        input_filename = os.path.basename(args.tif_file)
 
         # Step 1: Transformation (VRT)
-        input_to_tile = args.input_file
+        input_to_tile = args.tif_file
         temp_vrt = None
 
         # Check if any transform is needed
@@ -547,14 +547,14 @@ def main():
                 msg += f"Shift=({args.shift_x}, {args.shift_y})"
             print(msg)
 
-            temp_vrt = create_transformed_vrt(args.input_file, args.scale, args.anchor_x, args.anchor_y, args.shift_x, args.shift_y, resample_factor)
+            temp_vrt = create_transformed_vrt(args.tif_file, args.scale, args.anchor_x, args.anchor_y, args.shift_x, args.shift_y, resample_factor)
             input_to_tile = temp_vrt
 
         # Step 2: Directories
         if args.output_dir:
             output_dir = args.output_dir
         else:
-            input_abs = os.path.abspath(args.input_file)
+            input_abs = os.path.abspath(args.tif_file)
             input_dir = os.path.dirname(input_abs)
             base_name = os.path.splitext(input_filename)[0]
             output_dir = os.path.join(input_dir, f"{base_name}_tiles")
@@ -575,13 +575,13 @@ def main():
 
         conflicts = [f for f in potentially_conflicting if os.path.exists(f)]
 
-        if conflicts and not args.clobber:
+        if conflicts and not args.tif_clobber:
             print(f"Error: Conflicting files found in {output_dir}:")
             for c in conflicts[:5]:
                 print(f"  - {os.path.basename(c)}")
             if len(conflicts) > 5:
                 print(f"  ... and {len(conflicts)-5} more.")
-            print("Use --clobber to overwrite them.")
+            print("Use --tif-clobber to overwrite them.")
             sys.exit(1)
         elif conflicts:
              print(f"⚠️  Conflicts detected in {output_dir}. Overwriting relevant files...")

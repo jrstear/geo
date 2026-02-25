@@ -114,13 +114,13 @@ def run():
 
     # ── TIF positional arg + TIF-specific options ──────────────────────────────
     if tif_file:
-        args.append(tif_file)
+        args += ["--tif-file", tif_file]
 
         if data.get("output_dir"):
             args += ["--output-dir", data["output_dir"]]
 
         if data.get("clobber"):
-            args.append("--clobber")
+            args.append("--tif-clobber")
 
         add_arg("downsize_percent", "--downsize-percent")
         add_arg("tile_size", "--tile-size")
