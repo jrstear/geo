@@ -6,7 +6,7 @@ Stages:
   B1  parse_emlid_csv()           Parse Emlid Reach CSV (all solution statuses).
   B1  read_image_exif_batch()     Batch exiftool read for all images in parallel.
   B1  match_images_to_gcps()      Footprint-based image↔GCP association.
-  B2  project_pixel_mode_a()      EXIF-based nadir pinhole projection.
+  B2  project_pixel_mode_a()      EXIF-based pinhole projection (nadir + oblique).
   B2  project_pixel_mode_b()      reconstruction.json-based projection (optional).
   B3  run_pipeline()              Full pipeline: B1 → B2 → write outputs.
 """
@@ -319,14 +319,26 @@ def project_pixel_mode_a(exif: dict, gcp: dict) -> Optional[Tuple[float, float]]
     """
     Project GCP world coordinates to pixel (px, py) using EXIF-only camera model.
 
-    Uses nadir pinhole projection with GimbalYaw rotation and GimbalRoll flip.
-    Validated: mean 73.6 px error at 7–99 m AGL (see docs/dji_m3e_camera_model.md).
+    Handles both nadir (pitch ≈ -90°) and oblique cameras via a full 3D rotation
+    matrix derived from gimbal pitch (θ) and yaw (ψ):
+
+        X_cam (image right) = ( cos(ψ),        -sin(ψ),         0     )
+        Z_cam (optical axis) = ( cos(θ)·sin(ψ),  cos(θ)·cos(ψ),  sin(θ))
+        Y_cam (image down)   = ( sin(θ)·sin(ψ),  sin(θ)·cos(ψ), -cos(θ))
+                             = Z_cam × X_cam
+
+    At θ = -90° this degenerates to the original nadir formula.
+    GimbalRoll = 180° flips both X and Y axes (opposite-facing mount).
+
+    Validated (nadir): mean 73.6 px error at 7–99 m AGL
+    (see docs/dji_m3e_camera_model.md).
 
     Returns (px, py) in image pixel space, or None if GCP is behind/out of frame.
     """
     cam_lat   = exif['lat']
     cam_lon   = exif['lon']
-    cam_alt   = exif.get('abs_alt')       # WGS84 ellipsoidal, metres
+    cam_alt   = exif.get('abs_alt')        # WGS84 ellipsoidal, metres
+    pitch_deg = exif.get('gimbal_pitch', -90.0) or -90.0   # default nadir
     yaw_deg   = exif.get('gimbal_yaw')
     roll_deg  = exif.get('gimbal_roll')
     focal_mm  = exif.get('focal_mm')
@@ -334,11 +346,10 @@ def project_pixel_mode_a(exif: dict, gcp: dict) -> Optional[Tuple[float, float]]
     img_w     = exif.get('img_w')
     img_h     = exif.get('img_h')
 
-    gcp_lat      = gcp['lat']
-    gcp_lon      = gcp['lon']
-    gcp_alt      = gcp.get('ellip_alt_m')  # WGS84 ellipsoidal, metres
+    gcp_lat   = gcp['lat']
+    gcp_lon   = gcp['lon']
+    gcp_alt   = gcp.get('ellip_alt_m')    # WGS84 ellipsoidal, metres
 
-    # Require all essential parameters
     if any(v is None for v in [cam_alt, gcp_alt, yaw_deg, roll_deg,
                                 focal_mm, focal35, img_w, img_h]):
         return None
@@ -357,24 +368,31 @@ def project_pixel_mode_a(exif: dict, gcp: dict) -> Optional[Tuple[float, float]]
     mid_lat = math.radians((cam_lat + gcp_lat) / 2)
     dE = (gcp_lon - cam_lon) * METERS_PER_DEG_LAT * math.cos(mid_lat)
     dN = (gcp_lat - cam_lat) * METERS_PER_DEG_LAT
-    dU = gcp_alt - cam_alt   # negative when GCP is below camera
+    dU = gcp_alt - cam_alt
 
-    if dU >= 0:
-        return None  # GCP at or above camera
+    # --- 3D camera axes in ENU ---
+    psi   = math.radians(yaw_deg)
+    theta = math.radians(pitch_deg)
+    cp, sp = math.cos(psi),   math.sin(psi)
+    ct, st = math.cos(theta), math.sin(theta)
 
-    # --- Camera axes in ENU (nadir, pitch = −90°) ---
-    psi = math.radians(yaw_deg)
-    Xx, Xy =  math.cos(psi), -math.sin(psi)   # X_cam (image right)
-    Yx, Yy = -math.sin(psi), -math.cos(psi)   # Y_cam (image down)
+    # X_cam: image right — always horizontal
+    Xc = ( cp, -sp, 0.0)
+    # Z_cam: optical axis (look direction, positive into scene)
+    Zc = (ct * sp, ct * cp,  st)
+    # Y_cam: image down = Z_cam × X_cam
+    Yc = (st * sp, st * cp, -ct)
 
-    if abs(roll_deg - 180.0) < 1.0:
-        # Roll=180: camera rotated 180° around optical axis; flip both axes
-        Xx, Xy, Yx, Yy = -Xx, -Xy, -Yx, -Yy
+    # Roll=180°: camera mounted flipped 180° around optical axis
+    flip = -1.0 if abs(roll_deg - 180.0) < 1.0 else 1.0
 
     # --- Camera-frame coordinates ---
-    cam_x = Xx * dE + Xy * dN
-    cam_y = Yx * dE + Yy * dN
-    cam_z = -dU   # positive into scene
+    cam_x = flip * (Xc[0]*dE + Xc[1]*dN + Xc[2]*dU)
+    cam_y = flip * (Yc[0]*dE + Yc[1]*dN + Yc[2]*dU)
+    cam_z =         Zc[0]*dE + Zc[1]*dN + Zc[2]*dU   # depth; not flipped
+
+    if cam_z <= 0:
+        return None  # GCP behind or at camera plane
 
     # --- Pinhole projection ---
     px = fx * cam_x / cam_z + cx
