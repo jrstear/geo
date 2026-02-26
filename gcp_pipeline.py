@@ -3,7 +3,7 @@
 GCP estimation pipeline — replaces gcp.py.
 
 Stages:
-  B1  parse_emlid_csv()           Parse Emlid Reach CSV, filter FIX-only points.
+  B1  parse_emlid_csv()           Parse Emlid Reach CSV (all solution statuses).
   B1  read_image_exif_batch()     Batch exiftool read for all images in parallel.
   B1  match_images_to_gcps()      Footprint-based image↔GCP association.
   B2  project_pixel_mode_a()      EXIF-based nadir pinhole projection.
@@ -17,7 +17,8 @@ import math
 import os
 import subprocess
 import sys
-from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -37,17 +38,20 @@ def parse_emlid_csv(csv_path: str) -> List[dict]:
     """
     Parse an Emlid Reach CSV and return a list of GCP dicts.
 
-    Returns only FIX-quality points. Each dict has:
-        label          : str   (Name column)
-        lat            : float (WGS84 degrees)
-        lon            : float (WGS84 degrees)
-        ellip_alt_m    : float (WGS84 ellipsoidal height, metres)
-        easting        : float (projected X in CRS units)
-        northing       : float (projected Y in CRS units)
-        elevation      : float (projected Z / geoid height in CRS units)
-        cs_name        : str   (CRS description from CS name column)
+    All points are returned regardless of Solution status (FIX, FLOAT, SINGLE).
+    The status is preserved in the 'solution_status' key so callers can filter
+    or annotate as needed. Each dict has:
+        label           : str   (Name column)
+        lat             : float (WGS84 degrees)
+        lon             : float (WGS84 degrees)
+        ellip_alt_m     : float (WGS84 ellipsoidal height, metres)
+        easting         : float (projected X in CRS units)
+        northing        : float (projected Y in CRS units)
+        elevation       : float (projected Z / geoid height in CRS units)
+        cs_name         : str   (CRS description from CS name column)
+        solution_status : str   (e.g. 'FIX', 'FLOAT', 'SINGLE', or '')
 
-    Raises ValueError if no FIX points are found.
+    Raises ValueError if no valid rows are found.
     """
     gcps = []
     with open(csv_path, newline='', encoding='utf-8-sig') as f:
@@ -80,22 +84,19 @@ def parse_emlid_csv(csv_path: str) -> List[dict]:
             )
 
         for row in reader:
-            # Filter: FIX only
-            if col_status and row.get(col_status, '').strip().upper() != 'FIX':
-                continue
-
             try:
                 gcp = {
-                    'label':       (row.get(col_name) or '').strip(),
-                    'lat':         float(row[col_lat]),
-                    'lon':         float(row[col_lon]),
-                    'ellip_alt_m': float(row[col_ellip]) * FT_TO_M if col_ellip else None,
-                    'easting':     float(row[col_east])  if col_east  else None,
-                    'northing':    float(row[col_north]) if col_north else None,
-                    'elevation':   float(row[col_elev])  if col_elev  else None,
-                    'cs_name':     (row.get(col_cs) or '').strip(),
+                    'label':           (row.get(col_name) or '').strip(),
+                    'lat':             float(row[col_lat]),
+                    'lon':             float(row[col_lon]),
+                    'ellip_alt_m':     float(row[col_ellip]) * FT_TO_M if col_ellip else None,
+                    'easting':         float(row[col_east])  if col_east  else None,
+                    'northing':        float(row[col_north]) if col_north else None,
+                    'elevation':       float(row[col_elev])  if col_elev  else None,
+                    'cs_name':         (row.get(col_cs) or '').strip(),
+                    'solution_status': (row.get(col_status) or '').strip().upper() if col_status else '',
                 }
-            except (ValueError, KeyError) as e:
+            except (ValueError, KeyError):
                 continue   # skip malformed rows
 
             if not gcp['label']:
@@ -105,8 +106,8 @@ def parse_emlid_csv(csv_path: str) -> List[dict]:
 
     if not gcps:
         raise ValueError(
-            f"No FIX-quality GCP points found in {csv_path}. "
-            "Check that the Solution status column contains 'FIX' rows."
+            f"No valid GCP points found in {csv_path}. "
+            f"Headers found: {headers}"
         )
     return gcps
 
@@ -269,8 +270,10 @@ def match_images_to_gcps(exif_map: Dict[str, dict],
     total = len(task_args)
     completed = 0
 
-    with Pool(threads) as pool:
-        for result in pool.imap_unordered(_footprint_worker, task_args):
+    if threads == 1 or total <= 1:
+        # Sequential path: no pool overhead, fork-safe for gunicorn/web contexts
+        for args in task_args:
+            result = _footprint_worker(args)
             completed += 1
             if result is not None:
                 fname, labels = result
@@ -279,6 +282,21 @@ def match_images_to_gcps(exif_map: Dict[str, dict],
                 pct = 100 * completed / total
                 print(f"  footprint match {pct:5.1f}%  ({completed}/{total})",
                       end='\r', flush=True)
+    else:
+        # ThreadPoolExecutor: threads are fork-safe (no fork-of-fork risk), and
+        # avoid multiprocessing.Pool deadlocks inside gunicorn/preloaded workers.
+        # For CPU-bound footprint math the GIL limits true parallelism, but for
+        # typical dataset sizes this is negligible.
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            for result in executor.map(_footprint_worker, task_args):
+                completed += 1
+                if result is not None:
+                    fname, labels = result
+                    image_to_gcps[fname] = labels
+                if completed % max(1, total // 10) == 0 or completed == total:
+                    pct = 100 * completed / total
+                    print(f"  footprint match {pct:5.1f}%  ({completed}/{total})",
+                          end='\r', flush=True)
 
     print()  # newline after progress
     return image_to_gcps
@@ -429,37 +447,100 @@ def project_pixel_mode_b(gcp: dict,
 # B3 — Pipeline Runner + Output Writers
 # ---------------------------------------------------------------------------
 
-def _write_gcpeditpro(gcps: List[dict]) -> str:
+def _cs_name_to_epsg(cs_name: str) -> Optional[str]:
     """
-    Write gcpeditpro.txt content from GCP list.
+    Convert an Emlid CS name string to an EPSG code string (e.g. 'EPSG:6531').
 
-    Format (space-separated):
-        easting northing elevation gcp_label
+    For compound CRS like:
+      "NAD83(2011) / New Mexico Central (ftUS) + NAVD88(GEOID18) height (ftUS)"
+    splits on ' + ' and uses only the horizontal (first) component.
+
+    Returns None if pyproj is unavailable or the name cannot be resolved.
     """
-    lines = []
-    for gcp in gcps:
-        e = gcp.get('easting')
-        n = gcp.get('northing')
-        z = gcp.get('elevation')
-        label = gcp['label']
-        if e is None or n is None or z is None:
+    if not cs_name:
+        return None
+    try:
+        from pyproj import CRS
+    except ImportError:
+        return None
+
+    # Try horizontal component first (compound CRS split on ' + ')
+    candidates = [cs_name.split(' + ')[0].strip(), cs_name]
+    for candidate in candidates:
+        try:
+            crs = CRS.from_user_input(candidate)
+            epsg = crs.to_epsg()
+            if epsg:
+                return f'EPSG:{epsg}'
+        except Exception:
             continue
-        lines.append(f"{e} {n} {z} {label}")
-    return '\n'.join(lines) + '\n' if lines else ''
+    return None
 
 
-def _write_estimates_json(
+def _write_gcpeditpro(gcps: List[dict],
+                      estimates: Dict[str, Dict[str, dict]]) -> str:
+    """
+    Write gcpeditpro.txt in gcp_list.txt format (GCPEditorPro / OpenDroneMap).
+
+    Prefers projected coordinates (easting, northing, elevation) from the Emlid
+    CSV over WGS-84 lat/lon, because GCPEditorPro expects the same projected
+    coordinate system that the surveyor used.  The PROJ/EPSG header is derived
+    from the Emlid CS name column via pyproj; falls back to the raw cs_name
+    string, then to WGS-84 if projected coords are absent.
+
+    Line 1: EPSG:xxxx or PROJ string
+    Lines 2+: geo_x geo_y geo_z px py image_name gcp_label  (one per image)
+    """
+    gcp_by_label = {g['label']: g for g in gcps}
+
+    # Prefer projected easting/northing/elevation when available
+    use_projected = any(
+        g.get('easting') is not None
+        and g.get('northing') is not None
+        and g.get('elevation') is not None
+        for g in gcps
+    )
+
+    rows = []
+    for gcp_label, img_map in estimates.items():
+        gcp = gcp_by_label.get(gcp_label)
+        if not gcp:
+            continue
+        if use_projected:
+            x, y, z = gcp.get('easting'), gcp.get('northing'), gcp.get('elevation')
+        else:
+            x, y, z = gcp.get('lon'), gcp.get('lat'), gcp.get('ellip_alt_m')
+        if None in (x, y, z):
+            continue
+        for img_name, est in img_map.items():
+            rows.append(
+                f"{x:.4f} {y:.4f} {z:.4f} "
+                f"{est['px']:.2f} {est['py']:.2f} "
+                f"{img_name} {gcp_label}"
+            )
+
+    if not rows:
+        return ''
+
+    if use_projected:
+        cs_name = gcps[0].get('cs_name', '')
+        proj = _cs_name_to_epsg(cs_name) or cs_name or '+proj=longlat +datum=WGS84 +no_defs'
+    else:
+        proj = '+proj=longlat +datum=WGS84 +no_defs'
+
+    return proj + '\n' + '\n'.join(rows) + '\n'
+
+
+def _compute_estimates_mode_a(
         image_to_gcps: Dict[str, List[str]],
         exif_map: Dict[str, dict],
-        gcp_by_label: Dict[str, dict],
-        mode: str = 'exif') -> str:
+        gcp_by_label: Dict[str, dict]) -> Dict[str, Dict[str, dict]]:
     """
-    Build estimates JSON: {gcpLabel: {imgFilename: {px, py, mode}}}
+    Compute pixel estimates for all (image, GCP) pairs using Mode A (EXIF).
 
-    Only includes entries where projection succeeded (px/py not None).
+    Returns {gcpLabel: {imgFilename: {px, py, mode}}}
     """
     estimates: Dict[str, Dict[str, dict]] = {}
-
     for fname, gcp_labels in image_to_gcps.items():
         exif = exif_map.get(fname)
         if exif is None:
@@ -474,9 +555,8 @@ def _write_estimates_json(
             px, py = result
             if label not in estimates:
                 estimates[label] = {}
-            estimates[label][fname] = {'px': px, 'py': py, 'mode': mode}
-
-    return json.dumps(estimates, indent=2)
+            estimates[label][fname] = {'px': px, 'py': py, 'mode': 'exif'}
+    return estimates
 
 
 def run_pipeline(images_dir: str,
@@ -496,7 +576,7 @@ def run_pipeline(images_dir: str,
     # B1 — Parse inputs
     print("Parsing Emlid CSV...")
     gcps = parse_emlid_csv(emlid_csv_path)
-    print(f"  {len(gcps)} FIX GCPs")
+    print(f"  {len(gcps)} GCPs")
 
     print(f"Reading EXIF from {images_dir}...")
     exif_map = read_image_exif_batch(images_dir)
@@ -524,16 +604,14 @@ def run_pipeline(images_dir: str,
         except Exception as e:
             print(f"  WARNING: failed to load reconstruction: {e}. Using Mode A only.")
 
-    # B3 — Build outputs
+    # B3 — Compute pixel estimates
     print("Projecting pixels and writing outputs...")
-    gcpeditpro_txt = _write_gcpeditpro(gcps)
-
     if reconstruction:
         ref = reconstruction['reference_lla']
         shots = reconstruction.get('shots', {})
         cameras = reconstruction.get('cameras', {})
-        # Use Mode B where available, fall back to Mode A
-        estimates_b: Dict[str, Dict[str, dict]] = {}
+        # Mode B where available, Mode A fallback
+        estimates: Dict[str, Dict[str, dict]] = {}
         for fname, gcp_labels in image_to_gcps.items():
             exif = exif_map.get(fname)
             shot = shots.get(fname)
@@ -553,14 +631,15 @@ def run_pipeline(images_dir: str,
                     mode_used = 'exif'
                 if result is not None:
                     px, py = result
-                    if label not in estimates_b:
-                        estimates_b[label] = {}
-                    estimates_b[label][fname] = {'px': px, 'py': py, 'mode': mode_used}
-        estimates_json = json.dumps(estimates_b, indent=2)
+                    if label not in estimates:
+                        estimates[label] = {}
+                    estimates[label][fname] = {'px': px, 'py': py, 'mode': mode_used}
     else:
-        estimates_json = _write_estimates_json(
-            image_to_gcps, exif_map, gcp_by_label, mode='exif'
-        )
+        estimates = _compute_estimates_mode_a(image_to_gcps, exif_map, gcp_by_label)
+
+    # B3 — Write outputs
+    gcpeditpro_txt = _write_gcpeditpro(gcps, estimates)
+    estimates_json = json.dumps(estimates, indent=2)
 
     return gcpeditpro_txt, estimates_json
 
