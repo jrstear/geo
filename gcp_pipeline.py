@@ -477,10 +477,10 @@ def _cs_name_to_epsg(cs_name: str) -> Optional[str]:
     return None
 
 
-def _write_gcpeditpro(gcps: List[dict],
-                      estimates: Dict[str, Dict[str, dict]]) -> str:
+def _write_gcp_list(gcps: List[dict],
+                    estimates: Dict[str, Dict[str, dict]]) -> str:
     """
-    Write gcpeditpro.txt in gcp_list.txt format (GCPEditorPro / OpenDroneMap).
+    Build gcp_list.txt content for GCPEditorPro / OpenDroneMap.
 
     Prefers projected coordinates (easting, northing, elevation) from the Emlid
     CSV over WGS-84 lat/lon, because GCPEditorPro expects the same projected
@@ -531,6 +531,20 @@ def _write_gcpeditpro(gcps: List[dict],
     return proj + '\n' + '\n'.join(rows) + '\n'
 
 
+def _write_pix4d(estimates: Dict[str, Dict[str, dict]]) -> str:
+    """
+    Build pix4d.txt content: GCP image position file for Pix4D.
+
+    Comma-separated with header; one row per (image, GCP) pair.
+    Columns: Filename,Label,PixelX,PixelY
+    """
+    rows = ['Filename,Label,PixelX,PixelY']
+    for gcp_label, img_map in estimates.items():
+        for img_name, est in img_map.items():
+            rows.append(f"{img_name},{gcp_label},{est['px']:.2f},{est['py']:.2f}")
+    return '\n'.join(rows) + '\n' if len(rows) > 1 else ''
+
+
 def _compute_estimates_mode_a(
         image_to_gcps: Dict[str, List[str]],
         exif_map: Dict[str, dict],
@@ -567,7 +581,7 @@ def run_pipeline(images_dir: str,
     """
     Full pipeline: B1 → B2 → B3.
 
-    Returns (gcpeditpro_txt_content, estimates_json_content).
+    Returns (gcp_txt_content, estimates_json_content).
 
     If reconstruction_path is provided and valid, Mode B projection is used
     for images that have a matching shot in the reconstruction. All remaining
@@ -638,10 +652,10 @@ def run_pipeline(images_dir: str,
         estimates = _compute_estimates_mode_a(image_to_gcps, exif_map, gcp_by_label)
 
     # B3 — Write outputs
-    gcpeditpro_txt = _write_gcpeditpro(gcps, estimates)
+    gcp_txt = _write_gcp_list(gcps, estimates)
     estimates_json = json.dumps(estimates, indent=2)
 
-    return gcpeditpro_txt, estimates_json
+    return gcp_txt, estimates_json
 
 
 # ---------------------------------------------------------------------------
@@ -651,14 +665,14 @@ def run_pipeline(images_dir: str,
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(
-        description='GCP estimation pipeline: Emlid CSV + drone images → gcpeditpro.txt + estimates.json'
+        description='GCP estimation pipeline: Emlid CSV + drone images → gcpeditpro.txt + gcpeditpro.json + pix4d.txt'
     )
     parser.add_argument('emlid_csv',  help='Emlid CSV file path')
     parser.add_argument('image_dir',  help='Directory of drone images')
     parser.add_argument('--reconstruction', default=None,
                         help='Path to opensfm/reconstruction.json (enables Mode B)')
     parser.add_argument('--out-dir',  default='.',
-                        help='Output directory for gcpeditpro.txt and estimates.json (default: .)')
+                        help='Output directory for gcpeditpro.txt, gcpeditpro.json, and pix4d.txt (default: .)')
     parser.add_argument('--radius',   type=float, default=50.0,
                         help='Fallback footprint radius in metres (default 50)')
     parser.add_argument('--threads',  type=int,   default=0,
@@ -687,7 +701,7 @@ if __name__ == '__main__':
         for fname, labels in sorted(image_to_gcps.items()):
             print(f'  {fname}: {labels}')
     else:
-        gcpeditpro_txt, estimates_json = run_pipeline(
+        gcp_txt, estimates_json = run_pipeline(
             images_dir=args.image_dir,
             emlid_csv_path=args.emlid_csv,
             reconstruction_path=args.reconstruction,
@@ -698,11 +712,14 @@ if __name__ == '__main__':
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        gcp_out = out_dir / 'gcpeditpro.txt'
-        est_out = out_dir / 'gcpeditpro.estimates.json'
+        gcp_out    = out_dir / 'gcpeditpro.txt'
+        est_out    = out_dir / 'gcpeditpro.json'
+        pix4d_out  = out_dir / 'pix4d.txt'
 
-        gcp_out.write_text(gcpeditpro_txt)
+        gcp_out.write_text(gcp_txt)
         est_out.write_text(estimates_json)
+        pix4d_out.write_text(_write_pix4d(json.loads(estimates_json)))
 
         print(f'\nWrote {gcp_out}')
         print(f'Wrote {est_out}')
+        print(f'Wrote {pix4d_out}')
