@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Tuple
 METERS_PER_DEG_LAT = 111319.9
 FULL_FRAME_DIAG_MM = math.sqrt(36**2 + 24**2)   # 43.267 mm
 FT_TO_M = 0.3048
+NADIR_TOL_DEG = 10.0   # pitch within 10° of -90° is treated as nadir
 
 # ---------------------------------------------------------------------------
 # B1 — Emlid CSV Parser
@@ -306,6 +307,14 @@ def match_images_to_gcps(exif_map: Dict[str, dict],
 # B2 — Pixel Projection
 # ---------------------------------------------------------------------------
 
+def is_nadir(exif: dict) -> bool:
+    """Return True if the image pitch is within NADIR_TOL_DEG of straight down (-90°)."""
+    pitch = exif.get('gimbal_pitch')
+    if pitch is None:
+        return True   # no pitch data → assume nadir (legacy behaviour)
+    return abs(pitch + 90.0) <= NADIR_TOL_DEG
+
+
 def project_pixel_mode_a(exif: dict, gcp: dict) -> Optional[Tuple[float, float]]:
     """
     Project GCP world coordinates to pixel (px, py) using EXIF-only camera model.
@@ -548,16 +557,23 @@ def _write_pix4d(estimates: Dict[str, Dict[str, dict]]) -> str:
 def _compute_estimates_mode_a(
         image_to_gcps: Dict[str, List[str]],
         exif_map: Dict[str, dict],
-        gcp_by_label: Dict[str, dict]) -> Dict[str, Dict[str, dict]]:
+        gcp_by_label: Dict[str, dict],
+        nadir_only: bool = False) -> Dict[str, Dict[str, dict]]:
     """
     Compute pixel estimates for all (image, GCP) pairs using Mode A (EXIF).
+
+    nadir_only: if True, skip images whose gimbal pitch is not near -90°.
 
     Returns {gcpLabel: {imgFilename: {px, py, mode}}}
     """
     estimates: Dict[str, Dict[str, dict]] = {}
+    skipped_oblique = 0
     for fname, gcp_labels in image_to_gcps.items():
         exif = exif_map.get(fname)
         if exif is None:
+            continue
+        if nadir_only and not is_nadir(exif):
+            skipped_oblique += 1
             continue
         for label in gcp_labels:
             gcp = gcp_by_label.get(label)
@@ -570,6 +586,8 @@ def _compute_estimates_mode_a(
             if label not in estimates:
                 estimates[label] = {}
             estimates[label][fname] = {'px': px, 'py': py, 'mode': 'exif'}
+    if nadir_only and skipped_oblique:
+        print(f"  --nadir-only: skipped {skipped_oblique} oblique image(s)")
     return estimates
 
 
@@ -577,7 +595,8 @@ def run_pipeline(images_dir: str,
                  emlid_csv_path: str,
                  reconstruction_path: Optional[str] = None,
                  fallback_radius_m: float = 50.0,
-                 threads: int = 0) -> Tuple[str, str]:
+                 threads: int = 0,
+                 nadir_only: bool = False) -> Tuple[str, str]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -586,6 +605,8 @@ def run_pipeline(images_dir: str,
     If reconstruction_path is provided and valid, Mode B projection is used
     for images that have a matching shot in the reconstruction. All remaining
     images use Mode A (EXIF-based).
+
+    nadir_only: skip images whose gimbal pitch is not near -90°.
     """
     # B1 — Parse inputs
     print("Parsing Emlid CSV...")
@@ -626,8 +647,12 @@ def run_pipeline(images_dir: str,
         cameras = reconstruction.get('cameras', {})
         # Mode B where available, Mode A fallback
         estimates: Dict[str, Dict[str, dict]] = {}
+        skipped_oblique = 0
         for fname, gcp_labels in image_to_gcps.items():
             exif = exif_map.get(fname)
+            if nadir_only and exif and not is_nadir(exif):
+                skipped_oblique += 1
+                continue
             shot = shots.get(fname)
             for label in gcp_labels:
                 gcp = gcp_by_label.get(label)
@@ -648,8 +673,11 @@ def run_pipeline(images_dir: str,
                     if label not in estimates:
                         estimates[label] = {}
                     estimates[label][fname] = {'px': px, 'py': py, 'mode': mode_used}
+        if nadir_only and skipped_oblique:
+            print(f"  --nadir-only: skipped {skipped_oblique} oblique image(s)")
     else:
-        estimates = _compute_estimates_mode_a(image_to_gcps, exif_map, gcp_by_label)
+        estimates = _compute_estimates_mode_a(image_to_gcps, exif_map, gcp_by_label,
+                                              nadir_only=nadir_only)
 
     # B3 — Write outputs
     gcp_txt = _write_gcp_list(gcps, estimates)
@@ -677,6 +705,8 @@ if __name__ == '__main__':
                         help='Fallback footprint radius in metres (default 50)')
     parser.add_argument('--threads',  type=int,   default=0,
                         help='Worker threads (default: all CPUs)')
+    parser.add_argument('--nadir-only', action='store_true',
+                        help=f'Skip oblique images (gimbal pitch not within {NADIR_TOL_DEG}° of -90°)')
     parser.add_argument('--b1-only',  action='store_true',
                         help='Run B1 only (footprint match) and print results without writing files')
     args = parser.parse_args()
@@ -707,6 +737,7 @@ if __name__ == '__main__':
             reconstruction_path=args.reconstruction,
             fallback_radius_m=args.radius,
             threads=args.threads,
+            nadir_only=args.nadir_only,
         )
 
         out_dir = Path(args.out_dir)
