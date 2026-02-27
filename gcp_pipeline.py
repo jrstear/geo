@@ -516,8 +516,15 @@ def _write_gcp_list(gcps: List[dict],
     string, then to WGS-84 if projected coords are absent.
 
     Line 1: EPSG:xxxx or PROJ string
-    Lines 2+: geo_x geo_y geo_z px py image_name gcp_label  (one per image)
+    Lines 2+: geo_x\tgeo_y\tgeo_z\tpx\tpy\timage_name\tgcp_label  (one per image)
+
+    Tab-separated with trailing zeros stripped to match GCPEditorPro's download format,
+    enabling plain diff comparison between pipeline output and confirmed GCP download.
     """
+    def _fmt(v, decimals):
+        """Format float to fixed decimals, stripping trailing zeros."""
+        return f"{v:.{decimals}f}".rstrip('0').rstrip('.')
+
     gcp_by_label = {g['label']: g for g in gcps}
 
     # Prefer projected easting/northing/elevation when available
@@ -540,11 +547,11 @@ def _write_gcp_list(gcps: List[dict],
         if None in (x, y, z):
             continue
         for img_name, est in img_map.items():
-            rows.append(
-                f"{x:.4f} {y:.4f} {z:.4f} "
-                f"{est['px']:.2f} {est['py']:.2f} "
-                f"{img_name} {gcp_label}"
-            )
+            rows.append('\t'.join([
+                _fmt(x, 3), _fmt(y, 3), _fmt(z, 3),
+                _fmt(est['px'], 2), _fmt(est['py'], 2),
+                img_name, gcp_label,
+            ]))
 
     if not rows:
         return ''
