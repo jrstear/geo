@@ -81,7 +81,7 @@ def main():
                 processed_path = os.path.join(args.processed, tifs[0])
                 print(f"Note: No index.vrt found, using sample tile: {tifs[0]}")
             else:
-                print(f"Error: Directory contains no valid rasters.")
+                print("Error: Directory contains no valid rasters.")
                 sys.exit(1)
     elif os.path.isfile(args.processed) and args.processed.lower().endswith('.vrt'):
         # If user pointed directly to index.vrt, the container is the out_dir
@@ -140,7 +140,7 @@ def main():
         print(f"Scale:      {avg_scale:.8f}")
     
     if abs(shift_x) < 1e-3 and abs(shift_y) < 1e-3:
-        print(f"Origin Shift: (No Shift)")
+        print("Origin Shift: (No Shift)")
     else:
         print(f"Origin Shift: X={shift_x:+.4f}, Y={shift_y:+.4f}")
     
@@ -159,7 +159,7 @@ def main():
     drift_h = proc['envelope'][2] - orig['envelope'][2] * avg_scale
     
     if abs(drift_w) < 1e-2 and abs(drift_h) < 1e-2:
-        print(f"Edge Drift:   (No Drift)")
+        print("Edge Drift:   (No Drift)")
     else:
         print(f"Edge Drift:   Easting={drift_w:+.3f}, Northing={drift_h:+.3f}")
     print("-" * 80)

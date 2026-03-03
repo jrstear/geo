@@ -14,9 +14,7 @@ Stages:
 import csv
 import json
 import math
-import os
 import subprocess
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 from pathlib import Path
@@ -224,7 +222,6 @@ def _footprint_worker(args):
         # Derive diagonal FOV from sensor geometry
         scale = focal_mm / focal35
         sensor_diag = FULL_FRAME_DIAG_MM * scale
-        aspect = img_w / img_h
         half_diag_fov = math.atan(sensor_diag / (2 * focal_mm))
         radius = agl * math.tan(half_diag_fov)
     else:
