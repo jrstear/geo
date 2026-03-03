@@ -1,0 +1,7 @@
+pyproj
+scipy
+numpy
+# exiftool is a system dependency called via subprocess — install with:
+#   apt-get install libimage-exiftool-perl   (Debian/Ubuntu/Docker)
+#   brew install exiftool                     (macOS)
+# No pip package is available for exiftool.
