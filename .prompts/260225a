@@ -1,0 +1,10 @@
+# initialize
+let's initialize claude code for this repository, in particular i want to
+1) use beads to track issues
+2) use docs/ for (design, plan, etc) .md files
+i previously setup AGENTS.md for other agents, but i think best practice for claude
+is to add an appropriate skill.  i don't know which skill or how to do that, but see
+https://github.com/steveyegge/beads/tree/main/examples
+ 
+https://github.com/steveyegge/beads/issues/429 gives
+urls to such, but those links get 404s.  
