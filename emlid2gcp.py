@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GCP estimation pipeline — replaces gcp.py.
+emlid2gcp — Emlid CSV + drone images → GCP pixel estimates.
 
 Stages:
   B1  parse_emlid_csv()           Parse Emlid Reach CSV (all solution statuses).
@@ -535,8 +535,15 @@ def _write_gcp_list(gcps: List[dict],
         for g in gcps
     )
 
+    labels = list(estimates.keys())
+    if labels and all(lbl.lstrip('-').isdigit() for lbl in labels):
+        labels.sort(key=lambda lbl: int(lbl))
+    else:
+        labels.sort()
+
     rows = []
-    for gcp_label, img_map in estimates.items():
+    for gcp_label in labels:
+        img_map = estimates[gcp_label]
         gcp = gcp_by_label.get(gcp_label)
         if not gcp:
             continue
@@ -717,7 +724,7 @@ def run_pipeline(images_dir: str,
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(
-        description='GCP estimation pipeline: Emlid CSV + drone images → gcpeditpro.txt + gcpeditpro.json + pix4d.txt'
+        description='emlid2gcp: Emlid CSV + drone images → gcpeditpro.txt + pix4d.txt'
     )
     parser.add_argument('emlid_csv',  help='Emlid CSV file path')
     parser.add_argument('image_dir',  help='Directory of drone images')
