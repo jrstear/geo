@@ -1,0 +1,3 @@
+# Un-ignore the pre-built bundle so it ships with the plugin zip
+!build/
+!build/**
