@@ -4,8 +4,8 @@ High-performance GDAL wrappers for fast and easy preparation of large-scale GeoT
 
 ## 🛠 Setup & Quick Start
 
-1.  **Environment**: Run `bash setup_env.sh` to create the `gdal` environment.
-2.  **Activate**: Run `conda activate gdal`.
+1.  **Environment**: Run `bash setup.sh` to create the `geo` environment.
+2.  **Activate**: Run `conda activate geo`.
 3.  **Launch GUI**: Run `./app.py` and open `http://127.0.0.1:5001` in your browser.
 
 ---
@@ -55,7 +55,7 @@ python compare.py <original.tif> <processed_dir_or_vrt>
 
 ## 🏁 Example CLI Workflow
 
-Assuming the `gdal` environment is active:
+Assuming the `geo` environment is active:
 
 ```bash
 # Package with 0.9996 scale and +100ft shift, downsizing to 25% resolution
