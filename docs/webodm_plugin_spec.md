@@ -117,7 +117,7 @@ Inputs:
 Outputs: `(gcpeditpro_txt_content: str, estimates_json_content: str)`
 
 This module is the primary thing that replaces `gcp.py`. The geo-repo pipeline
-(gcp_pipeline.py) and this module should share code or this one should import
+(emlid2gcp.py) and this module should share code or this one should import
 from there (if the geo repo is importable).
 
 ## Async Considerations
