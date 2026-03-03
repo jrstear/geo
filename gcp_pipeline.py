@@ -516,7 +516,7 @@ def _write_gcp_list(gcps: List[dict],
     string, then to WGS-84 if projected coords are absent.
 
     Line 1: EPSG:xxxx or PROJ string
-    Lines 2+: geo_x\tgeo_y\tgeo_z\tpx\tpy\timage_name\tgcp_label  (one per image)
+    Lines 2+: geo_x\tgeo_y\tgeo_z\tpx\tpy\timage_name\tgcp_label\tconfidence  (one per image)
 
     Tab-separated with trailing zeros stripped to match GCPEditorPro's download format,
     enabling plain diff comparison between pipeline output and confirmed GCP download.
@@ -550,7 +550,7 @@ def _write_gcp_list(gcps: List[dict],
             rows.append('\t'.join([
                 _fmt(x, 3), _fmt(y, 3), _fmt(z, 3),
                 _fmt(est['px'], 2), _fmt(est['py'], 2),
-                img_name, gcp_label,
+                img_name, gcp_label, 'projection',
             ]))
 
     if not rows:
