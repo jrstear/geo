@@ -1,0 +1,43 @@
+app.py is simply a gui for package.py, follow that pattern (eg the
+latter does the work, the former is just a gui for it).
+use libraries where it makes sense (rather than reimplement fresh), eg note how
+package.py uses gdal.  note that shift/scale should only affect the x,y
+coordinates  - NOT elevation (z, the third coordinate).
+
+# contour
+i want to also be able to scale/shift a contour file, add that to package
+and app.  
+
+the output .dxf file should have the same basename as the input except
+that it should have an additional string appended, by default _geo, but
+allow the user to change that if they want (eg in.dxf -> in_geo.dxf).
+
+i would most like to read/write .dxf files, but if that is problematic
+we can do .geojson instead. see files in the below for examples
+/Volumes/Stratus JRS/corona/examples
+
+
+# TIN
+i also want to be able to scale and shift a TIN.xml file, eg see
+the .xml file in the above folder.
+
+i also want the user to specify a max size for output xml files, and
+if the input file is larger than that, break it into tiles with _N
+appended to the basename, see
+/Volumes/Stratus JRS/BSN/raton/deliverables/tin/raton_tin_grounded.xml
+and 
+"/Volumes/Stratus JRS/BSN/raton/deliverables/tin/tin tiles/" for examples.
+this is consistent with the naming of .tif tiles.
+
+if the xml must be tiled, create an output directory using the same default
+rules as the .tif tiling, but allow the user to change it (similar to .tif
+tiles gui).
+
+
+# GUI
+the current gui is only about .tif, but the above adds boxes.  it'd be nice
+if related boxes were grouped (eg tif, contour, TIN), with a separate
+section for the shared parameters (eg scale factor and anchor x/y, shift x/y).
+let the user fill any/all of tif, contour, tin, and options, and upon pressing
+Run do all the work.  I like having the console at right show progress, contour 
+and tin progress should be shown likewise.

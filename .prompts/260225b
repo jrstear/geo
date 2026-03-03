@@ -1,0 +1,90 @@
+i want to make gcp identification with webodm and gcp editor pro more automatic,
+help me make a well-structured plan for this and save it into beads (bd), including
+implementation order info stored via issue dependencies, and details in docs/ (eg research,
+design, detailed implementation plans, etc).  embarrassingly parallelizable
+tasks should be done on multi-cores.
+
+my thoughts on how this could work are:
+1- in webodm (which i have checked out in ~/git/webodm) open a project, add a folder of images
+(eg raw/ in ~/stratus/ghostrider/) and a csv file from emlid (eg emlid.csv in same folder)
+
+2- then press a button to automatically create a file like gcpeditpro.txt (a
+header line for coord system, then one line per gcp with physical x,y,z, image
+i,j,filename, and gcp id.  i would think that should do this via an odm command
+(local or remote depending on config)
+
+2a- use geometry to identify which images contain which gcps (eg see gcp.py, which
+was my initial foray into this topic, perhaps there are better tools in odm for this?).
+note that some images can contain multiple gcps.  note that gcp.py does this in
+parallel on all available cores.
+
+2b- given the list of gcp's and corresponding images from 2a,
+use pinhole camera geometry to estimate the i,j pixel location of each gcp.
+eg the camera location and orientation is known from image metadata, and gcp
+x,y,z is known, so the pixel should be estimable.  this seems parallelizable as
+one thread per gcp,image pair, with results saved into the txt file.
+
+3- use GCP Editor Pro (see ~/git/GCPEditorPro/) to refine the txt file
+
+3a- given the txt from 2, the list of images for each gcp is known, so selecting a
+gcp shows it's images and estimated gcp location (instead of the current ui which
+requires selection of images for each gcp, which was why i wrote gcp.py).
+
+3b- i don't like the ui for tagging images for a selected gcp (images-tagger view), in particular 
+that all the images are so small (no way to see a larger version), making the
+pan/zoom controls too touchy.  so i want to add an optional mode that shows a column
+(maybe a grid would fit, but lets just start with a single column)
+of zoomed-in sub-images on the left, where each sub-image is centered at the
+current gcp i,j pixel, then at the right shows the full image of the selected
+sub-image.  by default the top left sub-image is selected, but the user can
+click on a different sub-image, which brings up the full image at right (so
+they can see more context etc).  the full image should have similar pan/zoom
+controls, but also a +/- button at bottom right for less-touchy zooming (like
+google maps).
+
+ideally, the estimated i,j will result in the gcp showing at least partially in
+a given sub-image, in which case the user can simply pan the sub-image (if needed)
+and shift-click to refine the i,j location for the gcp.  or the user can click the image
+and do pan/zoom/shift-click in the larger image.  a shift-click in the larger image would
+update the coresponding sub-image.
+
+the ui should keep track of which gcp's have been manually refined (which could be a 
+simple confirmation, eg if the estimate was perfect which seems unlikely) and which ones
+have not, i'm thinking via color.  eg maybe gcp markers show in yellow until they are 
+shift-clicked by the user at which point they show in green.  and each
+sub-image should have a correspondingly-colored outline around it, providing
+quick visual of which images are done/not.  and something similar should show
+on the page listing all the gcp's, eg c/t where c is confirmed (in green) and t
+is total images in which that gcp is believed to be visible.
+
+4- add ability for the user to tune an gcp auto-detector, eg the sub-images with
+confirmed gcp's in them become the positive samples, and random sub-images without
+confirmed or estimated gcp's become negative samples.  GCPEditorPro/README.md
+provides some info on doing this, but i'd like to offer other classifiers eg
+see geo/docs/gcp_object_identification.md.  i guess different classifiers do best
+with different training sub-images, eg minimum sub-image that entirely contains the 
+gcp, or wider.  so it seems like after shift-clicking gcp's to confirm them, an additional
+step could be to select the sub-image bounds, either manually, or via some info about the
+the auto-classifier to be trained (which would then be used upon clicking "Detect GCPs").
+i can imagine needing to enable the user to select from a range of classifier types and
+corresponding parameters.  my first goal would be to support gcp targets of 9 orange
+clay-pigeons arranged in + shape, possibly oriented with one line aligned with north/south
+as an extra hint for the classifier. this relates to the earlier geometry comments,
+eg possibly the gcp estimator in step 2 could use geometry to identify images, estimate pixel,
+and auto-detect, possibly using north/south as additional hint.
+
+so in review, the purpose of this session is to work out plans for the above,
+and to save specs and coordination/implementation plans in beads and docs/ for use in
+later sessions (multiple parallel sub/agents if it makes sense, tracking/coordinating
+via beads assignments.  i expect to make enhancements to both webodm and gcp
+editor pro, in distinct branches, and to PR's to the original authors, so the
+plan can include recommended branch names as well.  i imagine that gcp.py will
+become unnecessary if all this works as imagined (removing it from geo can be a
+distant bd issue).
+
+ask questions to resolve open questions, needed additional details, etc.  challenge and
+confirm/explore my assumptions.  we can use research and/or plan sub-agents here as 
+appropriate, eg to explore the related code bases etc.  if so, include such tasking
+in beads (eg research odm's existing capabilities for auto-estimating gcp pixels
+in a set of images, research gcp editor pro code base to understand existing functionality
+and how to best add these features, etc).
