@@ -621,11 +621,11 @@ def run_pipeline(images_dir: str,
                  reconstruction_path: Optional[str] = None,
                  fallback_radius_m: float = 50.0,
                  threads: int = 0,
-                 nadir_only: bool = False) -> Tuple[str, str]:
+                 nadir_only: bool = False) -> Tuple[str, dict]:
     """
     Full pipeline: B1 → B2 → B3.
 
-    Returns (gcp_txt_content, estimates_json_content).
+    Returns (gcp_txt_content, estimates_dict).
 
     If reconstruction_path is provided and valid, Mode B projection is used
     for images that have a matching shot in the reconstruction. All remaining
@@ -706,9 +706,8 @@ def run_pipeline(images_dir: str,
 
     # B3 — Write outputs
     gcp_txt = _write_gcp_list(gcps, estimates)
-    estimates_json = json.dumps(estimates, indent=2)
 
-    return gcp_txt, estimates_json
+    return gcp_txt, estimates
 
 
 # ---------------------------------------------------------------------------
@@ -756,7 +755,7 @@ if __name__ == '__main__':
         for fname, labels in sorted(image_to_gcps.items()):
             print(f'  {fname}: {labels}')
     else:
-        gcp_txt, estimates_json = run_pipeline(
+        gcp_txt, estimates = run_pipeline(
             images_dir=args.image_dir,
             emlid_csv_path=args.emlid_csv,
             reconstruction_path=args.reconstruction,
@@ -768,14 +767,11 @@ if __name__ == '__main__':
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        gcp_out    = out_dir / 'gcpeditpro.txt'
-        est_out    = out_dir / 'gcpeditpro.json'
-        pix4d_out  = out_dir / 'pix4d.txt'
+        gcp_out   = out_dir / 'gcpeditpro.txt'
+        pix4d_out = out_dir / 'pix4d.txt'
 
         gcp_out.write_text(gcp_txt)
-        est_out.write_text(estimates_json)
-        pix4d_out.write_text(_write_pix4d(json.loads(estimates_json)))
+        pix4d_out.write_text(_write_pix4d(estimates))
 
         print(f'\nWrote {gcp_out}')
-        print(f'Wrote {est_out}')
         print(f'Wrote {pix4d_out}')
