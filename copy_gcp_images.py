@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
-# NOTE: WebODM's interactive GCP interface currently only supports a simplified 
-# 4-column CSV/TXT format (Label, Easting, Northing, Elevation) for initial 
-# loading. Providing additional columns like 'im_x', 'im_y', or 'image_name' 
-# during the initial import may result in a "No points" error in the UI.
+"""
+copy_gcp_images.py — Select and copy drone images that contain GCP points.
+
+Given an Emlid/survey GCP CSV and a directory of drone images, finds every
+image whose footprint overlaps a GCP location and copies them into labelled
+subdirectories under gcp_images/ alongside the source image directory.
+
+Also writes a proj4-prefixed GCP txt file (same name as the input CSV but
+with .txt extension) suitable for loading into WebODM's simple GCP interface.
+
+Note: CRS inference uses a fixed candidate list (New Mexico + UTM zones).
+For other regions, add the relevant EPSG codes to CANDIDATES.
+"""
 import csv
 import subprocess
 import sys
@@ -219,7 +228,7 @@ def infer_crs(img_centroid, gcp_centroid):
             if error < best_error:
                 best_error = error
                 best_epsg = epsg
-        except:
+        except Exception:
             continue
             
     return best_epsg
@@ -229,15 +238,17 @@ def infer_crs(img_centroid, gcp_centroid):
 # ------------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="GCP Inference and Image Selector for WebODM.")
-    parser.add_argument("gcp_csv", help="Input GCP CSV file.")
-    parser.add_argument("image_dir", help="Directory containing raw images.")
-    parser.add_argument("--radius", type=float, default=50.0, help="Fallback radius in meters (default 50.0)")
+    parser = argparse.ArgumentParser(
+        description="Select and copy drone images that contain GCP points into labelled subdirectories."
+    )
+    parser.add_argument("gcp_csv", help="GCP CSV file (Label, Easting, Northing, Elevation).")
+    parser.add_argument("image_dir", help="Directory containing raw drone images.")
+    parser.add_argument("--radius", type=float, default=50.0, help="Fallback footprint radius in meters when altitude is unavailable (default 50.0)")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--closest-three", action="store_true", help="Select only the three geographically closest GCPs")
-    group.add_argument("--select-points", help="Comma-separated list of GCP labels to use")
-    parser.add_argument("--no-output-dir", action="store_true", help="Do not create the gcp_images directory")
-    parser.add_argument("--threads", type=int, default=cpu_count(), help="Number of parallel threads")
+    group.add_argument("--closest-three", action="store_true", help="Use only the three geographically closest GCPs (smallest triangle perimeter)")
+    group.add_argument("--select-points", help="Comma-separated list of GCP labels to use (e.g. 1,3,5)")
+    parser.add_argument("--list-only", action="store_true", help="Find and report matching images but do not copy them")
+    parser.add_argument("--threads", type=int, default=cpu_count(), help="Number of parallel worker threads (default: all CPUs)")
     args = parser.parse_args()
 
     csv_path = Path(args.gcp_csv)
@@ -348,7 +359,7 @@ def main():
     print(f"📝 Generated GCP file: {output_txt}")
 
     # 6. Copy Images
-    if not args.no_output_dir and image_to_labels:
+    if not args.list_only and image_to_labels:
         gcp_img_dir = img_dir.parent / "gcp_images"
         if gcp_img_dir.exists():
             shutil.rmtree(gcp_img_dir)
@@ -370,7 +381,7 @@ def main():
             dst = target_dir / src.name
             shutil.copy2(src, dst)
             
-        print(f"✨ Finished copying images.")
+        print("✨ Finished copying images.")
 
 if __name__ == "__main__":
     main()

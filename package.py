@@ -283,7 +283,7 @@ def process_tin(input_path, scale, anchor_x, anchor_y, shift_x, shift_y,
         log_fn(f"  Writing: {out_path}")
         with open(out_path, 'w', encoding='utf-8') as f:
             f.write(new_content)
-        log_fn(f"  TIN transformation complete.")
+        log_fn("  TIN transformation complete.")
         return
 
     # ── Tiled case ─────────────────────────────────────────────────────────────
@@ -496,7 +496,7 @@ def main():
                     args.shift_x, args.shift_y,
                     args.tin_max_mb, args.tin_output_dir,
                     args.tin_suffix, print)
-        print(f"✨ TIN done.")
+        print("✨ TIN done.")
 
     # ── TIF processing ──────────────────────────────────────────────────────────
     if args.tif_file:

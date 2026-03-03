@@ -3,7 +3,6 @@ import os
 import subprocess
 import threading
 import queue
-import time
 import sys
 import re
 from flask import Flask, render_template, request, Response, jsonify
