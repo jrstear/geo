@@ -731,18 +731,18 @@ if __name__ == '__main__':
     parser.add_argument('--reconstruction', default=None,
                         help='Path to opensfm/reconstruction.json (enables Mode B)')
     parser.add_argument('--out-dir',  default='.',
-                        help='Output directory for gcpeditpro.txt, gcpeditpro.json, and pix4d.txt (default: .)')
+                        help='Output directory for gcpeditpro.txt and pix4d.txt (default: .)')
     parser.add_argument('--radius',   type=float, default=50.0,
                         help='Fallback footprint radius in metres (default 50)')
     parser.add_argument('--threads',  type=int,   default=0,
                         help='Worker threads (default: all CPUs)')
     parser.add_argument('--nadir-only', action='store_true',
                         help=f'Skip oblique images (gimbal pitch not within {NADIR_TOL_DEG}° of -90°)')
-    parser.add_argument('--b1-only',  action='store_true',
-                        help='Run B1 only (footprint match) and print results without writing files')
+    parser.add_argument('--match-only', action='store_true',
+                        help='Run image-to-GCP footprint matching only and print results without projecting pixels or writing files')
     args = parser.parse_args()
 
-    if args.b1_only:
+    if args.match_only:
         print(f'Parsing {args.emlid_csv}...')
         gcps = parse_emlid_csv(args.emlid_csv)
         print(f'  {len(gcps)} FIX GCPs: {[g["label"] for g in gcps]}')
