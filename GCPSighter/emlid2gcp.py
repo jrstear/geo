@@ -501,8 +501,152 @@ def _cs_name_to_epsg(cs_name: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Output ordering helpers
+# ---------------------------------------------------------------------------
+
+def _sort_gcps(gcps: List[dict], z_threshold: float) -> Tuple[List[dict], set]:
+    """Return (priority_ordered_gcps, z_critical_labels).
+
+    Structural priority:
+      Slot 1 — most distal from centroid (sets one anchor of the bounding box)
+      Slot 2 — most distal from slot 1   (defines global scale + orientation)
+      Slot 3 — max elevation             (only when z_range > z_threshold * xy_diagonal)
+      Slot 4 — min elevation             (same condition)
+      Next   — closest to centroid       (anti-doming centre pin)
+      Rest   — sorted by dist_from_centroid descending (perimeter-first redundancy)
+
+    z_critical_labels: labels of the max/min elevation GCPs (used for image ordering).
+    """
+    if len(gcps) <= 1:
+        return gcps[:], set()
+
+    def _xy(g):
+        if g.get('easting') is not None and g.get('northing') is not None:
+            return g['easting'], g['northing']
+        return g['lon'], g['lat']
+
+    def _z(g):
+        if g.get('elevation') is not None:
+            return g['elevation']
+        return g.get('ellip_alt_m') or 0.0
+
+    xs = [_xy(g)[0] for g in gcps]
+    ys = [_xy(g)[1] for g in gcps]
+    zs = [_z(g) for g in gcps]
+
+    cx = sum(xs) / len(xs)
+    cy = sum(ys) / len(ys)
+
+    xy_diag = math.sqrt((max(xs) - min(xs))**2 + (max(ys) - min(ys))**2) or 1.0
+    z_range = max(zs) - min(zs)
+    z_significant = z_range > z_threshold * xy_diag
+
+    # Z-critical: global elevation extremes (for image ordering, regardless of GCP slot).
+    # Computed from the full set before any slot assignment so that a GCP placed early
+    # (e.g. as the most-distal corner) is still identified as z_critical.
+    z_critical_labels: set = set()
+    if z_significant:
+        z_critical_labels.add(max(gcps, key=lambda g: _z(g))['label'])
+        z_critical_labels.add(min(gcps, key=lambda g: _z(g))['label'])
+
+    def dist2d(ax, ay, bx, by):
+        return math.sqrt((ax - bx)**2 + (ay - by)**2)
+
+    # Pool entries: (gcp_dict, x, y, z, dist_from_centroid)
+    pool = [
+        (g, _xy(g)[0], _xy(g)[1], _z(g), dist2d(_xy(g)[0], _xy(g)[1], cx, cy))
+        for g in gcps
+    ]
+
+    result = []
+
+    def pick(pool, key_fn):
+        """Pop and return the pool entry with the highest key_fn value."""
+        idx = max(range(len(pool)), key=lambda i: key_fn(pool[i]))
+        return pool.pop(idx)
+
+    # Slot 1: most distal from centroid
+    s1 = pick(pool, lambda item: item[4])
+    result.append(s1)
+
+    # Slot 2: most distal from slot 1
+    if pool:
+        s1x, s1y = s1[1], s1[2]
+        s2 = pick(pool, lambda item: dist2d(item[1], item[2], s1x, s1y))
+        result.append(s2)
+
+    # Slots 3+4: Z extremes (only when Z variation is significant, and only if not
+    # already placed in slots 1-2 as a distal point)
+    if z_significant and pool:
+        z_max = pick(pool, lambda item: item[3])
+        result.append(z_max)
+    if z_significant and pool:
+        z_min = pick(pool, lambda item: -item[3])
+        result.append(z_min)
+
+    # Next: closest to centroid (anti-doming centre pin)
+    if pool:
+        centre = pick(pool, lambda item: -item[4])
+        result.append(centre)
+
+    # Rest: perimeter-first (dist_from_centroid descending)
+    pool.sort(key=lambda item: -item[4])
+    result.extend(pool)
+
+    return [item[0] for item in result], z_critical_labels
+
+
+def _image_sort_score(px: float, py: float,
+                      img_w: Optional[int], img_h: Optional[int],
+                      gimbal_pitch: Optional[float],
+                      z_critical: bool) -> float:
+    """Return a sort score for one image (lower = higher priority).
+
+    score = normalized_dist_from_center + nadir_weight * (0 if nadir else 1)
+
+    nadir_weight = 1.0 for normal GCPs  → all nadir before any oblique
+    nadir_weight = 0.3 for Z-critical   → well-centred obliques interleave with nadirs,
+                                          naturally placing ~2-3 obliques in the top 8
+    """
+    if img_w and img_h:
+        half_diag = math.sqrt(img_w**2 + img_h**2) / 2.0
+        norm_dist = math.sqrt((px - img_w / 2.0)**2 + (py - img_h / 2.0)**2) / half_diag
+    else:
+        norm_dist = 0.5   # neutral fallback when dimensions unknown
+
+    if gimbal_pitch is None:
+        nadir_tier = 0    # assume nadir if pitch unavailable
+    else:
+        nadir_tier = 0 if abs(gimbal_pitch + 90.0) <= NADIR_TOL_DEG else 1
+
+    nadir_weight = 0.3 if z_critical else 1.0
+    return norm_dist + nadir_weight * nadir_tier
+
+
+def _sort_images_for_gcp(img_map: dict, exif_map: dict, z_critical: bool) -> List[str]:
+    """Return image filenames from img_map sorted by confidence score (best first)."""
+    def score(fname):
+        est  = img_map[fname]
+        exif = exif_map.get(fname, {})
+        return _image_sort_score(
+            est['px'], est['py'],
+            exif.get('img_w'), exif.get('img_h'),
+            exif.get('gimbal_pitch'),
+            z_critical,
+        )
+    return sorted(img_map.keys(), key=score)
+
+
+# ---------------------------------------------------------------------------
+# Output writers
+# ---------------------------------------------------------------------------
+
 def _write_gcp_list(gcps: List[dict],
-                    estimates: Dict[str, Dict[str, dict]]) -> str:
+                    estimates: Dict[str, Dict[str, dict]],
+                    sort_output: bool = True,
+                    z_threshold: float = 0.05,
+                    exif_map: Optional[Dict[str, dict]] = None) -> str:
     """
     Build gcp_list.txt content for GCPEditorPro / OpenDroneMap.
 
@@ -517,6 +661,10 @@ def _write_gcp_list(gcps: List[dict],
 
     Tab-separated with trailing zeros stripped to match GCPEditorPro's download format,
     enabling plain diff comparison between pipeline output and confirmed GCP download.
+
+    When sort_output=True, GCPs are ordered by structural priority (see _sort_gcps)
+    and images within each GCP are ordered by confidence score (see _sort_images_for_gcp).
+    When sort_output=False, GCPs appear in Emlid CSV order and images in match order.
     """
     def _fmt(v, decimals):
         """Format float to fixed decimals, stripping trailing zeros."""
@@ -532,17 +680,20 @@ def _write_gcp_list(gcps: List[dict],
         for g in gcps
     )
 
-    labels = list(estimates.keys())
-    if labels and all(lbl.lstrip('-').isdigit() for lbl in labels):
-        labels.sort(key=lambda lbl: int(lbl))
+    # Determine GCP order and which labels are Z-critical
+    estimate_labels = set(estimates.keys())
+    if sort_output:
+        gcps_with_estimates = [g for g in gcps if g['label'] in estimate_labels]
+        sorted_gcps, z_critical_labels = _sort_gcps(gcps_with_estimates, z_threshold)
     else:
-        labels.sort()
+        sorted_gcps = [g for g in gcps if g['label'] in estimate_labels]
+        z_critical_labels = set()
 
     rows = []
-    for gcp_label in labels:
-        img_map = estimates[gcp_label]
-        gcp = gcp_by_label.get(gcp_label)
-        if not gcp:
+    for gcp in sorted_gcps:
+        gcp_label = gcp['label']
+        img_map = estimates.get(gcp_label)
+        if not img_map:
             continue
         if use_projected:
             x, y, z = gcp.get('easting'), gcp.get('northing'), gcp.get('elevation')
@@ -550,7 +701,16 @@ def _write_gcp_list(gcps: List[dict],
             x, y, z = gcp.get('lon'), gcp.get('lat'), gcp.get('ellip_alt_m')
         if None in (x, y, z):
             continue
-        for img_name, est in img_map.items():
+
+        if sort_output and exif_map is not None:
+            ordered_images = _sort_images_for_gcp(
+                img_map, exif_map, gcp_label in z_critical_labels
+            )
+        else:
+            ordered_images = list(img_map.keys())
+
+        for img_name in ordered_images:
+            est = img_map[img_name]
             rows.append('\t'.join([
                 _fmt(x, 3), _fmt(y, 3), _fmt(z, 3),
                 _fmt(est['px'], 2), _fmt(est['py'], 2),
@@ -625,7 +785,9 @@ def run_pipeline(images_dir: str,
                  reconstruction_path: Optional[str] = None,
                  fallback_radius_m: float = 50.0,
                  threads: int = 0,
-                 nadir_only: bool = False) -> Tuple[str, dict]:
+                 nadir_only: bool = False,
+                 sort_output: bool = True,
+                 z_threshold: float = 0.05) -> Tuple[str, dict]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -635,7 +797,10 @@ def run_pipeline(images_dir: str,
     for images that have a matching shot in the reconstruction. All remaining
     images use Mode A (EXIF-based).
 
-    nadir_only: skip images whose gimbal pitch is not near -90°.
+    nadir_only:   skip images whose gimbal pitch is not near -90°.
+    sort_output:  order GCPs by structural priority and images by confidence score.
+    z_threshold:  fraction of XY diagonal; Z extremes get priority slots only above
+                  this ratio (default 0.05 = 5 %).
     """
     # B1 — Parse inputs
     print("Parsing Emlid CSV...")
@@ -709,7 +874,14 @@ def run_pipeline(images_dir: str,
                                               nadir_only=nadir_only)
 
     # B3 — Write outputs
-    gcp_txt = _write_gcp_list(gcps, estimates)
+    if sort_output:
+        print("Sorting output for optimal accuracy with minimal tagging...")
+    gcp_txt = _write_gcp_list(
+        gcps, estimates,
+        sort_output=sort_output,
+        z_threshold=z_threshold,
+        exif_map=exif_map,
+    )
 
     return gcp_txt, estimates
 
@@ -735,6 +907,10 @@ if __name__ == '__main__':
                         help='Worker threads (default: all CPUs)')
     parser.add_argument('--nadir-only', action='store_true',
                         help=f'Skip oblique images (gimbal pitch not within {NADIR_TOL_DEG}° of -90°)')
+    parser.add_argument('--no-sort', action='store_true',
+                        help='Output GCPs in Emlid CSV order and images in match order (disables structural priority sorting)')
+    parser.add_argument('--z-threshold', type=float, default=0.05,
+                        help='Fraction of XY diagonal; Z-extreme GCPs get priority slots only when Z range exceeds this ratio (default 0.05 = 5%%)')
     parser.add_argument('--match-only', action='store_true',
                         help='Run image-to-GCP footprint matching only and print results without projecting pixels or writing files')
     args = parser.parse_args()
@@ -766,6 +942,8 @@ if __name__ == '__main__':
             fallback_radius_m=args.radius,
             threads=args.threads,
             nadir_only=args.nadir_only,
+            sort_output=not args.no_sort,
+            z_threshold=args.z_threshold,
         )
 
         out_dir = Path(args.out_dir)
