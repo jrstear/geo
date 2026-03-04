@@ -43,16 +43,16 @@ model's geometry as quickly as possible with the fewest tags:
 | 2nd | Most distal from #1 | Defines global scale and orientation |
 | 3rd | Highest elevation *(hilly sites only)* | Prevents vertical drift upward |
 | 4th | Lowest elevation *(hilly sites only)* | Prevents vertical drift downward |
-| 5th | Closest to centroid | Anti-doming centre pin |
+| 5th | Closest to centroid | Anti-doming center pin |
 | 6th+ | Remaining, perimeter-first | Redundancy |
 
 Z-priority slots (3rd and 4th) activate only when the site's elevation range
 exceeds 5 % of the horizontal span.  Flat sites skip straight from 2nd to the
-centre pin.
+center pin.
 
 **Images within each GCP are sorted by confidence** — most reliable first:
-well-centred shots (less lens distortion) before edge shots, nadir before
-oblique for most GCPs.  For Z-critical GCPs (elevation extremes), well-centred
+well-centerd shots (less lens distortion) before edge shots, nadir before
+oblique for most GCPs.  For Z-critical GCPs (elevation extremes), well-centerd
 obliques are interleaved with nadirs early in the list because oblique angles
 provide the parallax that nails vertical accuracy.
 
@@ -85,7 +85,7 @@ gives you the best photogrammetric result for the least effort.**
 ## Step 3 — Confirm tags in the zoom view
 
 Switch to **zoom view** (toggle in the top-right of the tagger).  The zoom view
-shows a cropped sub-image centred on the pipeline's pixel estimate, with a
+shows a cropped sub-image centerd on the pipeline's pixel estimate, with a
 crosshair overlay.
 
 **Workflow for each GCP:**
@@ -122,7 +122,7 @@ The GCP map uses two pin styles:
 - **Other GCPs** — standard pins, no label, no ratio colouring.
 
 The map gives you an intuitive spatial read of your progress: you can see the
-two distal anchors at opposite corners of the site, the centre pin, the
+two distal anchors at opposite corners of the site, the center pin, the
 elevation extremes on high and low ground, and the additional perimeter points —
 and you can watch them turn green one by one as you work through the list.
 **Your goal is to get all 7 labelled pins to green.**
