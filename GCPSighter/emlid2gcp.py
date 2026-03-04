@@ -922,6 +922,10 @@ def _classify_gcps(gcps: List[dict],
 # ---------------------------------------------------------------------------
 
 _MAX_REFINE_RADIUS = 300   # hard cap: give up if no marker found beyond this radius (px)
+_MIN_AXIS_RATIO    = 2/3   # λ_min/λ_max threshold; components below this are too
+                           # elongated to be an X marker (lane lines score ~0.01–0.05).
+                           # Asymmetric or partially-occluded real markers may need
+                           # this lowered to ~0.3–0.4.
 
 
 def _refine_single(image_path: str, px: float, py: float,
@@ -1015,52 +1019,74 @@ def _refine_single(image_path: str, px: float, py: float,
         return None     # no marker signal detected
 
     # ------------------------------------------------------------------
-    # Stage 3b+3c — Connected components; select nearest; sanity check
+    # Stage 3b+3c — Connected components; iterate nearest-first through
+    # candidates until one passes all sanity and shape checks.
     # ------------------------------------------------------------------
     num_labels, labels_img = cv2.connectedComponents(
         marker_mask.astype(np.uint8), connectivity=8)
 
-    best_label = None
-    best_dist  = float('inf')
-    best_rows: Optional[np.ndarray] = None
-    best_cols: Optional[np.ndarray] = None
+    # Collect (distance_to_seed, rows, cols) for every component within
+    # max_radius, then sort nearest-first so the loop tries the most
+    # plausible candidate first.
+    candidates = []
     for lab in range(1, num_labels):
         r_idx, c_idx = np.where(labels_img == lab)
         d = float(np.sqrt((c_idx - sx) ** 2 + (r_idx - sy) ** 2).min())
-        if d < best_dist:
-            best_dist  = d
-            best_label = lab
-            best_rows  = r_idx
-            best_cols  = c_idx
+        if d <= max_radius:
+            candidates.append((d, r_idx, c_idx))
+    candidates.sort(key=lambda t: t[0])
 
-    if best_label is None or best_dist > max_radius:
+    comp_rows = comp_cols = None
+    pix_yx = centroid = centered = None
+    kept_eigvecs = None
+    max_pixels = (max_radius * 2) ** 2 // 3
+
+    for _d, r_idx, c_idx in candidates:
+        n = len(r_idx)
+        bh = int(r_idx.max() - r_idx.min() + 1)
+        bw = int(c_idx.max() - c_idx.min() + 1)
+
+        # Size and crude aspect-ratio sanity
+        if n < 20 or n > max_pixels:
+            continue
+        if max(bh, bw) / max(1, min(bh, bw)) > 15:
+            continue
+
+        # Eigenvalue ratio check: require two significant PCA axes.
+        # λ_min/λ_max ≥ _MIN_AXIS_RATIO rejects lane lines and other
+        # single-axis shapes while accepting X markers (ratio near 1).
+        # Eigenvectors are saved and reused in Stage 3d below.
+        if n >= 6:
+            pyx = np.column_stack([r_idx, c_idx]).astype(np.float64)
+            ctr = pyx.mean(axis=0)
+            cen = pyx - ctr
+            eigvals, eigvecs = np.linalg.eigh(np.cov(cen.T))
+            ratio = eigvals[0] / eigvals[1] if eigvals[1] > 1e-6 else 0.0
+            if ratio < _MIN_AXIS_RATIO:
+                continue   # too elongated — try next nearest component
+            comp_rows, comp_cols = r_idx, c_idx
+            pix_yx, centroid, centered, kept_eigvecs = pyx, ctr, cen, eigvecs
+        else:
+            comp_rows, comp_cols = r_idx, c_idx
+            pix_yx   = np.column_stack([r_idx, c_idx]).astype(np.float64)
+            centroid = pix_yx.mean(axis=0)
+            centered = pix_yx - centroid
+            kept_eigvecs = None
+        break
+
+    if comp_rows is None:
         return None
 
-    comp_rows, comp_cols = best_rows, best_cols     # type: ignore[assignment]
-    n_pix  = len(comp_rows)
-    bbox_h = int(comp_rows.max() - comp_rows.min() + 1)
-    bbox_w = int(comp_cols.max() - comp_cols.min() + 1)
-
-    # Sanity: too small (noise), too large (scene blob), extreme aspect ratio
-    if n_pix < 20:
-        return None
-    if n_pix > (max_radius * 2) ** 2 // 3:
-        return None
-    if max(bbox_h, bbox_w) / max(1, min(bbox_h, bbox_w)) > 15:
-        return None     # extreme elongation — not a plausible X marker
+    n_pix = len(comp_rows)
 
     # ------------------------------------------------------------------
     # Stage 3d — PCA arm-clustering → line intersection (sub-pixel centre)
     # ------------------------------------------------------------------
-    pix_yx   = np.column_stack([comp_rows, comp_cols]).astype(np.float64)
-    centroid = pix_yx.mean(axis=0)
-    centered = pix_yx - centroid
-
     refined_col = float(centroid[1])   # default: component centroid
     refined_row = float(centroid[0])
 
-    if n_pix >= 6:
-        _, eigvecs = np.linalg.eigh(np.cov(centered.T))
+    if n_pix >= 6 and kept_eigvecs is not None:
+        eigvecs = kept_eigvecs   # reuse computation from shape check above
         # eigvecs[:, 1] is the dominant principal direction (most variance)
         proj1    = centered @ eigvecs[:, 1]
         proj2    = centered @ eigvecs[:, 0]
@@ -1139,22 +1165,18 @@ def _refine_all_estimates(
     label_order = gcp_order if gcp_order else list(estimates.keys())
 
     tasks: List[Tuple] = []
-    skipped_spa = 0
+
     for gcp_label in label_order:
         img_map = estimates.get(gcp_label)
         if not img_map:
             continue
         # Skip SPA-* (spare) points — refinement cost is not justified.
         if gcp_label.startswith('SPA-'):
-            skipped_spa += len(img_map)
             continue
         for img_name, est in img_map.items():
             path = (exif_map.get(img_name) or {}).get('path')
             if path:
                 tasks.append((gcp_label, img_name, path, est['px'], est['py']))
-
-    if skipped_spa:
-        print(f"  Skipping {skipped_spa} SPA-* (GCP,image) pairs (spare GCPs).")
 
     if refine_limit > 0 and len(tasks) > refine_limit:
         print(f"  Limiting to {refine_limit} of {len(tasks)} (GCP,image) pairs (--refine-limit).")
