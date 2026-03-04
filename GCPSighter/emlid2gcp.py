@@ -553,7 +553,7 @@ def _sort_gcps(gcps: List[dict], z_threshold: float) -> Tuple[List[dict], set]:
       Slot 3 — max elevation             (only when z_range > z_threshold * xy_diagonal)
       Slot 4 — min elevation             (same condition)
       Next   — closest to centroid       (anti-doming centre pin)
-      Rest   — sorted by dist_from_centroid descending (perimeter-first redundancy)
+      Rest   — greedy farthest-from-any-selected (maximises spatial coverage)
 
     z_critical_labels: labels of the max/min elevation GCPs (used for image ordering).
     """
@@ -629,9 +629,16 @@ def _sort_gcps(gcps: List[dict], z_threshold: float) -> Tuple[List[dict], set]:
         centre = pick(pool, lambda item: -item[4])
         result.append(centre)
 
-    # Rest: perimeter-first (dist_from_centroid descending)
-    pool.sort(key=lambda item: -item[4])
-    result.extend(pool)
+    # Rest: greedy farthest-from-any-selected.
+    # At each step pick the unselected GCP whose minimum distance to any
+    # already-selected GCP is the largest.  This maximises spatial coverage
+    # across the survey area rather than simply re-visiting the perimeter,
+    # which can cause clustering when the bounding box has elongated arms.
+    while pool:
+        idx = max(range(len(pool)),
+                  key=lambda i: min(dist2d(pool[i][1], pool[i][2], r[1], r[2])
+                                    for r in result))
+        result.append(pool.pop(idx))
 
     return [item[0] for item in result], z_critical_labels
 
