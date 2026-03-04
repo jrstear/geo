@@ -505,6 +505,45 @@ def _cs_name_to_epsg(cs_name: str) -> Optional[str]:
 # Output ordering helpers
 # ---------------------------------------------------------------------------
 
+def _gcp_distance_m(g1: dict, g2: dict) -> float:
+    """Flat-earth distance between two GCPs in metres, using lat/lon."""
+    mid_lat = math.radians((g1['lat'] + g2['lat']) / 2)
+    dE = (g1['lon'] - g2['lon']) * METERS_PER_DEG_LAT * math.cos(mid_lat)
+    dN = (g1['lat'] - g2['lat']) * METERS_PER_DEG_LAT
+    return math.sqrt(dE**2 + dN**2)
+
+
+def _separate_near_duplicates(
+        gcps: List[dict],
+        tolerance_m: float) -> Tuple[List[dict], List[Tuple[dict, dict, float]]]:
+    """Split GCPs into (main, demoted) based on spatial proximity.
+
+    Iterates in original order.  The first GCP of each near-duplicate cluster
+    is kept in *main*; any subsequent GCP within *tolerance_m* of ANY accepted
+    main GCP is moved to *demoted*.
+
+    Returns:
+        main    : GCPs to be passed to the structural sorter.
+        demoted : List of (dup_gcp, closest_main_gcp, distance_m) triples, in
+                  original-file order — appended at the end of the output.
+    """
+    main: List[dict] = []
+    demoted: List[Tuple[dict, dict, float]] = []
+    for gcp in gcps:
+        closest_m: Optional[dict] = None
+        closest_d = float('inf')
+        for accepted in main:
+            d = _gcp_distance_m(gcp, accepted)
+            if d < closest_d:
+                closest_d = d
+                closest_m = accepted
+        if closest_d < tolerance_m:
+            demoted.append((gcp, closest_m, closest_d))
+        else:
+            main.append(gcp)
+    return main, demoted
+
+
 def _sort_gcps(gcps: List[dict], z_threshold: float) -> Tuple[List[dict], set]:
     """Return (priority_ordered_gcps, z_critical_labels).
 
@@ -646,7 +685,9 @@ def _write_gcp_list(gcps: List[dict],
                     estimates: Dict[str, Dict[str, dict]],
                     sort_output: bool = True,
                     z_threshold: float = 0.05,
-                    exif_map: Optional[Dict[str, dict]] = None) -> str:
+                    exif_map: Optional[Dict[str, dict]] = None,
+                    dup_tolerance_m: float = 1.0,
+                    omit_duplicates: bool = False) -> str:
     """
     Build gcp_list.txt content for GCPEditorPro / OpenDroneMap.
 
@@ -684,7 +725,25 @@ def _write_gcp_list(gcps: List[dict],
     estimate_labels = set(estimates.keys())
     if sort_output:
         gcps_with_estimates = [g for g in gcps if g['label'] in estimate_labels]
-        sorted_gcps, z_critical_labels = _sort_gcps(gcps_with_estimates, z_threshold)
+
+        # Near-duplicate detection: demote co-located GCPs to end of list before sorting.
+        if dup_tolerance_m > 0:
+            gcps_main, demoted_triples = _separate_near_duplicates(
+                gcps_with_estimates, dup_tolerance_m)
+            for dup, closest, dist in demoted_triples:
+                if omit_duplicates:
+                    print(f"  WARNING: GCP '{dup['label']}' is within {dist:.3f} m of "
+                          f"'{closest['label']}' — omitted from output (--omit-duplicates)")
+                else:
+                    print(f"  WARNING: GCP '{dup['label']}' is within {dist:.3f} m of "
+                          f"'{closest['label']}' — demoted to end of list")
+        else:
+            gcps_main, demoted_triples = gcps_with_estimates, []
+
+        sorted_gcps, z_critical_labels = _sort_gcps(gcps_main, z_threshold)
+
+        if not omit_duplicates:
+            sorted_gcps += [dup for dup, _, _ in demoted_triples]
     else:
         sorted_gcps = [g for g in gcps if g['label'] in estimate_labels]
         z_critical_labels = set()
@@ -787,7 +846,9 @@ def run_pipeline(images_dir: str,
                  threads: int = 0,
                  nadir_only: bool = False,
                  sort_output: bool = True,
-                 z_threshold: float = 0.05) -> Tuple[str, dict]:
+                 z_threshold: float = 0.05,
+                 dup_tolerance_m: float = 1.0,
+                 omit_duplicates: bool = False) -> Tuple[str, dict]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -881,6 +942,8 @@ def run_pipeline(images_dir: str,
         sort_output=sort_output,
         z_threshold=z_threshold,
         exif_map=exif_map,
+        dup_tolerance_m=dup_tolerance_m,
+        omit_duplicates=omit_duplicates,
     )
 
     return gcp_txt, estimates
@@ -911,6 +974,11 @@ if __name__ == '__main__':
                         help='Output GCPs in Emlid CSV order and images in match order (disables structural priority sorting)')
     parser.add_argument('--z-threshold', type=float, default=0.05,
                         help='Fraction of XY diagonal; Z-extreme GCPs get priority slots only when Z range exceeds this ratio (default 0.05 = 5%%)')
+    parser.add_argument('--dup-tolerance', type=float, default=1.0,
+                        help='GCPs within this distance (metres) of a higher-priority GCP are '
+                             'demoted to the end of the output list. Set to 0 to disable. (default: 1.0)')
+    parser.add_argument('--omit-duplicates', action='store_true',
+                        help='Omit near-duplicate GCPs from the output entirely instead of demoting them to the end')
     parser.add_argument('--match-only', action='store_true',
                         help='Run image-to-GCP footprint matching only and print results without projecting pixels or writing files')
     args = parser.parse_args()
@@ -944,6 +1012,8 @@ if __name__ == '__main__':
             nadir_only=args.nadir_only,
             sort_output=not args.no_sort,
             z_threshold=args.z_threshold,
+            dup_tolerance_m=args.dup_tolerance,
+            omit_duplicates=args.omit_duplicates,
         )
 
         out_dir = Path(args.out_dir)
