@@ -8,7 +8,8 @@ Stages:
   B1  match_images_to_gcps()      Footprint-based image↔GCP association.
   B2  project_pixel_mode_a()      EXIF-based pinhole projection (nadir + oblique).
   B2  project_pixel_mode_b()      reconstruction.json-based projection (optional).
-  B3  run_pipeline()              Full pipeline: B1 → B2 → write outputs.
+  B3  _refine_all_estimates()     Color-based pixel refinement + marker bbox (optional).
+  B3  run_pipeline()              Full pipeline: B1 → B2 → B3 → write outputs.
 """
 
 import csv
@@ -749,13 +750,6 @@ def _write_gcp_list(gcps: List[dict],
         if dup_tolerance_m > 0:
             gcps_main, demoted_triples = _separate_near_duplicates(
                 gcps_with_estimates, dup_tolerance_m)
-            for dup, closest, dist in demoted_triples:
-                if omit_duplicates:
-                    print(f"  WARNING: GCP '{dup['label']}' is within {dist:.3f} m of "
-                          f"'{closest['label']}' — omitted from output (--omit-duplicates)")
-                else:
-                    print(f"  WARNING: GCP '{dup['label']}' is within {dist:.3f} m of "
-                          f"'{closest['label']}' — demoted to end of list")
         else:
             gcps_main, demoted_triples = gcps_with_estimates, []
 
@@ -789,11 +783,15 @@ def _write_gcp_list(gcps: List[dict],
 
         for img_name in ordered_images:
             est = img_map[img_name]
-            rows.append('\t'.join([
+            cols = [
                 _fmt(x, 3), _fmt(y, 3), _fmt(z, 3),
                 _fmt(est['px'], 2), _fmt(est['py'], 2),
-                img_name, gcp_label, 'projection',
-            ]))
+                img_name, gcp_label,
+                est.get('confidence', 'projection'),
+            ]
+            if est.get('marker_bbox'):
+                cols.append(est['marker_bbox'])
+            rows.append('\t'.join(cols))
 
     if not rows:
         return ''
@@ -858,6 +856,342 @@ def _compute_estimates_mode_a(
     return estimates
 
 
+# ---------------------------------------------------------------------------
+# GCP Classification (geo-12w)
+# ---------------------------------------------------------------------------
+
+def _classify_gcps(gcps: List[dict],
+                   estimates: Dict[str, Dict[str, dict]],
+                   sorted_labels: List[str],
+                   n_control: int = 7,
+                   n_check: int = 7) -> None:
+    """
+    Rename GCP labels in-place with GCP-* / CHK-* / SPA-* prefixes.
+
+    sorted_labels: GCP labels in structural priority order (output of _sort_gcps,
+                   with demoted near-duplicates appended at the end).
+
+    Prefix assignment:
+        Positions 1 .. n_control                → GCP-{base}   (control)
+        Positions n_control+1 .. n_control+n_check → CHK-{base}  (check)
+        Positions n_control+n_check+1 .. end    → SPA-{base}   (spare)
+
+    Any existing GCP-*/CHK-*/SPA-* prefix is stripped before re-applying so
+    that re-running the pipeline on already-prefixed labels is idempotent.
+    """
+    def _base(label: str) -> str:
+        for pfx in ('GCP-', 'CHK-', 'SPA-'):
+            if label.startswith(pfx):
+                return label[len(pfx):]
+        return label
+
+    rename: Dict[str, str] = {}
+    for rank, label in enumerate(sorted_labels, start=1):
+        base = _base(label)
+        if rank <= n_control:
+            rename[label] = f'GCP-{base}'
+        elif rank <= n_control + n_check:
+            rename[label] = f'CHK-{base}'
+        else:
+            rename[label] = f'SPA-{base}'
+
+    # Any GCP not in sorted_labels is a near-duplicate demoted outside the main
+    # sort — give it SPA- prefix too.
+    for gcp in gcps:
+        if gcp['label'] not in rename:
+            rename[gcp['label']] = f'SPA-{_base(gcp["label"])}'
+
+    # Apply to gcps list (in-place mutation of dicts)
+    for gcp in gcps:
+        gcp['label'] = rename.get(gcp['label'], gcp['label'])
+
+    # Apply to estimates dict (rename keys)
+    for old_label in list(estimates.keys()):
+        new_label = rename.get(old_label)
+        if new_label and new_label != old_label:
+            estimates[new_label] = estimates.pop(old_label)
+
+    n_ctrl = sum(1 for g in gcps if g['label'].startswith('GCP-'))
+    n_chk  = sum(1 for g in gcps if g['label'].startswith('CHK-'))
+    n_spa  = sum(1 for g in gcps if g['label'].startswith('SPA-'))
+    print(f"  {n_ctrl} GCP-* (control),  {n_chk} CHK-* (check),  {n_spa} SPA-* (spare)")
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 — Pixel Refinement (geo-56c)
+# ---------------------------------------------------------------------------
+
+_MAX_REFINE_RADIUS = 300   # hard cap: give up if no marker found beyond this radius (px)
+
+
+def _refine_single(image_path: str, px: float, py: float,
+                   max_radius: int = _MAX_REFINE_RADIUS) -> Optional[dict]:
+    """
+    Refine a single (image, GCP) pixel estimate using color analysis.
+
+    Implements the four-stage pipeline from docs/gcp_object_identification.md §3:
+      3a — Anomaly-relative color detection (LAB space); HSV-mask fallback.
+      3b — Nearest connected-component search within max_radius (expanding-annuli
+           equivalent: select the component whose closest pixel is nearest the seed).
+      3c — Connected-component capture + sanity checks (size, aspect ratio).
+      3d — PCA arm-clustering + cv2.fitLine intersection for sub-pixel centre.
+
+    Returns a dict {px, py, confidence, marker_bbox} on success, or None on failure.
+    The caller retains the original estimate on failure.
+
+    Requires: opencv-python, numpy.
+    """
+    try:
+        import cv2          # type: ignore
+        import numpy as np
+    except ImportError:
+        return None
+
+    img = cv2.imread(image_path)
+    if img is None:
+        return None
+    ih, iw = img.shape[:2]
+    px_i = int(round(max(0.0, min(float(iw - 1), px))))
+    py_i = int(round(max(0.0, min(float(ih - 1), py))))
+
+    # Crop a working window to avoid analysing the entire image.
+    # Extra 110 px beyond max_radius allows background-ring sampling.
+    pad  = max_radius + 110
+    cx1  = max(0,  px_i - pad)
+    cy1  = max(0,  py_i - pad)
+    cx2  = min(iw, px_i + pad)
+    cy2  = min(ih, py_i + pad)
+    crop = img[cy1:cy2, cx1:cx2]
+    ch, cw = crop.shape[:2]
+
+    # Seed position in crop coordinates
+    sx = px_i - cx1
+    sy = py_i - cy1
+
+    # Pre-compute per-pixel distance from seed
+    ys, xs = np.mgrid[0:ch, 0:cw]
+    dists = np.sqrt((xs - sx) ** 2 + (ys - sy) ** 2).astype(np.float32)
+
+    # ------------------------------------------------------------------
+    # Stage 3a — Anomaly-relative detection (LAB space)
+    # Background ring: 55–90 px from seed — far enough to miss a typical
+    # GCP marker but within the crop window.
+    # ------------------------------------------------------------------
+    marker_mask: Optional[np.ndarray] = None
+    ring_mask = (dists >= 55) & (dists <= 90)
+    if int(ring_mask.sum()) >= 50:
+        crop_lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
+        ring_lab = crop_lab[ring_mask].astype(np.float32)
+        bg_mean  = ring_lab.mean(axis=0)
+        bg_std   = ring_lab.std(axis=0) + 1.0          # avoid divide-by-zero
+        lab_flat  = crop_lab.reshape(-1, 3).astype(np.float32)
+        deviation = np.abs(lab_flat - bg_mean) / bg_std
+        anomaly   = (deviation.max(axis=1) > 2.5).reshape(ch, cw)
+        anomaly  &= (dists <= max_radius)
+        if int(anomaly.sum()) >= 15:
+            marker_mask = anomaly
+
+    # Stage 3a fallback — per-colour HSV masks (orange → red → white)
+    if marker_mask is None or int(marker_mask.sum()) < 15:
+        crop_hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        within_r = dists <= max_radius
+
+        def _hsv(lo, hi):
+            return cv2.inRange(crop_hsv,
+                               np.array(lo, np.uint8),
+                               np.array(hi, np.uint8)).astype(bool) & within_r
+
+        for cand in [
+            _hsv([5,  120, 120], [25, 255, 255]),                          # orange
+            _hsv([0,  120, 120], [5,  255, 255]) |                         # red
+            _hsv([170, 120, 120], [180, 255, 255]),
+            _hsv([0,   0,  200], [180, 40,  255]),                         # white
+        ]:
+            if int(cand.sum()) >= 15:
+                marker_mask = cand
+                break
+
+    if marker_mask is None or int(marker_mask.sum()) < 15:
+        return None     # no marker signal detected
+
+    # ------------------------------------------------------------------
+    # Stage 3b+3c — Connected components; select nearest; sanity check
+    # ------------------------------------------------------------------
+    num_labels, labels_img = cv2.connectedComponents(
+        marker_mask.astype(np.uint8), connectivity=8)
+
+    best_label = None
+    best_dist  = float('inf')
+    best_rows: Optional[np.ndarray] = None
+    best_cols: Optional[np.ndarray] = None
+    for lab in range(1, num_labels):
+        r_idx, c_idx = np.where(labels_img == lab)
+        d = float(np.sqrt((c_idx - sx) ** 2 + (r_idx - sy) ** 2).min())
+        if d < best_dist:
+            best_dist  = d
+            best_label = lab
+            best_rows  = r_idx
+            best_cols  = c_idx
+
+    if best_label is None or best_dist > max_radius:
+        return None
+
+    comp_rows, comp_cols = best_rows, best_cols     # type: ignore[assignment]
+    n_pix  = len(comp_rows)
+    bbox_h = int(comp_rows.max() - comp_rows.min() + 1)
+    bbox_w = int(comp_cols.max() - comp_cols.min() + 1)
+
+    # Sanity: too small (noise), too large (scene blob), extreme aspect ratio
+    if n_pix < 20:
+        return None
+    if n_pix > (max_radius * 2) ** 2 // 3:
+        return None
+    if max(bbox_h, bbox_w) / max(1, min(bbox_h, bbox_w)) > 15:
+        return None     # extreme elongation — not a plausible X marker
+
+    # ------------------------------------------------------------------
+    # Stage 3d — PCA arm-clustering → line intersection (sub-pixel centre)
+    # ------------------------------------------------------------------
+    pix_yx   = np.column_stack([comp_rows, comp_cols]).astype(np.float64)
+    centroid = pix_yx.mean(axis=0)
+    centered = pix_yx - centroid
+
+    refined_col = float(centroid[1])   # default: component centroid
+    refined_row = float(centroid[0])
+
+    if n_pix >= 6:
+        _, eigvecs = np.linalg.eigh(np.cov(centered.T))
+        # eigvecs[:, 1] is the dominant principal direction (most variance)
+        proj1    = centered @ eigvecs[:, 1]
+        proj2    = centered @ eigvecs[:, 0]
+        arm1_idx = np.abs(proj1) >= np.abs(proj2)
+        arm1_pts = pix_yx[arm1_idx]
+        arm2_pts = pix_yx[~arm1_idx]
+
+        if len(arm1_pts) >= 3 and len(arm2_pts) >= 3:
+            # cv2.fitLine expects (x, y) = (col, row) → swap axes
+            pts1 = arm1_pts[:, ::-1].astype(np.float32).reshape(-1, 1, 2)
+            pts2 = arm2_pts[:, ::-1].astype(np.float32).reshape(-1, 1, 2)
+            l1 = cv2.fitLine(pts1, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+            l2 = cv2.fitLine(pts2, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+
+            vx1, vy1, x0_1, y0_1 = (float(v) for v in l1)
+            vx2, vy2, x0_2, y0_2 = (float(v) for v in l2)
+            denom = vx1 * vy2 - vy1 * vx2
+            if abs(denom) > 1e-6:
+                dx = x0_2 - x0_1
+                dy = y0_2 - y0_1
+                t  = (dx * vy2 - dy * vx2) / denom
+                xi = x0_1 + t * vx1
+                yi = y0_1 + t * vy1
+                # Accept intersection only when it falls inside the component bbox
+                if (float(comp_cols.min()) <= xi <= float(comp_cols.max()) and
+                        float(comp_rows.min()) <= yi <= float(comp_rows.max())):
+                    refined_col = xi
+                    refined_row = yi
+
+    # Map refined crop-coords back to full-image pixel coords
+    full_px = refined_col + cx1
+    full_py = refined_row + cy1
+
+    bbox_x1 = int(comp_cols.min()) + cx1
+    bbox_y1 = int(comp_rows.min()) + cy1
+    bbox_x2 = int(comp_cols.max()) + cx1
+    bbox_y2 = int(comp_rows.max()) + cy1
+
+    return {
+        'px':          full_px,
+        'py':          full_py,
+        'confidence':  'color_refined',
+        'marker_bbox': f'{bbox_x1},{bbox_y1},{bbox_x2},{bbox_y2}',
+    }
+
+
+def _refine_all_estimates(
+        estimates: Dict[str, Dict[str, dict]],
+        exif_map: Dict[str, dict],
+        threads: int = 0,
+        gcp_order: Optional[List[str]] = None,
+        refine_limit: int = 0) -> Dict[str, Dict[str, dict]]:
+    """
+    Run Stage-3 pixel refinement on (GCP, image) pairs in *estimates*.
+
+    gcp_order:    GCP labels in structural priority order.  When provided, tasks
+                  are built in this order so that --refine-limit keeps the most
+                  important pairs.  If None, dict insertion order is used.
+    refine_limit: if > 0, process at most this many (gcp, image) pairs.
+                  SPA-* pairs are excluded before the limit is applied, so the
+                  limit budget is spent entirely on GCP-* and CHK-* pairs.
+
+    Estimates that succeed have their px/py replaced with the refined sub-pixel
+    coordinate and gain 'confidence' and 'marker_bbox' keys.  Pairs that fail
+    refinement retain their original projection values unchanged.
+
+    Returns the mutated *estimates* dict.
+    """
+    try:
+        import cv2      # type: ignore  # noqa: F401
+        import numpy    # type: ignore  # noqa: F401
+    except ImportError:
+        print("  WARNING: opencv-python or numpy not installed — --refine-pixels skipped.")
+        return estimates
+
+    label_order = gcp_order if gcp_order else list(estimates.keys())
+
+    tasks: List[Tuple] = []
+    skipped_spa = 0
+    for gcp_label in label_order:
+        img_map = estimates.get(gcp_label)
+        if not img_map:
+            continue
+        # Skip SPA-* (spare) points — refinement cost is not justified.
+        if gcp_label.startswith('SPA-'):
+            skipped_spa += len(img_map)
+            continue
+        for img_name, est in img_map.items():
+            path = (exif_map.get(img_name) or {}).get('path')
+            if path:
+                tasks.append((gcp_label, img_name, path, est['px'], est['py']))
+
+    if skipped_spa:
+        print(f"  Skipping {skipped_spa} SPA-* (GCP,image) pairs (spare GCPs).")
+
+    if refine_limit > 0 and len(tasks) > refine_limit:
+        print(f"  Limiting to {refine_limit} of {len(tasks)} (GCP,image) pairs (--refine-limit).")
+        tasks = tasks[:refine_limit]
+
+    if not tasks:
+        return estimates
+
+    n_threads = threads or cpu_count()
+    total     = len(tasks)
+    refined   = 0
+    print(f"Refining estimates via color analysis using {n_threads} threads...")
+
+    def _worker(task):
+        gcp_label, img_name, path, px_seed, py_seed = task
+        return gcp_label, img_name, _refine_single(path, px_seed, py_seed)
+
+    with ThreadPoolExecutor(max_workers=n_threads) as executor:
+        for done, (gcp_label, img_name, result) in enumerate(
+                executor.map(_worker, tasks), start=1):
+            if result is not None:
+                est = estimates[gcp_label][img_name]
+                est['px']          = result['px']
+                est['py']          = result['py']
+                est['confidence']  = result['confidence']
+                est['marker_bbox'] = result['marker_bbox']
+                refined += 1
+            if done % max(1, total // 20) == 0 or done == total:
+                hit_pct = 100 * refined / done if done else 0
+                print(f"  {100 * done / total:5.1f}% done: {done} of {total} GCP,image pairs "
+                      f"analyzed, {refined} estimates changed ({hit_pct:.0f}%)",
+                      end='\r', flush=True)
+
+    print()
+    return estimates
+
+
 def run_pipeline(images_dir: str,
                  emlid_csv_path: str,
                  reconstruction_path: Optional[str] = None,
@@ -867,7 +1201,12 @@ def run_pipeline(images_dir: str,
                  sort_output: bool = True,
                  z_threshold: float = 0.05,
                  dup_tolerance_m: float = 1.0,
-                 omit_duplicates: bool = False) -> Tuple[str, dict]:
+                 omit_duplicates: bool = False,
+                 classify: bool = True,
+                 n_control: int = 7,
+                 n_check: int = 7,
+                 refine_pixels: bool = True,
+                 refine_limit: int = 0) -> Tuple[str, dict]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -877,10 +1216,19 @@ def run_pipeline(images_dir: str,
     for images that have a matching shot in the reconstruction. All remaining
     images use Mode A (EXIF-based).
 
-    nadir_only:   skip images whose gimbal pitch is not near -90°.
-    sort_output:  order GCPs by structural priority and images by confidence score.
-    z_threshold:  fraction of XY diagonal; Z extremes get priority slots only above
-                  this ratio (default 0.05 = 5 %).
+    nadir_only:    skip images whose gimbal pitch is not near -90°.
+    sort_output:   order GCPs by structural priority and images by confidence score.
+    z_threshold:   fraction of XY diagonal; Z extremes get priority slots only above
+                   this ratio (default 0.05 = 5 %).
+    classify:      rename GCP labels with GCP-*/CHK-*/SPA-* prefixes based on
+                   structural sort order (geo-12w).  Requires sort_output=True.
+    n_control:     number of top GCPs to label GCP-* (default 7).
+    n_check:       number of next GCPs to label CHK-* (default 7).
+    refine_pixels: run Stage-3 color-based pixel refinement after projection;
+                   updates px/py to sub-pixel accuracy and adds marker_bbox column.
+                   Requires opencv-python and numpy.
+    refine_limit:  if > 0, refine only the first N (gcp, image) pairs in priority
+                   order; useful for fast iteration during development.
     """
     # B1 — Parse inputs
     print("Parsing Emlid CSV...")
@@ -914,7 +1262,7 @@ def run_pipeline(images_dir: str,
             print(f"  WARNING: failed to load reconstruction: {e}. Using Mode A only.")
 
     # B3 — Compute pixel estimates
-    print("Projecting pixels and writing outputs...")
+    print("Estimating GCP locations via GCP,image geometry...")
     if reconstruction:
         ref = reconstruction['reference_lla']
         shots = reconstruction.get('shots', {})
@@ -953,9 +1301,49 @@ def run_pipeline(images_dir: str,
         estimates = _compute_estimates_mode_a(image_to_gcps, exif_map, gcp_by_label,
                                               nadir_only=nadir_only)
 
-    # B3 — Write outputs
+    # Pre-sort: compute structural GCP order so that classification and
+    # priority-aware refinement use the same ordering that _write_gcp_list
+    # will use.  (_write_gcp_list will sort again — harmless redundancy.)
+    sorted_gcps_order: List[dict] = []
+    demoted_triples_presort: List[Tuple] = []
     if sort_output:
-        print("Sorting output for optimal accuracy with minimal tagging...")
+        print("Sorting GCPs by structural priority...")
+        gcps_with_est = [g for g in gcps if g['label'] in estimates]
+        if dup_tolerance_m > 0:
+            gcps_main_pre, demoted_triples_presort = _separate_near_duplicates(
+                gcps_with_est, dup_tolerance_m)
+            if demoted_triples_presort:
+                action = "omitted (--omit-duplicates)" if omit_duplicates else "demoted to end of list"
+                print(f"  WARNING: {len(demoted_triples_presort)} GCP(s) within "
+                      f"{dup_tolerance_m:.1f} m of another — {action}")
+        else:
+            gcps_main_pre, demoted_triples_presort = gcps_with_est, []
+        sorted_gcps_order, _ = _sort_gcps(gcps_main_pre, z_threshold)
+
+    def _sorted_labels() -> List[str]:
+        """Current labels of sorted_gcps_order + demoted, reflecting any renames."""
+        return ([g['label'] for g in sorted_gcps_order] +
+                [dup['label'] for dup, _, _ in demoted_triples_presort])
+
+    # Classification (geo-12w): rename labels with GCP-*/CHK-*/SPA-* prefixes
+    if classify:
+        if not sorted_gcps_order:
+            print("  WARNING: --classify requires sort_output; skipping classification.")
+        else:
+            print("Classifying GCPs (GCP-* / CHK-* / SPA-*)...")
+            _classify_gcps(gcps, estimates, _sorted_labels(), n_control, n_check)
+            # sorted_gcps_order dicts were mutated in-place; _sorted_labels() now
+            # returns the renamed labels automatically.
+
+    # B3 — Stage 3 pixel refinement (optional)
+    if refine_pixels:
+        estimates = _refine_all_estimates(
+            estimates, exif_map, threads=threads,
+            gcp_order=_sorted_labels() if sorted_gcps_order else None,
+            refine_limit=refine_limit,
+        )
+
+    # B3 — Write outputs
     gcp_txt = _write_gcp_list(
         gcps, estimates,
         sort_output=sort_output,
@@ -998,6 +1386,19 @@ if __name__ == '__main__':
                              'demoted to the end of the output list. Set to 0 to disable. (default: 1.0)')
     parser.add_argument('--omit-duplicates', action='store_true',
                         help='Omit near-duplicate GCPs from the output entirely instead of demoting them to the end')
+    parser.add_argument('--no-classify', dest='classify', action='store_false',
+                        help='Disable GCP-*/CHK-*/SPA-* label classification (classification runs by default)')
+    parser.add_argument('--n-control', type=int, default=7,
+                        help='Number of top-priority GCPs to label GCP-* (default 7)')
+    parser.add_argument('--n-check', type=int, default=7,
+                        help='Number of next GCPs to label CHK-* (default 7)')
+    parser.add_argument('--no-refine-pixels', dest='refine_pixels', action='store_false',
+                        help='Disable color-based pixel refinement and marker bounding-box computation '
+                             '(refinement runs by default; requires opencv-python and numpy)')
+    parser.add_argument('--refine-limit', type=int, default=0,
+                        help='Refine at most N (gcp,image) pairs in priority order; '
+                             '0 = no limit (default). Useful for fast iteration during development.')
+    parser.set_defaults(classify=True, refine_pixels=True)
     parser.add_argument('--match-only', action='store_true',
                         help='Run image-to-GCP footprint matching only and print results without projecting pixels or writing files')
     args = parser.parse_args()
@@ -1033,6 +1434,11 @@ if __name__ == '__main__':
             z_threshold=args.z_threshold,
             dup_tolerance_m=args.dup_tolerance,
             omit_duplicates=args.omit_duplicates,
+            classify=args.classify,
+            n_control=args.n_control,
+            n_check=args.n_check,
+            refine_pixels=args.refine_pixels,
+            refine_limit=args.refine_limit,
         )
 
         out_dir = Path(args.out_dir)
