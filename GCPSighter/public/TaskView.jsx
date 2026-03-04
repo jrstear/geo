@@ -135,8 +135,8 @@ export default class TaskView extends Component {
                                     {result && (
                                         <div className="alert alert-success mt-3">
                                             <p>GCP estimates generated successfully.</p>
-                                            <a href={result.gcpeditpro_txt} className="btn btn-sm btn-primary" download>
-                                                Download gcpeditpro.txt
+                                            <a href={result.gcp_list_txt} className="btn btn-sm btn-primary" download>
+                                                Download gcp_list.txt
                                             </a>
                                         </div>
                                     )}

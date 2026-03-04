@@ -949,8 +949,8 @@ if __name__ == '__main__':
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        gcp_out   = out_dir / 'gcpeditpro.txt'
-        pix4d_out = out_dir / 'pix4d.txt'
+        gcp_out   = out_dir / 'gcp_list.txt'
+        pix4d_out = out_dir / 'marks.csv'
 
         gcp_out.write_text(gcp_txt)
         pix4d_out.write_text(_write_pix4d(estimates))

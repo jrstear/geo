@@ -46,7 +46,7 @@ class GenerateGCPView(APIView):
             # threads=1 uses the sequential code path — no multiprocessing.Pool,
             # which avoids fork-of-fork deadlocks inside gunicorn preloaded workers.
             from .pipeline import run_pipeline
-            gcpeditpro_txt, _ = run_pipeline(
+            gcp_list_txt, _ = run_pipeline(
                 images_dir=images_dir,
                 emlid_csv_path=tmp_csv_path,
                 reconstruction_path=reconstruction_path,
@@ -56,7 +56,7 @@ class GenerateGCPView(APIView):
             # Write output to task assets directory
             out_dir = Path(str(task.assets_path()))
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / 'gcpeditpro.txt').write_text(gcpeditpro_txt)
+            (out_dir / 'gcp_list.txt').write_text(gcp_list_txt)
 
         except Exception as e:
             return Response({'error': str(e)},
@@ -72,7 +72,7 @@ class GenerateGCPView(APIView):
         # assigns the plugin slug.
         api_base = request.path.split('/task/')[0]  # e.g. /api/plugins/GCPSighter
         return Response({
-            'gcpeditpro_txt': '{}/task/{}/download/gcpeditpro.txt'.format(api_base, pk),
+            'gcp_list_txt': '{}/task/{}/download/gcp_list.txt'.format(api_base, pk),
         })
 
 
@@ -83,7 +83,7 @@ class DownloadGCPView(APIView):
         task = get_object_or_404(Task, pk=pk, project__owner=request.user)
 
         # Restrict to known safe filenames
-        allowed = {'gcpeditpro.txt'}
+        allowed = {'gcp_list.txt'}
         if filename not in allowed:
             raise Http404
 
