@@ -112,6 +112,21 @@ many images have been confirmed for that GCP:
 | 3–6 | Amber | Usable, but worth adding more if time allows |
 | ≥ 7 | Green | Good coverage — move on |
 
+### Map view
+
+The GCP map uses two pin styles:
+
+- **Top-7 GCPs** — distinctive labelled pins showing the GCP name.  The pin
+  colour follows the same red / amber / green thresholds as the badge.  As you
+  confirm tags and return to the map, the pins update colour in real time.
+- **Other GCPs** — standard pins, no label, no ratio colouring.
+
+The map gives you an intuitive spatial read of your progress: you can see the
+two distal anchors at opposite corners of the site, the centre pin, the
+elevation extremes on high and low ground, and the additional perimeter points —
+and you can watch them turn green one by one as you work through the list.
+**Your goal is to get all 7 labelled pins to green.**
+
 At the top of the GCP list, a **summary line** shows your overall progress:
 
 > `4 / 7 top GCPs sufficiently tagged`
