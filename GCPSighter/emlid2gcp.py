@@ -578,7 +578,8 @@ def _sort_gcps(gcps: List[dict], z_threshold: float) -> Tuple[List[dict], set]:
     cy = sum(ys) / len(ys)
 
     xy_diag = math.sqrt((max(xs) - min(xs))**2 + (max(ys) - min(ys))**2) or 1.0
-    z_range = max(zs) - min(zs)
+    z_lo, z_hi = min(zs), max(zs)
+    z_range = z_hi - z_lo
     z_significant = z_range > z_threshold * xy_diag
 
     # Z-critical: global elevation extremes (for image ordering, regardless of GCP slot).
@@ -616,13 +617,24 @@ def _sort_gcps(gcps: List[dict], z_threshold: float) -> Tuple[List[dict], set]:
         result.append(s2)
 
     # Slots 3+4: Z extremes (only when Z variation is significant, and only if not
-    # already placed in slots 1-2 as a distal point)
+    # already placed in slots 1-2 as a distal point).
+    # Composite score = z_extremity_norm + 0.5 * spatial_separation_norm so that
+    # among GCPs near the elevation extreme the most spatially distinct one wins,
+    # avoiding a wasted slot when the absolute Z-extreme is clustered with an
+    # already-selected spatial extreme.
+    _Z_SPATIAL_W = 0.5
     if z_significant and pool:
-        z_max = pick(pool, lambda item: item[3])
-        result.append(z_max)
+        def _zmax_score(item):
+            z_norm = (item[3] - z_lo) / z_range
+            d_norm = min(dist2d(item[1], item[2], r[1], r[2]) for r in result) / xy_diag
+            return z_norm + _Z_SPATIAL_W * d_norm
+        result.append(pick(pool, _zmax_score))
     if z_significant and pool:
-        z_min = pick(pool, lambda item: -item[3])
-        result.append(z_min)
+        def _zmin_score(item):
+            z_norm_inv = (z_hi - item[3]) / z_range
+            d_norm = min(dist2d(item[1], item[2], r[1], r[2]) for r in result) / xy_diag
+            return z_norm_inv + _Z_SPATIAL_W * d_norm
+        result.append(pick(pool, _zmin_score))
 
     # Next: closest to centroid (anti-doming centre pin)
     if pool:
