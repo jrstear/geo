@@ -927,10 +927,16 @@ _MIN_AXIS_RATIO    = 2/3   # λ_min/λ_max threshold; components below this are 
                            # elongated to be an X marker (lane lines score ~0.01–0.05).
                            # Asymmetric or partially-occluded real markers may need
                            # this lowered to ~0.3–0.4.
+_MARKER_SIZE_M     = 0.5   # R3: expected physical marker size (metres).  Calibrated from
+                           # 46 good-case confirmed pairs: median 0.55 m, range 0.17–0.81 m.
+                           # Used with GSD to compute expected bbox size in pixels.
+_MIN_MARKER_PX     = 10    # R3: hard floor — reject any component with bbox avg < this,
+                           # regardless of GSD.  No real marker is this small.
 
 
 def _refine_single(image_path: str, px: float, py: float,
-                   max_radius: int = _MAX_REFINE_RADIUS) -> Optional[dict]:
+                   max_radius: int = _MAX_REFINE_RADIUS,
+                   gsd_m: Optional[float] = None) -> Optional[dict]:
     """
     Refine a single (image, GCP) pixel estimate using color analysis.
 
@@ -1032,11 +1038,12 @@ def _refine_single(image_path: str, px: float, py: float,
     # Collect all components within max_radius, compute PCA for each, apply
     # sanity checks, and score survivors.  The score
     #
-    #   score = ratio × size × mean_dev × coherence × dist_penalty
+    #   score = ratio × size × mean_dev × coherence × dist_penalty × size_penalty
     #
-    # where dist_penalty = 1/(1 + k*d) penalises features far from the
-    # projection seed.  k = _SEED_DIST_PENALTY ≈ 0.015 gives: at 50 px
-    # penalty ~0.57, at 100 px ~0.40, at 200 px ~0.25.
+    # dist_penalty = 1/(1 + k*d): penalises features far from seed (R1).
+    # size_penalty = min(r, 1/r) where r = bbox/expected: penalises bboxes
+    #   that deviate from the GSD-predicted marker size (R3).  Peaks at 1.0
+    #   when bbox matches expected; drops to 0.1 at 10× mismatch.
     #
     max_pixels = (max_radius * 2) ** 2 // 3
     scored: list = []   # (score, ratio, eigvals, eigvecs, r_idx, c_idx, pyx, ctr, cen)
@@ -1050,6 +1057,9 @@ def _refine_single(image_path: str, px: float, py: float,
         n = len(r_idx)
         bh = int(r_idx.max() - r_idx.min() + 1)
         bw = int(c_idx.max() - c_idx.min() + 1)
+        bbox_avg = (bw + bh) / 2.0
+        if bbox_avg < _MIN_MARKER_PX:
+            continue   # R3: hard floor — too small to be any real marker
         if n < 20 or n > max_pixels:
             continue
         if max(bh, bw) / max(1, min(bh, bw)) > 15:
@@ -1085,7 +1095,18 @@ def _refine_single(image_path: str, px: float, py: float,
         centroid_dist = float(np.sqrt((ctr[1] - sx) ** 2 + (ctr[0] - sy) ** 2))
         dist_penalty = 1.0 / (1.0 + _SEED_DIST_PENALTY * centroid_dist)
 
-        score = ratio * (eigvals[0] + eigvals[1]) * mean_dev * coherence * dist_penalty
+        # R3: GSD-based size penalty — penalise components whose bbox deviates
+        # from the expected marker size.  Calibrated from confirmed data: good
+        # cases have ratio 0.31–1.49 vs expected; bad cases go to 0.04 or 4.3.
+        # size_penalty peaks at 1.0 when bbox matches expected, drops linearly.
+        if gsd_m is not None and gsd_m > 0:
+            expected_px = _MARKER_SIZE_M / gsd_m
+            size_ratio = bbox_avg / expected_px
+            size_penalty = min(size_ratio, 1.0 / size_ratio) if size_ratio > 0 else 0.0
+        else:
+            size_penalty = 1.0   # neutral when GSD unavailable
+
+        score = ratio * (eigvals[0] + eigvals[1]) * mean_dev * coherence * dist_penalty * size_penalty
         scored.append((score, ratio, eigvals, eigvecs, r_idx, c_idx, pyx, ctr, cen))
 
     if not scored:
@@ -1182,6 +1203,24 @@ def _refine_all_estimates(
 
     label_order = gcp_order if gcp_order else list(estimates.keys())
 
+    def _compute_gsd(exif: dict) -> Optional[float]:
+        """Compute GSD in metres/pixel from EXIF metadata."""
+        focal_mm = exif.get('focal_mm')
+        focal35  = exif.get('focal35_mm')
+        img_w    = exif.get('img_w')
+        rel_alt  = exif.get('rel_alt')
+        if not all([focal_mm, focal35, img_w, rel_alt]):
+            return None
+        if focal_mm <= 0 or focal35 <= 0 or rel_alt <= 1.0:
+            return None
+        scale = focal_mm / focal35
+        sensor_diag = FULL_FRAME_DIAG_MM * scale
+        img_h = exif.get('img_h', img_w)
+        aspect = img_w / img_h
+        sensor_h = sensor_diag / math.sqrt(1 + aspect ** 2)
+        sensor_w = sensor_h * aspect
+        return (rel_alt * sensor_w) / (focal_mm * img_w)
+
     tasks: List[Tuple] = []
 
     for gcp_label in label_order:
@@ -1192,9 +1231,11 @@ def _refine_all_estimates(
         if gcp_label.startswith('SPA-'):
             continue
         for img_name, est in img_map.items():
-            path = (exif_map.get(img_name) or {}).get('path')
+            exif = exif_map.get(img_name) or {}
+            path = exif.get('path')
             if path:
-                tasks.append((gcp_label, img_name, path, est['px'], est['py']))
+                gsd = _compute_gsd(exif)
+                tasks.append((gcp_label, img_name, path, est['px'], est['py'], gsd))
 
     if refine_limit > 0 and len(tasks) > refine_limit:
         print(f"  Limiting to {refine_limit} of {len(tasks)} (GCP,image) pairs (--refine-limit).")
@@ -1209,8 +1250,8 @@ def _refine_all_estimates(
     print(f"Refining estimates via color analysis using {n_threads} threads...")
 
     def _worker(task):
-        gcp_label, img_name, path, px_seed, py_seed = task
-        return gcp_label, img_name, _refine_single(path, px_seed, py_seed)
+        gcp_label, img_name, path, px_seed, py_seed, gsd = task
+        return gcp_label, img_name, _refine_single(path, px_seed, py_seed, gsd_m=gsd)
 
     with ThreadPoolExecutor(max_workers=n_threads) as executor:
         for done, (gcp_label, img_name, result) in enumerate(
@@ -1441,6 +1482,9 @@ if __name__ == '__main__':
     parser.add_argument('--seed-dist-penalty', type=float, default=None,
                         help=f'Override _SEED_DIST_PENALTY (k in score /= 1+k*d). '
                              f'Default: {_SEED_DIST_PENALTY}')
+    parser.add_argument('--marker-size', type=float, default=None,
+                        help=f'Expected physical marker size in metres for GSD-based '
+                             f'size filtering. Default: {_MARKER_SIZE_M}')
     parser.add_argument('--out-name', default='gcp_list.txt',
                         help='Filename for the gcp_list output (default: gcp_list.txt)')
     parser.set_defaults(classify=True, refine_pixels=True)
@@ -1470,6 +1514,8 @@ if __name__ == '__main__':
     else:
         if args.seed_dist_penalty is not None:
             _SEED_DIST_PENALTY = args.seed_dist_penalty  # noqa: reassign module-level
+        if args.marker_size is not None:
+            _MARKER_SIZE_M = args.marker_size  # noqa: reassign module-level
 
         gcp_txt, estimates = run_pipeline(
             images_dir=args.image_dir,
