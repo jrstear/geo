@@ -922,6 +922,7 @@ def _classify_gcps(gcps: List[dict],
 # ---------------------------------------------------------------------------
 
 _MAX_REFINE_RADIUS = 300   # hard cap: give up if no marker found beyond this radius (px)
+_SEED_DIST_PENALTY = 0.015 # R1: score /= (1 + k*d) — penalise components far from seed
 _MIN_AXIS_RATIO    = 2/3   # λ_min/λ_max threshold; components below this are too
                            # elongated to be an X marker (lane lines score ~0.01–0.05).
                            # Asymmetric or partially-occluded real markers may need
@@ -1031,17 +1032,12 @@ def _refine_single(image_path: str, px: float, py: float,
     # Collect all components within max_radius, compute PCA for each, apply
     # sanity checks, and score survivors.  The score
     #
-    #   score = ratio × (λ_min + λ_max)
+    #   score = ratio × size × mean_dev × coherence × dist_penalty
     #
-    # is high only when the shape is both X-like (ratio → 1) AND physically
-    # large (eigenvalues scale with marker size²).  This rejects lane lines
-    # (huge eigenvalues but near-zero ratio) and small rocks (good ratio but
-    # tiny eigenvalues) in one unified criterion.
+    # where dist_penalty = 1/(1 + k*d) penalises features far from the
+    # projection seed.  k = _SEED_DIST_PENALTY ≈ 0.015 gives: at 50 px
+    # penalty ~0.57, at 100 px ~0.40, at 200 px ~0.25.
     #
-    # NOTE: distance from seed is intentionally not included in the score —
-    # size+shape is the dominant signal.  Distance could be added as a soft
-    # penalty (e.g. score /= 1 + k*d) if close-but-wrong candidates become a
-    # recurring problem.
     max_pixels = (max_radius * 2) ** 2 // 3
     scored: list = []   # (score, ratio, eigvals, eigvecs, r_idx, c_idx, pyx, ctr, cen)
 
@@ -1083,7 +1079,13 @@ def _refine_single(image_path: str, px: float, py: float,
         comp_ab  = crop_lab[r_idx, c_idx].astype(np.float32)[:, 1:]  # a*, b* only
         coherence = 1.0 / (1.0 + float(comp_ab.std()))
 
-        score = ratio * (eigvals[0] + eigvals[1]) * mean_dev * coherence
+        # R1: soft penalty for distance from projection seed — the projection
+        # estimate is a strong prior, so nearby features should be preferred.
+        # Uses centroid-to-seed distance (not nearest-pixel) for stability.
+        centroid_dist = float(np.sqrt((ctr[1] - sx) ** 2 + (ctr[0] - sy) ** 2))
+        dist_penalty = 1.0 / (1.0 + _SEED_DIST_PENALTY * centroid_dist)
+
+        score = ratio * (eigvals[0] + eigvals[1]) * mean_dev * coherence * dist_penalty
         scored.append((score, ratio, eigvals, eigvecs, r_idx, c_idx, pyx, ctr, cen))
 
     if not scored:
@@ -1436,6 +1438,11 @@ if __name__ == '__main__':
     parser.add_argument('--refine-limit', type=int, default=0,
                         help='Refine at most N (gcp,image) pairs in priority order; '
                              '0 = no limit (default). Useful for fast iteration during development.')
+    parser.add_argument('--seed-dist-penalty', type=float, default=None,
+                        help=f'Override _SEED_DIST_PENALTY (k in score /= 1+k*d). '
+                             f'Default: {_SEED_DIST_PENALTY}')
+    parser.add_argument('--out-name', default='gcp_list.txt',
+                        help='Filename for the gcp_list output (default: gcp_list.txt)')
     parser.set_defaults(classify=True, refine_pixels=True)
     parser.add_argument('--match-only', action='store_true',
                         help='Run image-to-GCP footprint matching only and print results without projecting pixels or writing files')
@@ -1461,6 +1468,9 @@ if __name__ == '__main__':
         for fname, labels in sorted(image_to_gcps.items()):
             print(f'  {fname}: {labels}')
     else:
+        if args.seed_dist_penalty is not None:
+            _SEED_DIST_PENALTY = args.seed_dist_penalty  # noqa: reassign module-level
+
         gcp_txt, estimates = run_pipeline(
             images_dir=args.image_dir,
             emlid_csv_path=args.emlid_csv,
@@ -1482,7 +1492,7 @@ if __name__ == '__main__':
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        gcp_out   = out_dir / 'gcp_list.txt'
+        gcp_out   = out_dir / args.out_name
         pix4d_out = out_dir / 'marks.csv'
 
         gcp_out.write_text(gcp_txt)
