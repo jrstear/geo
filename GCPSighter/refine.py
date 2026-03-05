@@ -451,7 +451,7 @@ def refine_all_estimates(
                   are built in this order so that --refine-limit keeps the most
                   important pairs.  If None, dict insertion order is used.
     refine_limit: if > 0, process at most this many (gcp, image) pairs.
-                  SPA-* pairs are excluded before the limit is applied, so the
+                  DUP-* pairs are excluded before the limit is applied, so the
                   limit budget is spent entirely on GCP-* and CHK-* pairs.
 
     Estimates that succeed have their px/py replaced with the refined sub-pixel
@@ -475,8 +475,8 @@ def refine_all_estimates(
         img_map = estimates.get(gcp_label)
         if not img_map:
             continue
-        # Skip SPA-* (spare) points — refinement cost is not justified.
-        if gcp_label.startswith('SPA-'):
+        # Skip DUP-* (near-duplicate) points — refinement cost is not justified.
+        if gcp_label.startswith('DUP-'):
             continue
         for img_name, est in img_map.items():
             exif = exif_map.get(img_name) or {}
@@ -517,9 +517,7 @@ def refine_all_estimates(
                 est['_bbox_avg']   = result.get('bbox_avg')
                 refined += 1
             if done % max(1, total // 20) == 0 or done == total:
-                hit_pct = 100 * refined / done if done else 0
-                print(f"  {100 * done / total:5.1f}% done: {done} of {total} GCP,image pairs "
-                      f"analyzed, {refined} estimates changed ({hit_pct:.0f}%)",
+                print(f"  {100 * done / total:5.1f}% done: {done} of {total} GCP,image pairs analyzed",
                       end='\r', flush=True)
 
     print()
@@ -531,7 +529,9 @@ def refine_all_estimates(
     # See diagnose_postpass.py analysis — GCP-112 and GCP-96 show false rejections.
     # r4 = _postpass_color_consensus(estimates)
     r5 = _postpass_bbox_consistency(estimates)
-    if r5:
-        print(f"  Post-pass (R5 bbox) reverted {r5} detection(s) to projection estimates.")
+    final   = refined - (r5 or 0)
+    final_pct = 100 * final / total if total else 0
+    print(f"  {refined} candidate changes, {r5 or 0} ruled out by projection bounding box, "
+          f"{final} estimates changed ({final_pct:.0f}%).")
 
     return estimates
