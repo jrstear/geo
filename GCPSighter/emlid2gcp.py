@@ -9,7 +9,7 @@ Stages:
   B2  project_pixel_mode_a()      EXIF-based pinhole projection (nadir + oblique).
   B2  project_pixel_mode_b()      reconstruction.json-based projection (optional).
   B3  refine_all_estimates()      Color-based pixel refinement + marker bbox (optional).
-                                   (lives in refine.py)
+                                   (lives in coloredX.py)
   B3  run_pipeline()              Full pipeline: B1 → B2 → B3 → write outputs.
 """
 
@@ -900,20 +900,20 @@ def _classify_gcps(gcps: List[dict],
     n_ctrl = sum(1 for g in gcps if g['label'].startswith('GCP-'))
     n_chk  = sum(1 for g in gcps if g['label'].startswith('CHK-'))
     n_dup  = sum(1 for g in gcps if g['label'].startswith('DUP-'))
-    print(f"  {n_ctrl} GCP-* (control),  {n_chk} CHK-* (check),  {n_dup} DUP-* (near-duplicate)")
+    print(f"  {n_ctrl} GCP-* (control),  {n_chk} CHK-* (check),  {n_dup} DUP-* (duplicate)")
 
 
 # ---------------------------------------------------------------------------
 # Stage 3 — Pixel Refinement (geo-56c)
-# Extracted to refine.py; imported here for run_pipeline().
+# Extracted to coloredX.py; imported here for run_pipeline().
 # ---------------------------------------------------------------------------
 
 try:
-    from .refine import refine_all_estimates as _refine_all_estimates
-    from . import refine as _refine_module
+    from .coloredX import refine_all_estimates as _refine_all_estimates
+    from . import coloredX as _refine_module
 except ImportError:
-    from refine import refine_all_estimates as _refine_all_estimates
-    import refine as _refine_module
+    from coloredX import refine_all_estimates as _refine_all_estimates
+    import coloredX as _refine_module
 
 
 def run_pipeline(images_dir: str,
@@ -1035,7 +1035,7 @@ def run_pipeline(images_dir: str,
             gcps_main_pre, demoted_triples_presort = _separate_near_duplicates(
                 gcps_with_est, dup_tolerance_m)
             if demoted_triples_presort:
-                action = "omitted (--omit-duplicates)" if omit_duplicates else "prefixed names with DUP- and moved to bottom of the list"
+                action = "omitted (--omit-duplicates)" if omit_duplicates else "labeled as duplicate and put at bottom of list"
                 print(f"  WARNING: {len(demoted_triples_presort)} GCP(s) within "
                       f"{dup_tolerance_m:.1f} m of another — {action}")
         else:
@@ -1114,7 +1114,7 @@ if __name__ == '__main__':
                         help='Disable GCP-*/CHK-*/DUP-* label classification (classification runs by default)')
     parser.add_argument('--n-control', type=int, default=10,
                         help='Number of top-priority GCPs to label GCP-*; remainder → CHK-* (default 10)')
-    parser.add_argument('--no-refine-pixels', dest='refine_pixels', action='store_false',
+    parser.add_argument('--no-coloredX', dest='refine_pixels', action='store_false',
                         help='Disable color-based pixel refinement and marker bounding-box computation '
                              '(refinement runs by default; requires opencv-python and numpy)')
     parser.add_argument('--refine-limit', type=int, default=0,

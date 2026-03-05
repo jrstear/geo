@@ -336,7 +336,7 @@ def _refine_single(image_path: str, px: float, py: float,
     return {
         'px':          full_px,
         'py':          full_py,
-        'confidence':  'color_refined',
+        'confidence':  'color',
         'marker_bbox': f'{bbox_x1},{bbox_y1},{bbox_x2},{bbox_y2}',
         'marker_lab':  (marker_L, marker_a, marker_b),
         'bbox_avg':    bbox_avg,
@@ -379,7 +379,7 @@ def _postpass_color_consensus(estimates: Dict[str, Dict[str, dict]]) -> int:
         # Collect all refined detections with marker_lab data
         refined = []
         for img_name, est in img_map.items():
-            if est.get('confidence') == 'color_refined' and est.get('_marker_lab'):
+            if est.get('confidence') == 'color' and est.get('_marker_lab'):
                 refined.append((img_name, est))
         if len(refined) < _MIN_CONSENSUS_SAMPLES:
             continue
@@ -418,7 +418,7 @@ def _postpass_bbox_consistency(estimates: Dict[str, Dict[str, dict]]) -> int:
         # Collect all refined detections with bbox_avg data
         refined = []
         for img_name, est in img_map.items():
-            if est.get('confidence') == 'color_refined' and est.get('_bbox_avg'):
+            if est.get('confidence') == 'color' and est.get('_bbox_avg'):
                 refined.append((img_name, est))
         if len(refined) < _MIN_CONSENSUS_SAMPLES:
             continue
@@ -464,7 +464,7 @@ def refine_all_estimates(
         import cv2      # type: ignore  # noqa: F401
         import numpy    # type: ignore  # noqa: F401
     except ImportError:
-        print("  WARNING: opencv-python or numpy not installed — --refine-pixels skipped.")
+        print("  WARNING: opencv-python or numpy not installed — colored-X analysis skipped.")
         return estimates
 
     label_order = gcp_order if gcp_order else list(estimates.keys())
@@ -495,7 +495,7 @@ def refine_all_estimates(
     n_threads = threads or cpu_count()
     total     = len(tasks)
     refined   = 0
-    print(f"Refining estimates via color analysis using {n_threads} threads...")
+    print(f"Refining estimates via colored-X analysis using {n_threads} threads...")
 
     def _worker(task):
         gcp_label, img_name, path, px_seed, py_seed, gsd = task
