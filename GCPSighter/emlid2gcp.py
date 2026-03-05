@@ -980,18 +980,21 @@ def _refine_single(image_path: str, px: float, py: float,
     # Stage 3a — Anomaly-relative detection (LAB space)
     # Background ring: 55–90 px from seed — far enough to miss a typical
     # GCP marker but within the crop window.
+    # crop_lab and deviation_map are always computed here so the scoring
+    # loop can use them regardless of which detection path succeeded.
     # ------------------------------------------------------------------
+    crop_lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
+    deviation_map: Optional[np.ndarray] = None   # per-pixel max LAB deviation (ch, cw)
     marker_mask: Optional[np.ndarray] = None
     ring_mask = (dists >= 55) & (dists <= 90)
     if int(ring_mask.sum()) >= 50:
-        crop_lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
         ring_lab = crop_lab[ring_mask].astype(np.float32)
         bg_mean  = ring_lab.mean(axis=0)
         bg_std   = ring_lab.std(axis=0) + 1.0          # avoid divide-by-zero
         lab_flat  = crop_lab.reshape(-1, 3).astype(np.float32)
-        deviation = np.abs(lab_flat - bg_mean) / bg_std
-        anomaly   = (deviation.max(axis=1) > 2.5).reshape(ch, cw)
-        anomaly  &= (dists <= max_radius)
+        dev       = np.abs(lab_flat - bg_mean) / bg_std
+        deviation_map = dev.max(axis=1).reshape(ch, cw)
+        anomaly   = (deviation_map > 2.5) & (dists <= max_radius)
         if int(anomaly.sum()) >= 15:
             marker_mask = anomaly
 
@@ -1019,63 +1022,76 @@ def _refine_single(image_path: str, px: float, py: float,
         return None     # no marker signal detected
 
     # ------------------------------------------------------------------
-    # Stage 3b+3c — Connected components; iterate nearest-first through
-    # candidates until one passes all sanity and shape checks.
+    # Stage 3b+3c — Connected components; score all candidates within
+    # max_radius and select the best-scoring one.
     # ------------------------------------------------------------------
     num_labels, labels_img = cv2.connectedComponents(
         marker_mask.astype(np.uint8), connectivity=8)
 
-    # Collect (distance_to_seed, rows, cols) for every component within
-    # max_radius, then sort nearest-first so the loop tries the most
-    # plausible candidate first.
-    candidates = []
+    # Collect all components within max_radius, compute PCA for each, apply
+    # sanity checks, and score survivors.  The score
+    #
+    #   score = ratio × (λ_min + λ_max)
+    #
+    # is high only when the shape is both X-like (ratio → 1) AND physically
+    # large (eigenvalues scale with marker size²).  This rejects lane lines
+    # (huge eigenvalues but near-zero ratio) and small rocks (good ratio but
+    # tiny eigenvalues) in one unified criterion.
+    #
+    # NOTE: distance from seed is intentionally not included in the score —
+    # size+shape is the dominant signal.  Distance could be added as a soft
+    # penalty (e.g. score /= 1 + k*d) if close-but-wrong candidates become a
+    # recurring problem.
+    max_pixels = (max_radius * 2) ** 2 // 3
+    scored: list = []   # (score, ratio, eigvals, eigvecs, r_idx, c_idx, pyx, ctr, cen)
+
     for lab in range(1, num_labels):
         r_idx, c_idx = np.where(labels_img == lab)
         d = float(np.sqrt((c_idx - sx) ** 2 + (r_idx - sy) ** 2).min())
-        if d <= max_radius:
-            candidates.append((d, r_idx, c_idx))
-    candidates.sort(key=lambda t: t[0])
+        if d > max_radius:
+            continue
 
-    comp_rows = comp_cols = None
-    pix_yx = centroid = centered = None
-    kept_eigvecs = None
-    max_pixels = (max_radius * 2) ** 2 // 3
-
-    for _d, r_idx, c_idx in candidates:
         n = len(r_idx)
         bh = int(r_idx.max() - r_idx.min() + 1)
         bw = int(c_idx.max() - c_idx.min() + 1)
-
-        # Size and crude aspect-ratio sanity
         if n < 20 or n > max_pixels:
             continue
         if max(bh, bw) / max(1, min(bh, bw)) > 15:
             continue
+        if n < 6:
+            continue   # too few pixels for reliable PCA
 
-        # Eigenvalue ratio check: require two significant PCA axes.
-        # λ_min/λ_max ≥ _MIN_AXIS_RATIO rejects lane lines and other
-        # single-axis shapes while accepting X markers (ratio near 1).
-        # Eigenvectors are saved and reused in Stage 3d below.
-        if n >= 6:
-            pyx = np.column_stack([r_idx, c_idx]).astype(np.float64)
-            ctr = pyx.mean(axis=0)
-            cen = pyx - ctr
-            eigvals, eigvecs = np.linalg.eigh(np.cov(cen.T))
-            ratio = eigvals[0] / eigvals[1] if eigvals[1] > 1e-6 else 0.0
-            if ratio < _MIN_AXIS_RATIO:
-                continue   # too elongated — try next nearest component
-            comp_rows, comp_cols = r_idx, c_idx
-            pix_yx, centroid, centered, kept_eigvecs = pyx, ctr, cen, eigvecs
+        pyx = np.column_stack([r_idx, c_idx]).astype(np.float64)
+        ctr = pyx.mean(axis=0)
+        cen = pyx - ctr
+        eigvals, eigvecs = np.linalg.eigh(np.cov(cen.T))
+        ratio = eigvals[0] / eigvals[1] if eigvals[1] > 1e-6 else 0.0
+        if ratio < _MIN_AXIS_RATIO:
+            continue   # too elongated — not an X shape
+
+        # Idea 1 — mean background deviation: how strongly do the component
+        # pixels deviate from local background?  Vivid orange paint scores
+        # high; subtle oil spots and shadows score low.
+        if deviation_map is not None:
+            mean_dev = float(deviation_map[r_idx, c_idx].mean())
         else:
-            comp_rows, comp_cols = r_idx, c_idx
-            pix_yx   = np.column_stack([r_idx, c_idx]).astype(np.float64)
-            centroid = pix_yx.mean(axis=0)
-            centered = pix_yx - centroid
-            kept_eigvecs = None
-        break
+            mean_dev = 1.0   # neutral when background ring unavailable
 
-    if comp_rows is None:
+        # Idea 3 — color coherence: real markers have consistent color across
+        # their pixels; mottled ground, oil spots, and mixed-material blobs
+        # have scattered LAB chroma (a*, b* channels).
+        comp_ab  = crop_lab[r_idx, c_idx].astype(np.float32)[:, 1:]  # a*, b* only
+        coherence = 1.0 / (1.0 + float(comp_ab.std()))
+
+        score = ratio * (eigvals[0] + eigvals[1]) * mean_dev * coherence
+        scored.append((score, ratio, eigvals, eigvecs, r_idx, c_idx, pyx, ctr, cen))
+
+    if not scored:
         return None
+
+    scored.sort(key=lambda t: -t[0])   # highest score first
+    _, _ratio, _eigvals, best_eigvecs, comp_rows, comp_cols, pix_yx, centroid, centered = scored[0]
+    kept_eigvecs = best_eigvecs
 
     n_pix = len(comp_rows)
 
