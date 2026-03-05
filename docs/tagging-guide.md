@@ -183,16 +183,19 @@ From the export screen:
 
 - **Download `gcp_list.txt`** — all rows (confirmed + unconfirmed estimates).
   Use this to resume work in a later session.
-- **Download `gcp_confirmed.txt`** — confirmed tags only, in ODM/WebODM format.
-  Upload this file to WebODM when running your final reconstruction.
+- **Download `gcp_confirmed.txt`** — confirmed GCP-\* control point tags only,
+  in ODM/WebODM format.  Upload this file to WebODM when running your final
+  reconstruction.
+- **Download `chk_confirmed.txt`** — confirmed CHK-\* check point tags only.
+  Use this file post-reconstruction to compute independent RMSE accuracy figures.
 
 In WebODM: add `gcp_confirmed.txt` to the task, run with GCPs enabled.  The
-confirmed tags you provided will anchor the point cloud to real-world coordinates.
+confirmed GCP-\* tags will anchor the point cloud to real-world coordinates.
 
-> **CHK-\* check points** are included in the export alongside GCP-\* control
-> points.  Because ODM treats all rows as control, check-point accuracy validation
-> (comparing surveyed vs photogrammetric coordinates for held-out points) must be
-> done manually using `marks.csv` after reconstruction.
+> Because ODM has no native check-point concept, `chk_confirmed.txt` is not
+> supplied to ODM.  Check-point accuracy validation (comparing surveyed vs
+> photogrammetric coordinates for the held-out points) must be done manually
+> using `marks.csv` after reconstruction.
 
 ---
 
