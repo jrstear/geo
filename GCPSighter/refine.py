@@ -8,6 +8,12 @@ Implements Stage 3 of the emlid2gcp pipeline (geo-56c):
   3c — Connected-component capture + sanity checks (size, aspect ratio).
   3d — PCA arm-clustering + cv2.fitLine intersection for sub-pixel centre.
 
+Post-passes (operate on the full set of results after per-image refinement):
+  R4 — Color consensus: reject detections whose chrominance (a*, b*) deviates
+       significantly from the GCP's median color across all images.
+  R5 — Bbox consistency: reject detections whose bbox size deviates
+       significantly from the GCP's median bbox size.
+
 Target-specific: tuned for orange clay pigeons / spray-painted X marks.
 Other target types may need different detection strategies.
 
@@ -36,6 +42,27 @@ _MARKER_SIZE_M     = 0.5   # R3: expected physical marker size (metres).  Calibr
                            # Used with GSD to compute expected bbox size in pixels.
 _MIN_MARKER_PX     = 10    # R3: hard floor — reject any component with bbox avg < this,
                            # regardless of GSD.  No real marker is this small.
+
+# R4: color consensus post-pass — DISABLED.  Median-based chrominance consensus
+# fails when (a) bad detections form the majority (median reflects wrong feature)
+# or (b) correct detections have varied chrominance from viewing-angle/exposure
+# while wrong detections cluster near the median.  Tested on ghostrider gulch:
+# R4 caused 14 false rejections of good detections (+9 bad).  See
+# diagnose_postpass.py for per-GCP color analysis.  Keep the code and constant
+# in case a better consensus method (score-weighted, DBSCAN clustering) is tried.
+_COLOR_CONSENSUS_THRESH = 15.0
+
+# R5: bbox consistency post-pass — reject detections whose bbox avg size
+# deviates from the GCP's median by more than this ratio.
+# Calibrated from 85 confirmed pairs: good cases stay within 0.71-1.39 ratio;
+# bad cases go to 0.25 or 5.91.  Threshold 1.5 (accept 0.67-1.50) catches
+# wrong-feature detections with 0 false rejections.  Tested 2.5→2.0→1.5→1.4:
+# 1.5 is optimal (12 improved, 0 worsened vs R3 baseline).
+_BBOX_CONSISTENCY_THRESH = 1.5
+
+# R4/R5: minimum detections per GCP to compute consensus.
+# With only 1 detection, there's no consensus to compare against.
+_MIN_CONSENSUS_SAMPLES = 2
 
 
 # ---------------------------------------------------------------------------
@@ -295,12 +322,120 @@ def _refine_single(image_path: str, px: float, py: float,
     bbox_x2 = int(comp_cols.max()) + cx1
     bbox_y2 = int(comp_rows.max()) + cy1
 
+    # Compute marker median LAB color for R4 post-pass consensus check.
+    # Uses chrominance channels (a*, b*) which are lighting-invariant.
+    comp_lab = crop_lab[comp_rows, comp_cols].astype(np.float32)
+    marker_L = float(np.median(comp_lab[:, 0]))
+    marker_a = float(np.median(comp_lab[:, 1]))
+    marker_b = float(np.median(comp_lab[:, 2]))
+
+    bw = bbox_x2 - bbox_x1
+    bh = bbox_y2 - bbox_y1
+    bbox_avg = (bw + bh) / 2.0
+
     return {
         'px':          full_px,
         'py':          full_py,
         'confidence':  'color_refined',
         'marker_bbox': f'{bbox_x1},{bbox_y1},{bbox_x2},{bbox_y2}',
+        'marker_lab':  (marker_L, marker_a, marker_b),
+        'bbox_avg':    bbox_avg,
     }
+
+
+# ---------------------------------------------------------------------------
+# Post-pass filters (R4, R5) — operate on the full set after per-image refinement
+# ---------------------------------------------------------------------------
+
+def _revert_to_projection(est: dict) -> None:
+    """Revert a refined estimate back to its original projection coordinates."""
+    if '_orig_px' in est:
+        est['px'] = est['_orig_px']
+        est['py'] = est['_orig_py']
+    est['confidence'] = 'projection'
+    est.pop('marker_bbox', None)
+    est.pop('_marker_lab', None)
+    est.pop('_bbox_avg', None)
+
+
+def _postpass_color_consensus(estimates: Dict[str, Dict[str, dict]]) -> int:
+    """
+    R4 — Color consensus post-pass.
+
+    For each GCP, compute the median chrominance (a*, b*) across all refined
+    detections.  Reject any detection whose chrominance distance from the
+    median exceeds _COLOR_CONSENSUS_THRESH and revert it to the original
+    projection estimate.
+
+    Lightness (L*) is excluded because it varies significantly with sun angle,
+    cloud cover, and camera exposure.  Chrominance (a*, b*) is much more stable
+    for the same colored marker.
+
+    Returns the number of detections reverted.
+    """
+    import numpy as np
+    reverted = 0
+    for gcp_label, img_map in estimates.items():
+        # Collect all refined detections with marker_lab data
+        refined = []
+        for img_name, est in img_map.items():
+            if est.get('confidence') == 'color_refined' and est.get('_marker_lab'):
+                refined.append((img_name, est))
+        if len(refined) < _MIN_CONSENSUS_SAMPLES:
+            continue
+
+        # Compute median a*, b* (chrominance consensus)
+        a_vals = [est['_marker_lab'][1] for _, est in refined]
+        b_vals = [est['_marker_lab'][2] for _, est in refined]
+        med_a = float(np.median(a_vals))
+        med_b = float(np.median(b_vals))
+
+        # Check each detection against consensus
+        for img_name, est in refined:
+            da = est['_marker_lab'][1] - med_a
+            db = est['_marker_lab'][2] - med_b
+            ab_dist = math.sqrt(da * da + db * db)
+            if ab_dist > _COLOR_CONSENSUS_THRESH:
+                _revert_to_projection(est)
+                reverted += 1
+    return reverted
+
+
+def _postpass_bbox_consistency(estimates: Dict[str, Dict[str, dict]]) -> int:
+    """
+    R5 — Bbox size consistency post-pass.
+
+    For each GCP, compute the median bbox avg size across all refined
+    detections.  Reject any detection whose size ratio (detection / median)
+    exceeds _BBOX_CONSISTENCY_THRESH or falls below 1/threshold, and revert
+    it to the original projection estimate.
+
+    Returns the number of detections reverted.
+    """
+    import numpy as np
+    reverted = 0
+    for gcp_label, img_map in estimates.items():
+        # Collect all refined detections with bbox_avg data
+        refined = []
+        for img_name, est in img_map.items():
+            if est.get('confidence') == 'color_refined' and est.get('_bbox_avg'):
+                refined.append((img_name, est))
+        if len(refined) < _MIN_CONSENSUS_SAMPLES:
+            continue
+
+        # Compute median bbox size
+        sizes = [est['_bbox_avg'] for _, est in refined]
+        med_size = float(np.median(sizes))
+        if med_size < 1.0:
+            continue
+
+        # Check each detection against consensus
+        for img_name, est in refined:
+            ratio = est['_bbox_avg'] / med_size
+            if ratio > _BBOX_CONSISTENCY_THRESH or ratio < 1.0 / _BBOX_CONSISTENCY_THRESH:
+                _revert_to_projection(est)
+                reverted += 1
+    return reverted
 
 
 def refine_all_estimates(
@@ -371,10 +506,15 @@ def refine_all_estimates(
                 executor.map(_worker, tasks), start=1):
             if result is not None:
                 est = estimates[gcp_label][img_name]
+                # Store original projection estimate so post-passes can revert
+                est['_orig_px'] = est['px']
+                est['_orig_py'] = est['py']
                 est['px']          = result['px']
                 est['py']          = result['py']
                 est['confidence']  = result['confidence']
                 est['marker_bbox'] = result['marker_bbox']
+                est['_marker_lab'] = result.get('marker_lab')
+                est['_bbox_avg']   = result.get('bbox_avg')
                 refined += 1
             if done % max(1, total // 20) == 0 or done == total:
                 hit_pct = 100 * refined / done if done else 0
@@ -383,4 +523,15 @@ def refine_all_estimates(
                       end='\r', flush=True)
 
     print()
+
+    # Post-passes: operate on the full set of results after per-image refinement.
+    # These compare each detection against the GCP's consensus and revert outliers.
+    # R4 (color consensus) is disabled: median-based consensus fails when
+    # bad detections form the majority or have similar chrominance to correct ones.
+    # See diagnose_postpass.py analysis — GCP-112 and GCP-96 show false rejections.
+    # r4 = _postpass_color_consensus(estimates)
+    r5 = _postpass_bbox_consistency(estimates)
+    if r5:
+        print(f"  Post-pass (R5 bbox) reverted {r5} detection(s) to projection estimates.")
+
     return estimates
