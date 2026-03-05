@@ -267,21 +267,14 @@ def match_images_to_gcps(exif_map: Dict[str, dict],
     ]
 
     image_to_gcps: Dict[str, List[str]] = {}
-    total = len(task_args)
-    completed = 0
 
-    if threads == 1 or total <= 1:
+    if threads == 1 or len(task_args) <= 1:
         # Sequential path: no pool overhead, fork-safe for gunicorn/web contexts
         for args in task_args:
             result = _footprint_worker(args)
-            completed += 1
             if result is not None:
                 fname, labels = result
                 image_to_gcps[fname] = labels
-            if completed % max(1, total // 10) == 0 or completed == total:
-                pct = 100 * completed / total
-                print(f"  footprint match {pct:5.1f}%  ({completed}/{total})",
-                      end='\r', flush=True)
     else:
         # ThreadPoolExecutor: threads are fork-safe (no fork-of-fork risk), and
         # avoid multiprocessing.Pool deadlocks inside gunicorn/preloaded workers.
@@ -289,16 +282,10 @@ def match_images_to_gcps(exif_map: Dict[str, dict],
         # typical dataset sizes this is negligible.
         with ThreadPoolExecutor(max_workers=threads) as executor:
             for result in executor.map(_footprint_worker, task_args):
-                completed += 1
                 if result is not None:
                     fname, labels = result
                     image_to_gcps[fname] = labels
-                if completed % max(1, total // 10) == 0 or completed == total:
-                    pct = 100 * completed / total
-                    print(f"  footprint match {pct:5.1f}%  ({completed}/{total})",
-                          end='\r', flush=True)
 
-    print()  # newline after progress
     return image_to_gcps
 
 
@@ -864,24 +851,24 @@ def _compute_estimates_mode_a(
 def _classify_gcps(gcps: List[dict],
                    estimates: Dict[str, Dict[str, dict]],
                    sorted_labels: List[str],
-                   n_control: int = 7,
-                   n_check: int = 7) -> None:
+                   n_control: int = 10) -> None:
     """
-    Rename GCP labels in-place with GCP-* / CHK-* / SPA-* prefixes.
+    Rename GCP labels in-place with GCP-* / CHK-* / DUP-* prefixes.
 
     sorted_labels: GCP labels in structural priority order (output of _sort_gcps,
                    with demoted near-duplicates appended at the end).
 
     Prefix assignment:
-        Positions 1 .. n_control                → GCP-{base}   (control)
-        Positions n_control+1 .. n_control+n_check → CHK-{base}  (check)
-        Positions n_control+n_check+1 .. end    → SPA-{base}   (spare)
+        Positions 1 .. n_control     → GCP-{base}   (control)
+        Positions n_control+1 .. end → CHK-{base}   (check)
 
-    Any existing GCP-*/CHK-*/SPA-* prefix is stripped before re-applying so
+    Near-duplicates (GCPs not in sorted_labels) → DUP-{base}.
+
+    Any existing GCP-*/CHK-*/DUP-* prefix is stripped before re-applying so
     that re-running the pipeline on already-prefixed labels is idempotent.
     """
     def _base(label: str) -> str:
-        for pfx in ('GCP-', 'CHK-', 'SPA-'):
+        for pfx in ('GCP-', 'CHK-', 'DUP-'):
             if label.startswith(pfx):
                 return label[len(pfx):]
         return label
@@ -891,16 +878,14 @@ def _classify_gcps(gcps: List[dict],
         base = _base(label)
         if rank <= n_control:
             rename[label] = f'GCP-{base}'
-        elif rank <= n_control + n_check:
-            rename[label] = f'CHK-{base}'
         else:
-            rename[label] = f'SPA-{base}'
+            rename[label] = f'CHK-{base}'
 
     # Any GCP not in sorted_labels is a near-duplicate demoted outside the main
-    # sort — give it SPA- prefix too.
+    # sort — give it DUP- prefix.
     for gcp in gcps:
         if gcp['label'] not in rename:
-            rename[gcp['label']] = f'SPA-{_base(gcp["label"])}'
+            rename[gcp['label']] = f'DUP-{_base(gcp["label"])}'
 
     # Apply to gcps list (in-place mutation of dicts)
     for gcp in gcps:
@@ -914,8 +899,8 @@ def _classify_gcps(gcps: List[dict],
 
     n_ctrl = sum(1 for g in gcps if g['label'].startswith('GCP-'))
     n_chk  = sum(1 for g in gcps if g['label'].startswith('CHK-'))
-    n_spa  = sum(1 for g in gcps if g['label'].startswith('SPA-'))
-    print(f"  {n_ctrl} GCP-* (control),  {n_chk} CHK-* (check),  {n_spa} SPA-* (spare)")
+    n_dup  = sum(1 for g in gcps if g['label'].startswith('DUP-'))
+    print(f"  {n_ctrl} GCP-* (control),  {n_chk} CHK-* (check),  {n_dup} DUP-* (near-duplicate)")
 
 
 # ---------------------------------------------------------------------------
@@ -942,8 +927,7 @@ def run_pipeline(images_dir: str,
                  dup_tolerance_m: float = 1.0,
                  omit_duplicates: bool = False,
                  classify: bool = True,
-                 n_control: int = 7,
-                 n_check: int = 7,
+                 n_control: int = 10,
                  refine_pixels: bool = True,
                  refine_limit: int = 0) -> Tuple[str, dict]:
     """
@@ -959,10 +943,9 @@ def run_pipeline(images_dir: str,
     sort_output:   order GCPs by structural priority and images by confidence score.
     z_threshold:   fraction of XY diagonal; Z extremes get priority slots only above
                    this ratio (default 0.05 = 5 %).
-    classify:      rename GCP labels with GCP-*/CHK-*/SPA-* prefixes based on
+    classify:      rename GCP labels with GCP-*/CHK-*/DUP-* prefixes based on
                    structural sort order (geo-12w).  Requires sort_output=True.
-    n_control:     number of top GCPs to label GCP-* (default 7).
-    n_check:       number of next GCPs to label CHK-* (default 7).
+    n_control:     number of top GCPs to label GCP-* (default 10); remainder → CHK-*.
     refine_pixels: run Stage-3 color-based pixel refinement after projection;
                    updates px/py to sub-pixel accuracy and adds marker_bbox column.
                    Requires opencv-python and numpy.
@@ -1001,7 +984,7 @@ def run_pipeline(images_dir: str,
             print(f"  WARNING: failed to load reconstruction: {e}. Using Mode A only.")
 
     # B3 — Compute pixel estimates
-    print("Estimating GCP locations via GCP,image geometry...")
+    print("Estimating GCP locations via GCP,image projection geometry...")
     if reconstruction:
         ref = reconstruction['reference_lla']
         shots = reconstruction.get('shots', {})
@@ -1052,7 +1035,7 @@ def run_pipeline(images_dir: str,
             gcps_main_pre, demoted_triples_presort = _separate_near_duplicates(
                 gcps_with_est, dup_tolerance_m)
             if demoted_triples_presort:
-                action = "omitted (--omit-duplicates)" if omit_duplicates else "demoted to end of list"
+                action = "omitted (--omit-duplicates)" if omit_duplicates else "prefixed names with DUP- and moved to bottom of the list"
                 print(f"  WARNING: {len(demoted_triples_presort)} GCP(s) within "
                       f"{dup_tolerance_m:.1f} m of another — {action}")
         else:
@@ -1064,13 +1047,15 @@ def run_pipeline(images_dir: str,
         return ([g['label'] for g in sorted_gcps_order] +
                 [dup['label'] for dup, _, _ in demoted_triples_presort])
 
-    # Classification (geo-12w): rename labels with GCP-*/CHK-*/SPA-* prefixes
+    # Classification (geo-12w): rename labels with GCP-*/CHK-*/DUP-* prefixes
     if classify:
         if not sorted_gcps_order:
             print("  WARNING: --classify requires sort_output; skipping classification.")
         else:
-            print("Classifying GCPs (GCP-* / CHK-* / SPA-*)...")
-            _classify_gcps(gcps, estimates, _sorted_labels(), n_control, n_check)
+            # Pass only the non-demoted sorted labels; demoted triples are not in
+            # this list so they fall through to the DUP-* path in _classify_gcps().
+            _classify_gcps(gcps, estimates,
+                           [g['label'] for g in sorted_gcps_order], n_control)
             # sorted_gcps_order dicts were mutated in-place; _sorted_labels() now
             # returns the renamed labels automatically.
 
@@ -1126,11 +1111,9 @@ if __name__ == '__main__':
     parser.add_argument('--omit-duplicates', action='store_true',
                         help='Omit near-duplicate GCPs from the output entirely instead of demoting them to the end')
     parser.add_argument('--no-classify', dest='classify', action='store_false',
-                        help='Disable GCP-*/CHK-*/SPA-* label classification (classification runs by default)')
-    parser.add_argument('--n-control', type=int, default=7,
-                        help='Number of top-priority GCPs to label GCP-* (default 7)')
-    parser.add_argument('--n-check', type=int, default=7,
-                        help='Number of next GCPs to label CHK-* (default 7)')
+                        help='Disable GCP-*/CHK-*/DUP-* label classification (classification runs by default)')
+    parser.add_argument('--n-control', type=int, default=10,
+                        help='Number of top-priority GCPs to label GCP-*; remainder → CHK-* (default 10)')
     parser.add_argument('--no-refine-pixels', dest='refine_pixels', action='store_false',
                         help='Disable color-based pixel refinement and marker bounding-box computation '
                              '(refinement runs by default; requires opencv-python and numpy)')
@@ -1188,7 +1171,6 @@ if __name__ == '__main__':
             omit_duplicates=args.omit_duplicates,
             classify=args.classify,
             n_control=args.n_control,
-            n_check=args.n_check,
             refine_pixels=args.refine_pixels,
             refine_limit=args.refine_limit,
         )
