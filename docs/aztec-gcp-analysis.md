@@ -1,27 +1,68 @@
 # Aztec NM — GCP Analysis and Flight Recommendations
 
 **Job:** F100340 AZTEC
-**Site:** ~8.6 × 7.4 mi block (11.31 mi diagonal), Aztec NM
+**Site:** L-shaped corridor — US 550 (NE of Aztec) + NM 516 (E-W through Aztec)
 **Customer requirement:** 55 control points + check points
 **Accuracy targets:** 0.1 ft horizontal, 0.3 ft vertical
 
 ---
 
-## What is in the provided point file
+## What is actually in the provided data
+
+### Point file (F100340 AZTEC.dc → F100340_AZTEC_points.csv)
 
 | Category | Count | Notes |
 |---|---|---|
-| 3D control points | **48** | BRASS CAP, ALUM CAP, NGS VCM — usable as GCPs |
-| Road alignment geometry | 32 | PC, PT, PI, EOP — horizontal only, no elevation, not usable as GCPs |
-| Crossover centerline | 4 | Elevation = 0.00 — not usable |
+| **True survey monuments** | **18** | Brass/alum caps, NGS VCM — usable as GCPs |
+| Structure as-built detail | 28 | TOF, CWB wall, pipe inverts, manholes — all in a 300×700 ft area at one bridge/retaining wall structure; not aerial targets |
+| Road alignment geometry | 36 | PC, PT, PI, B.O.P., EOP, CL crossover — horizontal only, no elevation |
 | Base station setups | 12 | GNSS antenna heights (2–9 ft), not ground elevation |
-| Observed points | 12 | Repeated antenna height measurements — not GCPs |
+| Observed points | 12 | Repeated antenna setups — not GCPs |
 
-The 48 three-dimensional control points are the GCPs.  The customer's "55" likely
-means they expect a few additional targets to be set in the field.
+The 18 true survey monuments are the usable GCPs.  The original count of "48 3D control
+points" included 28 construction detail points that are not GCP targets.
 
-**Terrain:** 214 ft of relief over 11.31 miles (Z/XY = 0.004) — essentially flat.
-No Z-critical GCP slots needed; standard perimeter + center-pin structure applies.
+### The project is L-shaped — two corridors
+
+The customer-provided KMZ covers **only US 550** (northeast of Aztec, ~6 miles).
+The monument dataset covers **both roads**:
+
+| Corridor | Monuments | Coordinates | KMZ provided? |
+|---|---|---|---|
+| US 550 | **5** (IDs 11–18) | lat 36.853–36.926, lon -107.967 to -107.904 | ✓ Yes |
+| NM 516 | **13** (IDs 1–10) | lat 36.816–36.840, lon -108.056 to -107.977 | **No** |
+
+With only 5 monuments on US 550, the customer's "55 control points" almost certainly
+implies setting new targets in the field, not just using the existing caps.
+
+### Side-of-road distribution
+
+US 550 runs **northeast** in this area.  "East/right" side = the southeast face of the road.
+
+- US 550 monuments: **3 LT (northwest/left) / 2 RT (southeast/right)** — reasonably balanced
+- NM 516 monuments: all appear as "right" of US 550 because they are on a different road
+  southwest of the US 550 corridor — side-of-road relative to NM 516 is unknown without
+  that route's centerline
+
+The all-red appearance in Google Earth (all GCPs on one side) is because the KMZ only
+shows US 550, and the NM 516 monuments are all to the southwest of it.  Loaded together
+they look one-sided, but they're actually on a completely separate road.
+
+**Ideal setup:** 2–3 GCPs on each side per corridor, alternating along the length.
+
+### Structure detail cluster (2000-series points)
+
+28 points (IDs 2000–2035: TOF, CWB WALL, inv pipe, mh inlet, etc.) are packed into a
+~300 × 700 ft area.  These are bridge/retaining wall construction as-built measurements
+at the US 550 / NM 516 interchange.  They were included in the DC file as 69KI control
+records (formal survey control) but they are:
+- Impossible to identify individually from altitude
+- All within one cluster — no structural GCP value
+- Labeled "inv pipe", "TOF STEP G-H", etc. — structure elements, not targets
+
+These are **excluded from all GCP selection.**  The original "center pin" (ID 2000,
+"inv pipe") in the preliminary analysis was one of these — it has been replaced by
+a true survey monument.
 
 ---
 
@@ -38,7 +79,7 @@ real-world units.  The practical floor is 1–2× GSD horizontal, 2–3× GSD ve
 | 5 | **0.08 / 0.17 ✓** | 0.12 / 0.24 | 0.17 / 0.33 | 0.25 / 0.49 | 0.33 / 0.66 |
 | 7 | **0.05 / 0.10 ✓** | **0.07 / 0.15 ✓** | **0.10 / 0.20 ✓** | 0.15 / 0.29 | 0.20 / 0.39 |
 | 10 | **✓** | **✓** | **✓** | **0.10 / 0.20 ✓** | 0.13 / 0.26 |
-| 15–52 | **✓** | **✓** | **✓** | **✓** | 0.13 / 0.26 |
+| 15–18 | **✓** | **✓** | **✓** | **✓** | 0.13 / 0.26 |
 
 *Values are horizontal / vertical RMSE in feet.  ✓ = meets 0.1 ft H / 0.3 ft V targets.*
 
@@ -51,38 +92,25 @@ RMSE improvement.  This is a hard limit set by physics (GSD), not by effort.
 
 ### 2. GCP distribution — more important than count
 
-The structural priority algorithm selects the best-distributed subset from the 48
-monuments.  Coverage gap analysis shows how much of the block is more than X miles
-from its nearest GCP:
+**For a linear corridor project, side-of-road alternation is the critical distribution
+property.**  All GCPs on one side allows the block to tilt perpendicular to the road
+no matter how many GCPs are used.  A minimum of 2 GCPs on each side per corridor
+locks the cross-track axis.
 
-| GCPs used | Max gap to nearest GCP |
-|---|---|
-| 5 | 1.69 mi |
-| 7 | 1.28 mi |
-| **10** | **0.63 mi** |
-| 15 | 0.63 mi |
-| 20 | 0.63 mi |
-| 30 | 0.63 mi |
-| **52** | **0.63 mi — same as 10** |
+The structural priority algorithm also selects for:
+- Distal anchors (lock scale and orientation along the corridor)
+- Center pin (prevents doming — one GCP near the midpoint of the block)
+- Perimeter fill (minimize maximum gap)
 
-The 10 structurally optimal monuments already define the coverage envelope.  The
-remaining 38 are all clustered near those 10 — adding them fills no spatial gaps.
-**The customer's 52 monuments cover the block no better than 10 well-chosen ones
-from that same set.**
-
-The 0.63 mi residual gap is not a monument problem — it's a gap in the road network
-where no monuments exist.  A custom-placed colored-X target in that area would fill
-it; an additional monument from the existing 48 cannot.
+With only 5 US 550 monuments and 13 NM 516 monuments, there is no redundancy —
+every monument matters.  The customer's "55 targets" implies supplementing with
+newly-placed colored-X targets.
 
 ---
 
 ## The visibility problem
 
-This is the issue that will most affect tagging accuracy — and tagging accuracy
-directly limits achievable RMSE.
-
-Brass and aluminum caps are approximately 2 inches in diameter.  Their size in drone
-imagery:
+Brass and aluminum caps are approximately 2 inches in diameter.
 
 | Altitude | GSD | 2" monument | Tagging difficulty |
 |---|---|---|---|
@@ -92,137 +120,138 @@ imagery:
 | 300 ft | 0.098 ft/px | 1.7 pixels | Essentially invisible |
 | 400 ft | 0.131 ft/px | 1.3 pixels | Essentially invisible |
 
-A correctly placed click needs to land within 1–2 pixels of the true center.  When
-the target itself is 2–3 pixels across, that is nearly impossible to do consistently.
-Tagging error at this scale propagates directly into model accuracy.
+Tagging error on a 2" cap is the binding accuracy constraint regardless of GCP count.
 
-Compare: a **4-foot colored-X target** at 200 ft AGL is **24 pixels** across.
-Clicking the center to within 2 pixels is straightforward, even in oblique images.
-The colored-X auto-detection pipeline narrows the initial estimate to ±5–30 px
-automatically, after which the operator confirms with a single keypress.
+### Orange clay pigeon targets
 
-**Implication:** even if we use all 52 monuments exactly as the customer specified,
-the tagging accuracy on 2" caps at survey altitude will be the binding constraint on
-RMSE — not the GCP count.
+Isaiah has been using **8–10 clay pigeons per target** arranged as a cross:
+- 3 touching pigeons per arm (a continuous 13" orange bar per arm = ~16 px at 200 ft)
+- Touching is better than spaced: continuous bars have cleaner edges for auto-detection
+  and a more stable centroid estimate
 
----
+**At a brass/alum cap:** use 8 pigeons (4 arms × 2 each), **no center pigeon** —
+leave the cap exposed in the gap.  The cap is the GCP coordinate; the pigeons frame
+it.  The geometric center of the 4 arms = the cap = zero offset error.
 
-## Structural top 10 — the monuments that matter most
-
-These are selected by the max-insertion algorithm: each one provides the greatest
-remaining structural value to the photogrammetric block.
-
-| Priority | ID | Description | Role |
-|---|---|---|---|
-| 1 | 18 | ALUM CAP | NE distal anchor — sets one corner of the block |
-| 2 | 1 | BRASS CAP 3703-211 | SW distal anchor — defines scale and orientation |
-| 3 | 2000 | inv pipe | **Center pin — prevents doming; most commonly missed** |
-| 4 | 14 | NGS VCM 3D Y 430 | Perimeter fill |
-| 5 | 13 | BRASS CAP | Perimeter fill |
-| 6 | 2 | ALUM CAP 3703-3011 | Perimeter fill |
-| 7 | 7 | ALUM CAP 409-36 | Perimeter fill |
-| 8 | 11 | PLASTIC CAP RBR | Perimeter fill |
-| 9–10 | (next 2 by geometry) | — | Perimeter fill |
-
-The remaining 38 monuments are effectively check points — they add redundancy and
-improve the accuracy report but contribute little additional structural constraint
-once the top 10 are in.
-
-Z-critical slots (high/low elevation anchors) are suppressed because the site is
-flat (214 ft relief over 11 miles).
+**At a standalone new target:** use 9–10 with a center pigeon.  The center pigeon
+is the click reference since no monument exists beneath it.
 
 ---
 
-## Recommended approach
+## Revised top 10 — from 18 true survey monuments
 
-### For this job (do what the customer asked, but work smart)
+Generated by `python/top10_gcps.py`.  Structure detail points excluded.
+Output files: `results/top10_gcps.csv` and `results/top10_gcps.kml`.
 
-1. **Confirm flight altitude before flying.**  200 ft AGL is the minimum to have a
-   realistic chance at 0.1 ft horizontal.  At 300 ft AGL, the target is out of reach
-   regardless of GCPs.  At 150 ft AGL there is comfortable margin.
+| Priority | ID | Road | Side | Offset | Description | Elevation |
+|---|---|---|---|---|---|---|
+| 1 | 18 | US550 | RT | 385 ft | ALUM CAP | 5829.44 ft |
+| 2 | 1 | NM516 | — | — | BRASS CAP 3703-211 | 5668.37 ft |
+| 3 | 11 | NM516 | — | — | PLASTIC CAP RBR | 5695.66 ft |
+| 4 | 3 | NM516 | — | — | ALUM CAP 3703-3211 | 5620.46 ft |
+| 5 | 14 | US550 | RT | 126 ft | NGS VCM 3D Y 430 | 5797.80 ft |
+| 6 | 15 | US550 | LT | 508 ft | ALUM CAP | 5786.20 ft |
+| 7 | 8 | NM516 | — | — | ALUM CAP 4009-3711 | 5683.61 ft |
+| 8 | 13 | NM516 | — | — | BRASS CAP | 5757.37 ft |
+| 9 | 17 | US550 | LT | 515 ft | ALUM CAP | 5802.92 ft |
+| 10 | 6 | NM516 | — | — | ALUM CAP 4009-3511 | 5643.14 ft |
 
-2. **Supplement monuments with colored-X spray paint.**  On-site tomorrow, spray an
-   X on the pavement centered on (or immediately adjacent to) each of the top-10
-   structural priority monuments.  The monument coordinates remain the known GCP
-   position; the spray paint makes the target visible and accurately taggable from
-   altitude.  This costs nothing but a can of marking paint.
-
-3. **Tag all 52 monuments.**  The customer asked for it and it is not much extra
-   work once the flight is done.  But prioritize the top 10 — get 7+ confirmed images
-   each on those first.
-
-4. **Flag the top 10 as GCP-\* and the rest as CHK-\*** in GCPEditorPro.  This
-   automatically exports `gcp_confirmed.txt` (10 control points for ODM) and
-   `chk_confirmed.txt` (42 check points for the accuracy report) as separate files.
-
-5. **Process twice in WebODM** — once with all 52 GCPs, once with only the top 10.
-   Compare the check-point RMSE between runs.  This is the data that makes the
-   argument for the customer on future jobs.
-
-### For future similar jobs
-
-- **7–10 well-placed colored-X targets** on a site this size will match or beat
-  the accuracy of 52 monuments, at a fraction of the tagging time.
-- The placement advisor tool (in development) generates the optimal target locations
-  automatically from the flight corridor polygon, exported as a KML for field
-  navigation.
-- Processing in **WebODM** (free) eliminates the per-image Pix4D cost entirely.
+KML: Red stars = RT (east/right side of US 550), Blue stars = LT (west/left side).
+NM 516 monuments are labelled "—" for side — side relative to US 550 is not meaningful.
 
 ---
 
 ## Control Sheet (CONTROL SHEET.pdf — Sheet 3 of 0)
 
 The customer-provided control sheet covers **Station 32+80.24 to 330+08.47** along US 550.
-The coordinate values on the sheet are in the NMDOT raw grid (same as the .dc file — subtract
-the empirical offset to get NM Central state plane ft used in the CSV).  Elevations match
-the CSV exactly.
+Coordinates on the sheet are in the NMDOT raw grid (same as the .dc file — subtract the
+empirical offsets to get NM Central state plane ft).  Elevations match the CSV exactly.
 
-### Points with station/offset (field navigation)
+### Points with station/offset for field navigation
 
-| Point | Elevation (ft) | Description | Station | Offset |
+| Point | Elevation | Description | Station | Offset |
 |---|---|---|---|---|
-| 4009-37 | 5683.61 | Alum. Cap. Rebar | 33+53.80 | 50.68' LT |
-| 250557 | 5678.80 | Plastic Cap Rebar | 34+18.69 | 72.15' LT |
-| 250513 | 5682.38 | Brass Cap "3703-38" | 51+38.74 | 54.46' LT |
-| 631 | 5710.57 | **NGS VCM 3D** | 122+72.23 | 75.56' LT |
-| 250171 | 5757.37 | Brass Cap | 158+82.25 | 91.33' RT |
-| 4009-430 | 5797.80 | **NGS VCM 3D ROD "Y 430"** | 249+43.08 | 170.35' RT |
+| 4009-37 | 5683.61 ft | Alum. Cap. Rebar | 33+53.80 | 50.68' LT |
+| 250557 | 5678.80 ft | Plastic Cap Rebar | 34+18.69 | 72.15' LT |
+| 250513 | 5682.38 ft | Brass Cap "3703-38" | 51+38.74 | 54.46' LT |
+| 631 | 5710.57 ft | **NGS VCM 3D** | 122+72.23 | 75.56' LT |
+| 250171 | 5757.37 ft | Brass Cap | 158+82.25 | 91.33' RT |
+| 4009-430 (=ID 14) | 5797.80 ft | **NGS VCM 3D ROD "Y 430"** | 249+43.08 | 170.35' RT |
 
-NGS monuments (631 and 4009-430 / Y 430) have published datasheets on the NGS website and
-can be independently verified before the flight.
+NGS monuments 631 and Y 430 (ID 14) have published datasheets — independently verifiable.
+Y 430 is 170 ft right of the road center and will not be visible from the truck.
 
-### "Out of range" control points
+### "Out of range" control points (confirmed on NM 516)
 
-Seven points (4009-25 through 4009-36) are flagged "Out of range" on the sheet — they're
-outside the US 550 stationing but are still valid 3D control with full coordinates and
-elevations.  These are likely on the NM 516 branch.  They appear correctly in the CSV and
-are usable as GCPs.
+Seven points (4009-25 through 4009-36) are flagged "Out of range" on the US 550 sheet —
+confirmed to be on the NM 516 corridor.  Valid 3D control, usable as GCPs.
 
-| Point | Elevation (ft) | Description |
-|---|---|---|
-| 4009-25 | 5668.37 | Brass Cap "3703-25" |
-| 4009-30 | 5640.96 | Alum. Cap. Rebar "3703-30" |
-| 4009-32 | 5620.46 | Alum. Cap. Rebar "3703-32" |
-| 4009-33 | 5614.53 | Alum. Cap. Rebar "3703-33" |
-| 4009-34 | 5624.25 | Alum. Cap. Rebar "3703-34" |
-| 4009-35 | 5643.14 | Alum. Cap. "4009-35" |
-| 4009-36 | 5687.02 | Alum. Cap. "4009-36" |
+### Sheet coverage
 
-### Notes
-
-- This is **Sheet 3 of 0** — there are additional sheets covering other areas or control
-  not shown here.  Ask the customer for all sheets if available.
+- This is **Sheet 3 of 0** — other sheets exist covering other areas.
 - Survey units: US Survey Feet.  Basis of elevations: NMDOT control map (presumably NAVD88).
-- The alignment geometry points (B.O.P. through F.O.P., 19 points) appear in the CSV with
-  blank elevation — they are horizontal-only and not usable as GCPs.
 
 ---
 
-## Questions to resolve before the flight
+## Recommended approach
 
-- [ ] What altitude is Isaiah planning to fly?  (Must be ≤ 200 ft for 0.1 ft H target)
-- [ ] Does the customer's accuracy spec apply to GCPs (control) or check points
-  (independent validation)?  These are different numbers.
-- [ ] Is spray paint acceptable on the pavement adjacent to monuments, or will the
-  customer object?
-- [ ] Is WebODM available for processing, or is Pix4D required by the customer?
+### Immediate (day of flight)
+
+1. **Confirm flight scope: US 550 only, or US 550 + NM 516?**
+   The KMZ covers US 550.  If NM 516 is in scope, a second flight and KMZ are needed.
+   This changes everything: the GCP count, the target placement plan, the flight time.
+
+2. **Confirm flight altitude before launching.**
+   - ≤ 200 ft AGL: 0.1 ft H target is achievable with 7+ distributed GCPs
+   - 300 ft AGL: 0.1 ft H is not achievable regardless of GCP count
+
+3. **Clay pigeon target placement at monuments:**
+   - 8 pigeons (4 arms × 2 touching), no center pigeon, leave cap exposed in gap
+   - Arms push up to the cap edge but do not cover the cap face
+   - Prioritize the top-10 monuments in the KML (red and blue stars)
+
+4. **Add new targets for the gaps:**
+   Only 5 US 550 monuments exist.  For adequate coverage and side balance, place
+   2–4 new targets on the under-represented (northwest/left) side of US 550,
+   spaced along the corridor.  Spray-paint X + pigeon arrangement.
+
+5. **Tag all monuments + new targets.**
+   Prioritize top-10 KML stars first — get 7+ confirmed images each before moving on.
+
+### Processing
+
+6. **Flag top-10 as GCP-\*, rest as CHK-\*** in GCPEditorPro.
+   Separate ODM run with only top-10 GCPs vs. all GCPs — compare check-point RMSE.
+
+### For future jobs
+
+- **7–10 well-placed colored-X targets** on a site this size match or beat 52 monuments
+  at a fraction of tagging effort.
+- The GCP placement advisor (in development) generates optimal target locations from the
+  flight corridor polygon and exports a KML for field navigation.
+
+---
+
+## Questions to resolve with Isaiah tomorrow
+
+- [ ] **Is the flight US 550 only, or does it include NM 516?**
+  The provided KMZ covers only US 550.  The monument dataset covers both corridors.
+  This is the most consequential open question.
+
+- [ ] **What altitude is he planning to fly?**
+  Must be ≤ 200 ft AGL to have a realistic path to 0.1 ft horizontal accuracy.
+
+- [ ] **Does the customer's accuracy spec apply to control (GCPs) or check points?**
+  These are different numbers.  Control RMSE is always better than check RMSE.
+
+- [ ] **Is spray paint acceptable on pavement adjacent to monuments?**
+  If not, pigeons-only targets need to be larger (more arms) for reliable tagging.
+
+- [ ] **Can he get additional control sheets from the customer?**
+  Sheet 3 of 0 covers US 550 only.  NM 516 monuments have no station/offset data,
+  making field location harder.  Additional sheets would help.
+
+- [ ] **Is WebODM available for processing, or is Pix4D required by the customer?**
+
+- [ ] **What is the customer's deliverable format?**
+  Point cloud, ortho, DEM, or all three?  Processing choices differ.
