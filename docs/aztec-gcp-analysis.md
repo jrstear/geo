@@ -70,24 +70,43 @@ a true survey monument.
 
 ### 1. Flight altitude — the dominant factor
 
-Achievable RMSE is bounded by ground sample distance (GSD): one image pixel in
-real-world units.  The practical floor is 1–2× GSD horizontal, 2–3× GSD vertical.
+Camera: **DJI Mavic 3** (4/3" sensor, 12.3mm FL, 5280px).
+GSD = altitude × 2.664e-4 ft/px (e.g. 200 ft → 0.053 ft/px, 300 ft → 0.080 ft/px).
+
+The table below shows **practical expected RMSE** — real-world achievable with good GCP
+distribution and accurate target tagging.  Values use empirical GSD multipliers (not
+theoretical minimum): 3 GCPs ≈ 5× GSD, 5 GCPs ≈ 3× GSD, 7 GCPs ≈ 2× GSD,
+10 GCPs ≈ 1.25× GSD.  The theoretical floor (1× GSD, perfect conditions) is always lower.
 
 | GCPs | 100 ft AGL | 150 ft AGL | 200 ft AGL | 300 ft AGL | 400 ft AGL |
 |---|---|---|---|---|---|
 | 3 | 0.13 / 0.26 | 0.20 / 0.39 | 0.26 / 0.53 | 0.39 / 0.78 | 0.52 / 1.05 |
 | 5 | **0.08 / 0.17 ✓** | 0.12 / 0.24 | 0.17 / 0.33 | 0.25 / 0.49 | 0.33 / 0.66 |
-| 7 | **0.05 / 0.10 ✓** | **0.07 / 0.15 ✓** | **0.10 / 0.20 ✓** | 0.15 / 0.29 | 0.20 / 0.39 |
-| 10 | **✓** | **✓** | **✓** | **0.10 / 0.20 ✓** | 0.13 / 0.26 |
-| 15–18 | **✓** | **✓** | **✓** | **✓** | 0.13 / 0.26 |
+| 7 | **0.05 / 0.10 ✓** | **0.07 / 0.15 ✓** | **0.10 / 0.20 ✓** | 0.16 / 0.32 | 0.21 / 0.43 |
+| 10 | **0.03 / 0.07 ✓** | **0.05 / 0.10 ✓** | **0.07 / 0.13 ✓** | 0.10 / 0.20 ⚠ | 0.13 / 0.27 |
+| 15–18 | **✓** | **✓** | **✓** | 0.10 / 0.20 ⚠ | 0.13 / 0.27 |
 
-*Values are horizontal / vertical RMSE in feet.  ✓ = meets 0.1 ft H / 0.3 ft V targets.*
+*Values are horizontal / vertical RMSE in feet.  ✓ = meets 0.1 ft H / 0.3 ft V with margin.
+⚠ = right at the limit with best-case tagging — no margin for error (see note below).*
 
-**Critical finding: at 300 ft AGL or higher, no number of GCPs can hit the 0.1 ft
-horizontal target.**  At 200 ft AGL, 7+ well-distributed GCPs get there.  The flight
-altitude must be confirmed before the flight, not discovered afterward.
+**The customer specified 300 ft AGL.** At that altitude with the Mavic 3 (GSD = 0.080 ft/px):
 
-Beyond 10–15 GCPs the rows are identical — adding more monuments provides no further
+| Scenario at 300 ft | Expected H RMSE |
+|---|---|
+| 10 GCPs, excellent pigeon targets, auto-detect | ~0.10–0.11 ft — borderline |
+| 10 GCPs, raw brass caps (2.5 px — very hard to tag) | ~0.14–0.17 ft — likely fails |
+| 7 GCPs (realistic US 550 monument count) | ~0.16 ft — fails |
+| Theoretical absolute floor (unachievable in practice) | 0.080 ft |
+
+**The 300 ft / 0.1 ft H combination is contradictory.**  The table ⚠ value (0.10 ft) assumes
+perfect pigeon targets, perfect GCP distribution, and zero tagging error.  Any one of those
+degrading — and 300 ft gives you ~0.12–0.17 ft horizontal.  The customer may not know
+these two requirements are in conflict.
+
+**200 ft AGL** gives GSD = 0.053 ft/px.  With 7+ good GCPs: ~0.10 ft H (meeting target
+with margin).  With 10 GCPs and pigeon targets: ~0.07 ft H (comfortable margin).
+
+Beyond 10–15 GCPs the values are identical — adding more monuments provides no further
 RMSE improvement.  This is a hard limit set by physics (GSD), not by effort.
 
 ### 2. GCP distribution — more important than count
