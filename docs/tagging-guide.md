@@ -60,10 +60,11 @@ exceeds 5 % of the horizontal span.  Flat sites skip straight from 2nd to the
 center pin.
 
 **Images within each GCP are sorted by confidence** — most reliable first:
-well-centred shots (less lens distortion) before edge shots, nadir before
-oblique for most GCPs.  For Z-critical GCPs (elevation extremes), well-centred
-obliques are interleaved with nadirs early in the list because oblique angles
-provide the parallax that nails vertical accuracy.
+well-centred shots (less lens distortion) before edge shots, with nadir and
+oblique images interleaved so that the first 7 contain both nadir coverage
+(accurate X/Y) and oblique coverage (parallax for accurate Z).  Use
+`--nadir-weight` to tune how aggressively obliques are promoted (default 0.2;
+higher values push obliques later in the list).
 
 The practical implication: **working through GCPs and images in the order shown
 gives you the best photogrammetric result for the least effort.**
@@ -89,6 +90,7 @@ The pipeline renames every GCP label with a prefix that reflects its role:
 | `--no-coloredX` | Disable color-based marker refinement (runs by default; requires opencv-python and numpy) |
 | `--z-threshold 0.02` | Lower threshold to promote Z slots on modest terrain (default 0.05) |
 | `--n-control 7` | Adjust how many top GCPs become GCP-\* (default 10) |
+| `--nadir-weight 0.4` | Tune oblique/nadir interleaving in image sort (0 = treat equally, 1 = all nadir first; default 0.2) |
 | `--reconstruction path/to/reconstruction.json` | Use SfM-refined camera poses for ±5–20 px accuracy instead of EXIF-only ±30–150 px |
 
 ---
@@ -112,18 +114,42 @@ The pipeline renames every GCP label with a prefix that reflects its role:
 
 When a pipeline-generated `gcp_list.txt` is loaded, GCPEditorPro automatically
 enables **zoom view**.  (You can also toggle it manually using the zoom button in
-the tagger toolbar.)  Zoom view shows a cropped sub-image centred on the
-pipeline's pixel estimate, with a crosshair overlay.  When the pipeline detected
-a marker bounding box, the crop automatically scales to frame the target clearly.
+the tagger toolbar.)  Zoom view shows a two-panel layout: a scrollable column of
+cropped sub-image thumbnails on the left, and a full-resolution image panel on
+the right.  Hovering over a thumbnail selects it in the right panel.  When the
+pipeline detected a marker bounding box, the crop automatically scales to frame
+the target clearly.
+
+**Navigating the right-panel image:**
+
+- **Scroll** to zoom in or out, centered on the cursor position.
+- **Click and drag** to pan.
+- The image is initially zoomed to frame the crosshair.
+
+**Compass and tilt overlay:**
+
+Each image shows a small overlay in its top-left corner (both thumbnail and full
+panel) indicating camera orientation:
+
+- **Red arrow** — points north.  Rotate the image in your mind to align the red tip
+  with north.  Useful for orienting yourself to the scene.
+- **Camera icon + tilt angle** — the angle from nadir (0° = straight down,
+  90° = horizontal).  Nadir images show 0°; the ghostrider gulch oblique passes
+  show approximately 45°.  Both orientations appear in the first 7 images for
+  most GCPs (nadir for X/Y accuracy, oblique for Z parallax).  The overlay is
+  hidden for images without gimbal data in their EXIF.
 
 **Workflow for each GCP:**
 
 1. Select the GCP from the list — work top to bottom (structural priority order).
-2. Images are shown in confidence order — best images first.
+2. Images are shown in confidence order — best images first, with a mix of nadir
+   and oblique shots.
 3. For each image, check whether the crosshair lands on the GCP target.
    - If correct: press **Space** to confirm without moving the mouse, or
-     **click the target** to confirm at the clicked location.  The border around the sub-image will turn green, indicating that the mark has been user-confirmed.
+     **click the target** to confirm at the clicked location.  The border turns green.
    - If the estimate is wrong: click the correct location.
+   - If you accidentally confirmed: **shift-click** the crosshair to revert it
+     from confirmed (green) back to estimated (yellow).
    - If the target is not visible: leave it unconfirmed and move to the next image.
 4. Aim to confirm at least 7 images per GCP-\* control point, working from the
    top of the list.  Because images are pre-sorted, confirming the first 7 gives
