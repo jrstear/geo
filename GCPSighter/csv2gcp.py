@@ -684,14 +684,17 @@ def _sort_gcps(gcps: List[dict], z_threshold: float) -> Tuple[List[dict], set]:
 def _image_sort_score(px: float, py: float,
                       img_w: Optional[int], img_h: Optional[int],
                       gimbal_pitch: Optional[float],
-                      z_critical: bool) -> float:
+                      z_critical: bool,
+                      nadir_weight: float = 0.2) -> float:
     """Return a sort score for one image (lower = higher priority).
 
     score = normalized_dist_from_center + nadir_weight * (0 if nadir else 1)
 
-    nadir_weight = 1.0 for normal GCPs  → all nadir before any oblique
-    nadir_weight = 0.3 for Z-critical   → well-centred obliques interleave with nadirs,
-                                          naturally placing ~2-3 obliques in the top 8
+    nadir_weight controls how much obliques are penalised relative to nadirs:
+      1.0 → all nadirs before any oblique
+      0.4 → well-centred obliques interleave with edge-placed nadirs
+      0.2 → obliques appear in top 7 even when most nadirs are centred (default)
+    Z-critical GCPs use nadir_weight * 0.75 to slightly favour obliques for Z resolution.
     """
     if img_w and img_h:
         half_diag = math.sqrt(img_w**2 + img_h**2) / 2.0
@@ -704,11 +707,12 @@ def _image_sort_score(px: float, py: float,
     else:
         nadir_tier = 0 if abs(gimbal_pitch + 90.0) <= NADIR_TOL_DEG else 1
 
-    nadir_weight = 0.3 if z_critical else 1.0
-    return norm_dist + nadir_weight * nadir_tier
+    w = nadir_weight * 0.75 if z_critical else nadir_weight
+    return norm_dist + w * nadir_tier
 
 
-def _sort_images_for_gcp(img_map: dict, exif_map: dict, z_critical: bool) -> List[str]:
+def _sort_images_for_gcp(img_map: dict, exif_map: dict, z_critical: bool,
+                         nadir_weight: float = 0.2) -> List[str]:
     """Return image filenames from img_map sorted by confidence score (best first)."""
     def score(fname):
         est  = img_map[fname]
@@ -718,6 +722,7 @@ def _sort_images_for_gcp(img_map: dict, exif_map: dict, z_critical: bool) -> Lis
             exif.get('img_w'), exif.get('img_h'),
             exif.get('gimbal_pitch'),
             z_critical,
+            nadir_weight=nadir_weight,
         )
     return sorted(img_map.keys(), key=score)
 
@@ -732,7 +737,8 @@ def _write_gcp_list(gcps: List[dict],
                     z_threshold: float = 0.05,
                     exif_map: Optional[Dict[str, dict]] = None,
                     dup_tolerance_m: float = 1.0,
-                    omit_duplicates: bool = False) -> str:
+                    omit_duplicates: bool = False,
+                    nadir_weight: float = 0.2) -> str:
     """
     Build gcp_list.txt content for GCPEditorPro / OpenDroneMap.
 
@@ -801,7 +807,8 @@ def _write_gcp_list(gcps: List[dict],
 
         if sort_output and exif_map is not None:
             ordered_images = _sort_images_for_gcp(
-                img_map, exif_map, gcp_label in z_critical_labels
+                img_map, exif_map, gcp_label in z_critical_labels,
+                nadir_weight=nadir_weight,
             )
         else:
             ordered_images = list(img_map.keys())
@@ -967,7 +974,8 @@ def run_pipeline(images_dir: str,
                  n_control: int = 10,
                  refine_pixels: bool = True,
                  refine_limit: int = 0,
-                 fallback_crs: Optional[str] = None) -> Tuple[str, dict]:
+                 fallback_crs: Optional[str] = None,
+                 nadir_weight: float = 0.2) -> Tuple[str, dict]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -1113,6 +1121,7 @@ def run_pipeline(images_dir: str,
         exif_map=exif_map,
         dup_tolerance_m=dup_tolerance_m,
         omit_duplicates=omit_duplicates,
+        nadir_weight=nadir_weight,
     )
 
     return gcp_txt, estimates
@@ -1167,6 +1176,9 @@ if __name__ == '__main__':
     parser.add_argument('--crs', default=None,
                         help='Fallback CRS when CSV has no CS name column (e.g. EPSG:6529). '
                              'Used to derive lat/lon from easting/northing.')
+    parser.add_argument('--nadir-weight', type=float, default=0.2,
+                        help='Penalty applied to oblique images in the sort score '
+                             '(0=treat obliques same as nadirs, 1=all nadirs first; default 0.2)')
     parser.add_argument('--out-name', default='gcp_list.txt',
                         help='Filename for the gcp_list output (default: gcp_list.txt)')
     parser.set_defaults(classify=True, refine_pixels=True)
@@ -1215,6 +1227,7 @@ if __name__ == '__main__':
             refine_pixels=args.refine_pixels,
             refine_limit=args.refine_limit,
             fallback_crs=args.crs,
+            nadir_weight=args.nadir_weight,
         )
 
         out_dir = Path(args.out_dir)
