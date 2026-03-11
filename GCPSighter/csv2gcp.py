@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-emlid2gcp — Emlid CSV + drone images → GCP pixel estimates.
+csv2gcp — Survey CSV + drone images → GCP pixel estimates.
 
 Stages:
-  B1  parse_emlid_csv()           Parse Emlid Reach CSV (all solution statuses).
+  B1  parse_survey_csv()           Parse a survey CSV (all solution statuses).
   B1  read_image_exif_batch()     Batch exiftool read for all images in parallel.
   B1  match_images_to_gcps()      Footprint-based image↔GCP association.
   B2  project_pixel_mode_a()      EXIF-based pinhole projection (nadir + oblique).
@@ -35,26 +35,36 @@ NADIR_TOL_DEG = 10.0   # pitch within 10° of -90° is treated as nadir
 # B1 — Emlid CSV Parser
 # ---------------------------------------------------------------------------
 
-def parse_emlid_csv(csv_path: str) -> List[dict]:
+def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[dict]:
     """
-    Parse an Emlid Reach CSV and return a list of GCP dicts.
+    Parse a survey CSV (or any survey CSV) and return a list of GCP dicts.
+
+    Column detection is header-based and case-insensitive substring matching, so
+    column order and extra columns do not matter.
+
+    Minimum required columns (one of):
+      • Latitude + Longitude  (WGS84 degrees; ellipsoidal height used if present)
+      • Easting + Northing    (projected; CRS taken from CS name column or fallback_crs)
+
+    When only projected coordinates are present, lat/lon are derived via pyproj.
 
     All points are returned regardless of Solution status (FIX, FLOAT, SINGLE).
     The status is preserved in the 'solution_status' key so callers can filter
     or annotate as needed. Each dict has:
-        label           : str   (Name column)
-        lat             : float (WGS84 degrees)
-        lon             : float (WGS84 degrees)
-        ellip_alt_m     : float (WGS84 ellipsoidal height, metres)
-        easting         : float (projected X in CRS units)
-        northing        : float (projected Y in CRS units)
-        elevation       : float (projected Z / geoid height in CRS units)
-        cs_name         : str   (CRS description from CS name column)
+        label           : str   (Name column, or auto-generated gcp_N)
+        lat             : float (WGS84 degrees, derived if not in CSV)
+        lon             : float (WGS84 degrees, derived if not in CSV)
+        ellip_alt_m     : float or None (WGS84 ellipsoidal height, metres)
+        easting         : float or None (projected X in CRS units)
+        northing        : float or None (projected Y in CRS units)
+        elevation       : float or None (projected Z / geoid height in CRS units)
+        cs_name         : str   (CRS description from CS name column, or '')
         solution_status : str   (e.g. 'FIX', 'FLOAT', 'SINGLE', or '')
 
-    Raises ValueError if no valid rows are found.
+    Raises ValueError if no valid rows are found or lat/lon cannot be determined.
     """
     gcps = []
+    headers: List[str] = []
     with open(csv_path, newline='', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
         headers = [h.strip() for h in reader.fieldnames or []]
@@ -78,18 +88,12 @@ def parse_emlid_csv(csv_path: str) -> List[dict]:
         col_status = _col(['solution status', 'status'])
         col_cs     = _col(['cs name', 'coordinate system'])
 
-        if not col_lat or not col_lon:
-            raise ValueError(
-                f"Cannot find Latitude/Longitude columns in {csv_path}. "
-                f"Headers: {headers}"
-            )
-
         for row in reader:
             try:
                 gcp = {
                     'label':           (row.get(col_name) or '').strip(),
-                    'lat':             float(row[col_lat]),
-                    'lon':             float(row[col_lon]),
+                    'lat':             float(row[col_lat]) if col_lat and row.get(col_lat) else None,
+                    'lon':             float(row[col_lon]) if col_lon and row.get(col_lon) else None,
                     'ellip_alt_m':     float(row[col_ellip]) * FT_TO_M if col_ellip else None,
                     'easting':         float(row[col_east])  if col_east  else None,
                     'northing':        float(row[col_north]) if col_north else None,
@@ -97,7 +101,7 @@ def parse_emlid_csv(csv_path: str) -> List[dict]:
                     'cs_name':         (row.get(col_cs) or '').strip(),
                     'solution_status': (row.get(col_status) or '').strip().upper() if col_status else '',
                 }
-            except (ValueError, KeyError):
+            except (ValueError, KeyError, TypeError):
                 continue   # skip malformed rows
 
             if not gcp['label']:
@@ -110,6 +114,39 @@ def parse_emlid_csv(csv_path: str) -> List[dict]:
             f"No valid GCP points found in {csv_path}. "
             f"Headers found: {headers}"
         )
+
+    # Derive lat/lon from easting/northing for any row that lacks them
+    needs_latlon = [g for g in gcps if g['lat'] is None]
+    if needs_latlon:
+        try:
+            from pyproj import Transformer as _Transformer
+            _xfm_cache: dict = {}
+            for g in needs_latlon:
+                if g['easting'] is None or g['northing'] is None:
+                    continue
+                crs_src = g['cs_name'] or fallback_crs or ''
+                epsg = _cs_name_to_epsg(crs_src) if crs_src else (fallback_crs or None)
+                if not epsg:
+                    continue
+                if epsg not in _xfm_cache:
+                    _xfm_cache[epsg] = _Transformer.from_crs(epsg, 'EPSG:4326', always_xy=True)
+                lon, lat = _xfm_cache[epsg].transform(g['easting'], g['northing'])
+                g['lat'] = lat
+                g['lon'] = lon
+        except ImportError:
+            pass
+
+    still_missing = [g['label'] for g in gcps if g['lat'] is None]
+    if still_missing:
+        hint = (
+            "Provide Latitude/Longitude columns, or Easting+Northing with a "
+            "CS name column or --crs EPSG:xxxx."
+        )
+        raise ValueError(
+            f"{len(still_missing)} point(s) have no lat/lon and it could not be "
+            f"derived: {still_missing}. {hint}"
+        )
+
     return gcps
 
 
@@ -917,7 +954,7 @@ except ImportError:
 
 
 def run_pipeline(images_dir: str,
-                 emlid_csv_path: str,
+                 survey_csv_path: str,
                  reconstruction_path: Optional[str] = None,
                  fallback_radius_m: float = 50.0,
                  threads: int = 0,
@@ -929,7 +966,8 @@ def run_pipeline(images_dir: str,
                  classify: bool = True,
                  n_control: int = 10,
                  refine_pixels: bool = True,
-                 refine_limit: int = 0) -> Tuple[str, dict]:
+                 refine_limit: int = 0,
+                 fallback_crs: Optional[str] = None) -> Tuple[str, dict]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -954,7 +992,7 @@ def run_pipeline(images_dir: str,
     """
     # B1 — Parse inputs
     print("Parsing Emlid CSV...")
-    gcps = parse_emlid_csv(emlid_csv_path)
+    gcps = parse_survey_csv(survey_csv_path, fallback_crs=fallback_crs)
     print(f"  {len(gcps)} GCPs")
 
     print(f"Reading EXIF from {images_dir}...")
@@ -1087,9 +1125,9 @@ def run_pipeline(images_dir: str,
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(
-        description='emlid2gcp: Emlid CSV + drone images → gcpeditpro.txt + pix4d.txt'
+        description='csv2gcp: Survey CSV + drone images → gcpeditpro.txt + pix4d.txt'
     )
-    parser.add_argument('emlid_csv',  help='Emlid CSV file path')
+    parser.add_argument('survey_csv',  help='GCP survey CSV file path')
     parser.add_argument('image_dir',  help='Directory of drone images')
     parser.add_argument('--reconstruction', default=None,
                         help='Path to opensfm/reconstruction.json (enables Mode B)')
@@ -1126,6 +1164,9 @@ if __name__ == '__main__':
     parser.add_argument('--marker-size', type=float, default=None,
                         help=f'Expected physical marker size in metres for GSD-based '
                              f'size filtering. Default: {_refine_module._MARKER_SIZE_M}')
+    parser.add_argument('--crs', default=None,
+                        help='Fallback CRS when CSV has no CS name column (e.g. EPSG:6529). '
+                             'Used to derive lat/lon from easting/northing.')
     parser.add_argument('--out-name', default='gcp_list.txt',
                         help='Filename for the gcp_list output (default: gcp_list.txt)')
     parser.set_defaults(classify=True, refine_pixels=True)
@@ -1134,8 +1175,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.match_only:
-        print(f'Parsing {args.emlid_csv}...')
-        gcps = parse_emlid_csv(args.emlid_csv)
+        print(f'Parsing {args.survey_csv}...')
+        gcps = parse_survey_csv(args.survey_csv, fallback_crs=args.crs)
         print(f'  {len(gcps)} FIX GCPs: {[g["label"] for g in gcps]}')
 
         print(f'\nReading EXIF from {args.image_dir}...')
@@ -1160,7 +1201,7 @@ if __name__ == '__main__':
 
         gcp_txt, estimates = run_pipeline(
             images_dir=args.image_dir,
-            emlid_csv_path=args.emlid_csv,
+            survey_csv_path=args.survey_csv,
             reconstruction_path=args.reconstruction,
             fallback_radius_m=args.radius,
             threads=args.threads,
@@ -1173,6 +1214,7 @@ if __name__ == '__main__':
             n_control=args.n_control,
             refine_pixels=args.refine_pixels,
             refine_limit=args.refine_limit,
+            fallback_crs=args.crs,
         )
 
         out_dir = Path(args.out_dir)

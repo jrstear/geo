@@ -75,6 +75,21 @@ def get_image_metadata(img_path):
 # Parallel Worker
 # ------------------------------------------------------------------------------
 
+def check_image_in_bbox(args):
+    """
+    Worker function to check if an image GPS position falls within a bounding box.
+    args: (img_path, min_lat, max_lat, min_lon, max_lon)
+    Returns: img_path or None
+    """
+    img_path, min_lat, max_lat, min_lon, max_lon = args
+    meta = get_image_metadata(img_path)
+    if meta['lat'] is None or meta['lon'] is None:
+        return None
+    if min_lat <= meta['lat'] <= max_lat and min_lon <= meta['lon'] <= max_lon:
+        return meta['path']
+    return None
+
+
 def check_image_relevance(args):
     """
     Worker function to check if an image contains any GCPs based on footprint.
@@ -247,6 +262,9 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--closest-three", action="store_true", help="Use only the three geographically closest GCPs (smallest triangle perimeter)")
     group.add_argument("--select-points", help="Comma-separated list of GCP labels to use (e.g. 1,3,5)")
+    parser.add_argument("--bbox", action="store_true", help="Select all images within the bounding box of all input points (instead of per-GCP footprint matching)")
+    parser.add_argument("--vrt", action="store_true", help="Build a VRT referencing selected images in-place instead of copying them")
+    parser.add_argument("--output-dir", default=None, help="Output directory for copied images or VRT (default: gcp_images/ or gcp_images.vrt alongside image_dir)")
     parser.add_argument("--list-only", action="store_true", help="Find and report matching images but do not copy them")
     parser.add_argument("--threads", type=int, default=cpu_count(), help="Number of parallel worker threads (default: all CPUs)")
     args = parser.parse_args()
@@ -330,24 +348,41 @@ def main():
 
     # 4. Parallel Image Selection
     images = [img_dir / f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.jpeg'))]
-    print(f"\n🚀 Selecting images containing GCPs using {args.threads} threads...")
-    
-    # image_to_labels maps img_path -> list of labels
-    image_to_labels = {}
     total = len(images)
-    task_args = [(str(img), gcp_gps_data, args.radius) for img in images]
-    
-    with Pool(args.threads) as p:
-        completed = 0
-        for result in p.imap_unordered(check_image_relevance, task_args):
-            if result:
-                img_path, labels = result
-                image_to_labels[img_path] = labels
-            completed += 1
-            if completed % max(1, total // 10) == 0 or completed == total:
-                print(f"   Progress: {(completed/total)*100:6.1f}% ({completed}/{total} images processed)")
 
-    print(f"\n✨ Found {len(image_to_labels)} relevant images out of {total}.")
+    if args.bbox:
+        lats = [lat for lat, lon, label in gcp_gps_data]
+        lons = [lon for lat, lon, label in gcp_gps_data]
+        min_lat, max_lat = min(lats), max(lats)
+        min_lon, max_lon = min(lons), max(lons)
+        print(f"\n🗺️  Bounding box: lat [{min_lat:.6f}, {max_lat:.6f}]  lon [{min_lon:.6f}, {max_lon:.6f}]")
+        print(f"🚀 Selecting images within bounding box using {args.threads} threads...")
+        bbox_images = []
+        task_args = [(str(img), min_lat, max_lat, min_lon, max_lon) for img in images]
+        with Pool(args.threads) as p:
+            completed = 0
+            for result in p.imap_unordered(check_image_in_bbox, task_args):
+                if result:
+                    bbox_images.append(result)
+                completed += 1
+                if completed % max(1, total // 10) == 0 or completed == total:
+                    print(f"   Progress: {(completed/total)*100:6.1f}% ({completed}/{total} images processed)")
+        print(f"\n✨ Found {len(bbox_images)} images within bounding box out of {total}.")
+    else:
+        print(f"\n🚀 Selecting images containing GCPs using {args.threads} threads...")
+        # image_to_labels maps img_path -> list of labels
+        image_to_labels = {}
+        task_args = [(str(img), gcp_gps_data, args.radius) for img in images]
+        with Pool(args.threads) as p:
+            completed = 0
+            for result in p.imap_unordered(check_image_relevance, task_args):
+                if result:
+                    img_path, labels = result
+                    image_to_labels[img_path] = labels
+                completed += 1
+                if completed % max(1, total // 10) == 0 or completed == total:
+                    print(f"   Progress: {(completed/total)*100:6.1f}% ({completed}/{total} images processed)")
+        print(f"\n✨ Found {len(image_to_labels)} relevant images out of {total}.")
 
     # 5. Generate WebODM gcp_list.txt
     with open(output_txt, 'w') as f:
@@ -358,30 +393,61 @@ def main():
             
     print(f"📝 Generated GCP file: {output_txt}")
 
-    # 6. Copy Images
-    if not args.list_only and image_to_labels:
+    # 6. Output — VRT, copy, or list-only
+    selected_images = bbox_images if args.bbox else list(image_to_labels.keys())
+    if args.output_dir:
+        gcp_img_dir = Path(args.output_dir)
+        vrt_path    = Path(args.output_dir) / "gcp_images.vrt"
+    else:
         gcp_img_dir = img_dir.parent / "gcp_images"
-        if gcp_img_dir.exists():
-            shutil.rmtree(gcp_img_dir)
-        gcp_img_dir.mkdir()
-        
-        print(f"📂 Organising images into subdirectories in: {gcp_img_dir}...")
-        for img_path, labels in image_to_labels.items():
-            # Create group folder name: "106", "107", or "106_and_107"
-            sorted_labels = sorted(labels)
-            if len(sorted_labels) > 1:
-                folder_name = "_and_".join(sorted_labels)
-            else:
-                folder_name = sorted_labels[0]
-            
-            target_dir = gcp_img_dir / folder_name
-            target_dir.mkdir(exist_ok=True)
-            
-            src = Path(img_path)
-            dst = target_dir / src.name
-            shutil.copy2(src, dst)
-            
-        print("✨ Finished copying images.")
+        vrt_path    = img_dir.parent / "gcp_images.vrt"
+
+    if args.list_only:
+        pass  # already reported above
+    elif args.vrt:
+        if selected_images:
+            print(f"📋 Building VRT: {vrt_path}")
+            subprocess.run(["gdalbuildvrt", str(vrt_path)] + selected_images, check=True)
+            print(f"✨ VRT written: {vrt_path}")
+        else:
+            print("No images selected — VRT not created.")
+    elif args.bbox:
+        if selected_images:
+            if gcp_img_dir.exists():
+                shutil.rmtree(gcp_img_dir, ignore_errors=True)
+            gcp_img_dir.mkdir(exist_ok=True)
+            print(f"📂 Copying images to: {gcp_img_dir}...")
+            for img_path in selected_images:
+                src = Path(img_path)
+                shutil.copy2(src, gcp_img_dir / src.name)
+            print("✨ Finished copying images.")
+    else:
+        if image_to_labels:
+            if gcp_img_dir.exists():
+                shutil.rmtree(gcp_img_dir, ignore_errors=True)
+            gcp_img_dir.mkdir(exist_ok=True)
+
+            print(f"📂 Organising images into subdirectories in: {gcp_img_dir}...")
+            for img_path, labels in image_to_labels.items():
+                # Create group folder name: "106", "107", or "106_and_107"
+                # Cap at 3 labels to avoid exceeding filesystem path limits
+                sorted_labels = sorted(labels)
+                if len(sorted_labels) > 3:
+                    folder_name = "_and_".join(sorted_labels[:3]) + f"_plus_{len(sorted_labels) - 3}_more"
+                elif len(sorted_labels) > 1:
+                    folder_name = "_and_".join(sorted_labels)
+                else:
+                    folder_name = sorted_labels[0]
+                folder_name = folder_name[:200]  # hard cap for safety
+
+                target_dir = gcp_img_dir / folder_name
+                target_dir.mkdir(exist_ok=True)
+
+                src = Path(img_path)
+                dst = target_dir / src.name
+                shutil.copy2(src, dst)
+
+            print("✨ Finished copying images.")
 
 if __name__ == "__main__":
     main()
