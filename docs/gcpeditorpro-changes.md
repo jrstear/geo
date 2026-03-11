@@ -36,14 +36,13 @@ load and behave exactly as before.
 ### 2. Zoom view
 
 A new **zoom view** was added as the primary tagging interface for pipeline
-files.  Rather than showing a thumbnail grid, zoom view presents one image at a
-time with the crosshair centred on the pipeline's pixel estimate.  The left
-panel shows the full image (with a crosshair overlay); the right panel shows a
-cropped sub-image magnified around the estimate, making the target visible
-without any scrolling or manual navigation.
+files.  It presents a two-panel layout: a scrollable column of cropped
+sub-image thumbnails on the left, and a full-resolution image panel on the
+right.  Hovering over a thumbnail selects it in the right panel.  This allows
+the user to work through images rapidly without switching screens.
 
 Images are shown in the order they appear in the file — which is the
-confidence-ranked order written by `emlid2gcp.py` — so the user works through
+confidence-ranked order written by `csv2gcp.py` — so the user works through
 the best-quality images first.
 
 ### 3. Adaptive crop from marker bounding box (9th column)
@@ -102,7 +101,41 @@ thresholds; `CHK-*` pins are smaller and unlabelled; `DUP-*` pins use a
 separate symbol.  This gives a spatial read of tagging progress — the user
 can see control coverage at a glance and watch pins turn green.
 
-### 9. Split confirmed export
+### 9. Scroll-to-zoom centered on cursor (geo-b49)
+
+Previously, zooming in the full-image panel required holding **Shift** while
+scrolling.  The Shift guard has been removed: plain scroll now zooms in/out,
+always centered on the current cursor position.  This makes navigation
+significantly faster — pan to the area of interest, then scroll to zoom in.
+
+### 10. Shift-click to un-tag / revert to estimated (geo-cvm)
+
+A confirmed (green) tag can be reverted to the pipeline's original estimated
+(yellow) state by **shift-clicking** anywhere in the image — in the full-image
+panel, in a thumbnail in the left column, or in a grid-view thumbnail.  This
+restores the pipeline's original `px`/`py` estimate and `confidence` value.
+
+Previously, the only way to undo an accidental confirmation was to re-click
+the correct pixel manually.
+
+### 11. Per-image north compass and tilt indicator (geo-rrn)
+
+Each image in zoom view — both the thumbnail strip and the large panel — now
+shows a small orientation overlay in the top-left corner:
+
+- **Compass arrow** — red tip points north.  Derived from `GimbalYawDegree`
+  (falling back to `FlightYawDegree`) in DJI XMP metadata.  Rotation is
+  `−GimbalYawDegree` so the red tip stays fixed on north as the drone heading
+  varies.
+- **Camera icon + tilt angle** — a white-outline camera silhouette followed by
+  the degrees-from-nadir angle: `(90 + GimbalPitchDegree)°`, so 0° = straight
+  down, 45° = typical oblique pass, 90° = horizontal.
+
+Both elements are hidden when the relevant EXIF fields are absent.  The overlay
+is read from `storage.service.ts` via a single `exifr.parse(file, {xmp: true})`
+call that caches both yaw and pitch in `getOrientation()`.
+
+### 12. Split confirmed export
 
 The export screen now offers three downloads when a pipeline file is loaded:
 
@@ -124,8 +157,11 @@ download, unchanged.
 | File | Change |
 |------|--------|
 | `src/app/gcps-utils.service.ts` | Read/write 8th confidence column; read 9th marker_bbox column; `hasPipelineEstimates` flag; `generateExtrasNames()` returns `'Marker Bbox'` for col 8 |
-| `src/app/images-tagger/images-tagger.component.ts` | Zoom view; adaptive crop; auto-enable; spacebar confirm; file-order image sequencing; ordering bug fix; write `'confirmed'` confidence |
-| `src/app/images-tagger/images-tagger.component.html` | Zoom view layout (full image + crop panels); crosshair; bbox crop |
+| `src/app/images-tagger/images-tagger.component.ts` | Zoom view; adaptive crop; auto-enable; spacebar confirm; file-order image sequencing; ordering bug fix; write `'confirmed'` confidence; shift-click untag; compass/tilt per image |
+| `src/app/images-tagger/images-tagger.component.html` | Zoom view layout (full image + crop panels); crosshair; bbox crop; compass/tilt overlay on large panel |
+| `src/app/images-tagger/images-tagger.component.scss` | Pill-shaped compass overlay; large-image-compass positioning |
+| `src/app/sub-image-crop/sub-image-crop.component.ts` | Shift-click unpin output; compass/tilt overlay on thumbnail canvas |
+| `src/app/smartimage/smartimage.component.ts` | Scroll-to-zoom on cursor; shift-click unpin output; removed shift-to-zoom guard |
 | `src/app/gcps-map/gcps-map.component.ts` | Progress badges; summary line; GCP-\*/CHK-\*/DUP-\* pin styles |
 | `src/app/gcps-map/gcps-map.component.html` | Summary line; pin rendering |
 | `src/app/export-config/export-config.component.ts` | Split export (control / check / full); pipeline vs non-pipeline branching |

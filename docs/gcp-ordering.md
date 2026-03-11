@@ -113,13 +113,14 @@ radial lens distortion.
 Reuses the existing `is_nadir(exif)` predicate (`gimbal_pitch` within
 `NADIR_TOL_DEG = 10°` of −90°).
 
-For most GCPs, all nadir images should come before oblique ones because nadir
-gives the best horizontal (X, Y) accuracy.
+Both nadir and oblique images have a place in the first 7 tags:
 
-**However:** for Z-critical GCPs (the max/min elevation points in slots 3 and 4),
-oblique shots provide the parallax needed for accurate Z.  Pushing all obliques to
-the back of the list means the user may never reach them if they stop at 8 tags.
-For these GCPs, well-centred obliques should be interleaved with nadirs.
+- **Nadir** (pitch near −90°) gives the best horizontal (X, Y) accuracy.
+- **Oblique** shots provide the parallax needed for accurate Z (elevation).
+
+Pushing all obliques to the back means the user may never tag any if they stop
+at 7.  The `nadir_weight` parameter controls how aggressively obliques are
+promoted.
 
 ### Sort score formula
 
@@ -131,21 +132,26 @@ Images are sorted by score ascending (lower = higher priority).
 
 | GCP type | `nadir_weight` | Effect |
 |----------|----------------|--------|
-| Normal (not Z-critical) | 1.0 | All nadir before any oblique |
-| Z-critical (slots 3 or 4) | 0.3 | Well-centred obliques (~dist < 0.7) appear before poorly-centred nadirs; naturally yields ~2–3 obliques in the top 8 |
+| Normal | `--nadir-weight` (default **0.2**) | Well-centred obliques appear in the top 7, interleaved with centred nadirs |
+| Z-critical (slots 3 or 4) | `nadir_weight × 0.75` (default **0.15**) | Slightly stronger oblique promotion for the elevation-extreme GCPs that most need parallax |
 
-**Example for a Z-critical GCP** (nadir_weight = 0.3):
+Crossover point: an oblique beats a nadir when `nadir_weight < nadir_norm_dist`.
+At the default 0.2, an oblique with `dist = 0.11` (score 0.31) beats a nadir
+with `dist > 0.20`.  Raise `--nadir-weight` toward 1.0 to push obliques later;
+lower it toward 0 to treat both tiers equally.
+
+**Example** (nadir_weight = 0.2):
 
 | Image | dist | nadir? | score |
 |-------|------|--------|-------|
 | A | 0.10 | Yes | 0.10 |
-| B | 0.25 | Yes | 0.25 |
-| C | 0.15 | No  | 0.15 + 0.30 = **0.45** |
-| D | 0.40 | Yes | 0.40 |
-| E | 0.20 | No  | 0.20 + 0.30 = **0.50** |
+| B | 0.11 | No  | 0.11 + 0.20 = **0.31** |
+| C | 0.25 | Yes | 0.25 |
+| D | 0.15 | No  | 0.15 + 0.20 = **0.35** |
+| E | 0.40 | Yes | 0.40 |
 | F | 0.55 | Yes | 0.55 |
 
-→ Order: A, B, D, C, E, F  (two obliques appear in the top 6 naturally)
+→ Order: A, C, B, D, E, F  (two obliques appear in the top 4 naturally)
 
 ### What counts as Z-critical?
 
@@ -172,9 +178,10 @@ New arguments added to `emlid2gcp.py`:
 |----------|---------|-------------|
 | `--no-sort` | off | Disable ordering; output GCPs in Emlid CSV order, images in match order |
 | `--z-threshold` | `0.05` | Fraction of XY diagonal; Z extremes promoted to priority slots only above this ratio |
+| `--nadir-weight` | `0.2` | Oblique penalty in image sort (0 = treat equally, 1 = all nadir first) |
 
 `run_pipeline()` gains matching keyword arguments:
-`sort_output: bool = True`, `z_threshold: float = 0.05`.
+`sort_output: bool = True`, `z_threshold: float = 0.05`, `nadir_weight: float = 0.2`.
 
 ---
 
