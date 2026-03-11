@@ -1,7 +1,8 @@
 # Aztec NM — GCP Analysis and Flight Recommendations
 
 **Job:** F100340 AZTEC
-**Site:** L-shaped corridor — US 550 (NE of Aztec) + NM 516 (E-W through Aztec)
+**Today's flight:** US 550 corridor only (~6 mi, KMZ provided)
+**NM 516 / southern monuments:** from a previous job — not in scope today
 **Customer requirement:** 55 control points + check points
 **Accuracy targets:** 0.1 ft horizontal, 0.3 ft vertical
 
@@ -22,18 +23,19 @@
 The 18 true survey monuments are the usable GCPs.  The original count of "48 3D control
 points" included 28 construction detail points that are not GCP targets.
 
-### The project is L-shaped — two corridors
+### Today's flight: US 550 only
 
-The customer-provided KMZ covers **only US 550** (northeast of Aztec, ~6 miles).
-The monument dataset covers **both roads**:
+The customer-provided KMZ covers **US 550** (northeast of Aztec, ~6 miles).
+The 13 southern/western monuments (IDs 1–13) are from a **previous job** — not in scope.
 
-| Corridor | Monuments | Coordinates | KMZ provided? |
-|---|---|---|---|
-| US 550 | **5** (IDs 11–18) | lat 36.853–36.926, lon -107.967 to -107.904 | ✓ Yes |
-| NM 516 | **13** (IDs 1–10) | lat 36.816–36.840, lon -108.056 to -107.977 | **No** |
+| Corridor | Monuments in scope | Notes |
+|---|---|---|
+| US 550 (today) | **5** (IDs 14–18) | The only relevant monuments for today's flight |
+| NM 516 / previous job | 13 (IDs 1–13) | Out of scope — different job |
 
-With only 5 monuments on US 550, the customer's "55 control points" almost certainly
-implies setting new targets in the field, not just using the existing caps.
+**With only 5 monuments on US 550, the customer's "55 control points" almost certainly
+requires setting new targets in the field.**  The 5 existing caps provide the anchor points;
+new pigeon targets fill the gaps.
 
 ### Side-of-road distribution
 
@@ -70,8 +72,13 @@ a true survey monument.
 
 ### 1. Flight altitude — the dominant factor
 
-Camera: **DJI Mavic 3** (4/3" sensor, 12.3mm FL, 5280px).
-GSD = altitude × 2.664e-4 ft/px (e.g. 200 ft → 0.053 ft/px, 300 ft → 0.080 ft/px).
+Camera: **DJI Mavic 3 Enterprise (M3E)** or **Matrice 4E** — both use a 4/3" CMOS 20 MP
+wide camera (12.3 mm FL, 5280 px), identical to the standard Mavic 3.
+**GSD is unchanged:** altitude × 2.664e-4 ft/px (e.g. 200 ft → 0.053 ft/px, 300 ft → 0.080 ft/px).
+
+*Note on the Matrice 4E's medium-tele camera (70 mm equiv, 1/1.3" 48 MP sensor): GSD is
+roughly 3× lower at the same altitude — excellent for close-range detail but rarely used for
+wide-area corridor mapping.  All tables below assume the wide camera.*
 
 The table below shows **practical expected RMSE** — real-world achievable with good GCP
 distribution and accurate target tagging.  Values use empirical GSD multipliers (not
@@ -89,7 +96,7 @@ theoretical minimum): 3 GCPs ≈ 5× GSD, 5 GCPs ≈ 3× GSD, 7 GCPs ≈ 2× GSD
 *Values are horizontal / vertical RMSE in feet.  ✓ = meets 0.1 ft H / 0.3 ft V with margin.
 ⚠ = right at the limit with best-case tagging — no margin for error (see note below).*
 
-**The customer specified 300 ft AGL.** At that altitude with the Mavic 3 (GSD = 0.080 ft/px):
+**The customer specified 300 ft AGL.** At that altitude with the M3E wide camera (GSD = 0.080 ft/px):
 
 | Scenario at 300 ft | Expected H RMSE |
 |---|---|
@@ -111,19 +118,60 @@ RMSE improvement.  This is a hard limit set by physics (GSD), not by effort.
 
 ### 2. GCP distribution — more important than count
 
-**For a linear corridor project, side-of-road alternation is the critical distribution
-property.**  All GCPs on one side allows the block to tilt perpendicular to the road
-no matter how many GCPs are used.  A minimum of 2 GCPs on each side per corridor
-locks the cross-track axis.
+**For a linear corridor project, two properties matter:**
 
-The structural priority algorithm also selects for:
-- Distal anchors (lock scale and orientation along the corridor)
-- Center pin (prevents doming — one GCP near the midpoint of the block)
-- Perimeter fill (minimize maximum gap)
+**A. Side-of-road alternation (cross-track constraint)**
+All GCPs on one side allows the block to tilt perpendicular to the road regardless
+of how many GCPs are used.  Minimum: 2 GCPs on each side per corridor.
 
-With only 5 US 550 monuments and 13 NM 516 monuments, there is no redundancy —
-every monument matters.  The customer's "55 targets" implies supplementing with
-newly-placed colored-X targets.
+**B. Along-track spacing (accumulation of systematic error)**
+Systematic errors — camera model imperfections, lens distortion, atmospheric
+refraction — accumulate between GCP constraints.  The practical rule:
+
+| Corridor length | GCPs needed (non-RTK) | Spacing |
+|---|---|---|
+| 6 mi (today's US 550) | 6–12 | ~1 per mile |
+| 20 mi | 10–20 | 1 per mile |
+| 50 mi | 25–50 | 1 per mile |
+| Any length, with RTK | 3–5 | RTK constrains position; GCPs calibrate boresight only |
+
+The "10 GCPs is sufficient" finding from compact-block studies does **not** apply to
+long corridors.  For a 50-mile AOI, 10 GCPs means 5-mile gaps where systematic errors
+accumulate unchecked.  GCP count must scale with corridor length.
+
+For today's 6-mile US 550 flight: 6–10 GCPs well-spaced along the route is the target.
+The 5 existing caps provide anchors; new pigeon targets fill the gaps in between.
+Every GCP here matters — there is no redundancy to spare.
+
+### RTK — the M3E / Matrice 4E difference that actually matters
+
+Both the M3E and Matrice 4E are RTK-capable.  RTK fundamentally changes GCP requirements:
+
+| Mode | GCPs needed | Why |
+|---|---|---|
+| **Non-RTK** (standard GPS) | 1 per mile along corridor | Systematic errors accumulate between constraints |
+| **RTK active** | 3–5 per corridor (any length) | RTK constrains position to 1–2 cm; GCPs only calibrate boresight tilt |
+| **PPK (post-processed)** | 3–5, same as RTK | Equivalent accuracy, resolved in office |
+
+**RTK does NOT change GSD or altitude requirements.**  The 300 ft / 0.1 ft H conflict
+is a camera physics problem (GSD = 0.080 ft/px), not a positioning problem.  RTK cannot
+make a 300 ft image resolve sub-pixel.  The altitude recommendation (≤ 200 ft for a
+realistic path to 0.1 ft H) is unchanged.
+
+**If RTK is active today:**
+- The 1-per-mile spacing rule is irrelevant.  3 well-distributed GCPs (one near each
+  end + one mid-corridor) is enough for boresight calibration.
+- The 5 existing caps may be more than sufficient without any new pigeon targets.
+- The pigeon targets remain valuable for tagging accuracy — they don't become
+  optional just because RTK is on.
+
+**If RTK is NOT active (or RTK module not present):**
+- The 1-per-mile rule and all guidance above applies.
+- 6–10 GCPs needed; new pigeon targets in the 3-mile middle gap are essential.
+
+**Confirmed:** RTK will be active on official survey control points for today's flight.
+The 5 existing US 550 caps are sufficient.  Apply pigeon targets at all 5 monuments
+for tagging accuracy; new pigeon-only targets in the middle gap are optional.
 
 ---
 
@@ -157,26 +205,29 @@ is the click reference since no monument exists beneath it.
 
 ---
 
-## Revised top 10 — from 18 true survey monuments
+## US 550 monuments for today's flight
 
-Generated by `python/top10_gcps.py`.  Structure detail points excluded.
-Output files: `results/top10_gcps.csv` and `results/top10_gcps.kml`.
+5 existing survey caps are within the KMZ flight area.  These are the structural
+anchors; new pigeon targets must fill the gaps between them.
 
-| Priority | ID | Road | Side | Offset | Description | Elevation |
-|---|---|---|---|---|---|---|
-| 1 | 18 | US550 | RT | 385 ft | ALUM CAP | 5829.44 ft |
-| 2 | 1 | NM516 | — | — | BRASS CAP 3703-211 | 5668.37 ft |
-| 3 | 11 | NM516 | — | — | PLASTIC CAP RBR | 5695.66 ft |
-| 4 | 3 | NM516 | — | — | ALUM CAP 3703-3211 | 5620.46 ft |
-| 5 | 14 | US550 | RT | 126 ft | NGS VCM 3D Y 430 | 5797.80 ft |
-| 6 | 15 | US550 | LT | 508 ft | ALUM CAP | 5786.20 ft |
-| 7 | 8 | NM516 | — | — | ALUM CAP 4009-3711 | 5683.61 ft |
-| 8 | 13 | NM516 | — | — | BRASS CAP | 5757.37 ft |
-| 9 | 17 | US550 | LT | 515 ft | ALUM CAP | 5802.92 ft |
-| 10 | 6 | NM516 | — | — | ALUM CAP 4009-3511 | 5643.14 ft |
+| ID | Side | Offset | Approx station | Description | Elevation |
+|---|---|---|---|---|---|
+| 14 | RT | 126 ft | ~249+43 (S end) | NGS VCM 3D Y 430 | 5797.80 ft |
+| 15 | LT | 508 ft | N section | ALUM CAP | 5786.20 ft |
+| 16 | LT | ~500 ft | N section | ALUM CAP | (similar) |
+| 17 | LT | 515 ft | N section | ALUM CAP | 5802.92 ft |
+| 18 | RT | 385 ft | N end | ALUM CAP | 5829.44 ft |
 
-KML: Red stars = RT (east/right side of US 550), Blue stars = LT (west/left side).
-NM 516 monuments are labelled "—" for side — side relative to US 550 is not meaningful.
+**Distribution:** ID 14 is near the southern end; IDs 15–18 are clustered at the northern
+end.  With RTK active, the 3-mile middle gap is **not a problem** — RTK constrains position
+continuously; GCPs only calibrate boresight tilt, which is satisfied by having anchors near
+each end.  5 caps is sufficient.
+
+**Side balance:** 3 LT / 2 RT.  Adding 1–2 pigeon-only targets on the RT (east/southeast)
+side in the middle gap would improve cross-track constraint, but is optional with RTK.
+
+KML of all monuments: `results/top10_gcps.kml`
+Red stars = RT (east), Blue stars = LT (west), Grey dots = previous-job monuments (out of scope).
 
 ---
 
@@ -222,20 +273,22 @@ confirmed to be on the NM 516 corridor.  Valid 3D control, usable as GCPs.
 
 2. **Confirm flight altitude before launching.**
    - ≤ 200 ft AGL: 0.1 ft H target is achievable with 7+ distributed GCPs
-   - 300 ft AGL: 0.1 ft H is not achievable regardless of GCP count
+   - 300 ft AGL: 0.1 ft H is not achievable regardless of GCP count or RTK
+   - RTK changes GCP count requirements, not GSD — altitude still matters
 
 3. **Clay pigeon target placement at monuments:**
    - 8 pigeons (4 arms × 2 touching), no center pigeon, leave cap exposed in gap
    - Arms push up to the cap edge but do not cover the cap face
    - Prioritize the top-10 monuments in the KML (red and blue stars)
 
-4. **Add new targets for the gaps:**
-   Only 5 US 550 monuments exist.  For adequate coverage and side balance, place
-   2–4 new targets on the under-represented (northwest/left) side of US 550,
-   spaced along the corridor.  Spray-paint X + pigeon arrangement.
+4. **New targets in the gaps: optional with RTK.**
+   The 5 caps are sufficient for boresight calibration.  If time allows, 1–2 pigeon-only
+   targets on the RT (east/southeast) side mid-corridor improve cross-track constraint —
+   but do not skip monument setup time to get there.
 
-5. **Tag all monuments + new targets.**
-   Prioritize top-10 KML stars first — get 7+ confirmed images each before moving on.
+5. **Tag all 5 monuments.**
+   Get 7+ confirmed images each.  RTK means quality tagging matters more than quantity
+   of GCPs — a poorly-tagged RTK GCP is worse than a well-tagged non-RTK one.
 
 ### Processing
 
@@ -253,9 +306,12 @@ confirmed to be on the NM 516 corridor.  Valid 3D control, usable as GCPs.
 
 ## Questions to resolve with Isaiah tomorrow
 
-- [ ] **Is the flight US 550 only, or does it include NM 516?**
-  The provided KMZ covers only US 550.  The monument dataset covers both corridors.
-  This is the most consequential open question.
+- [x] **Flight scope: US 550 only.**  NM 516 / southern monuments are from a previous job.
+
+- [x] **RTK will be active on official survey control points.**
+  GCP count for boresight calibration = 3–5.  The 5 existing US 550 caps are sufficient.
+  The 1-per-mile spacing rule does not apply.  New pigeon targets in the middle gap
+  are not required for coverage — only needed if side-balance is desired.
 
 - [ ] **What altitude is he planning to fly?**
   Must be ≤ 200 ft AGL to have a realistic path to 0.1 ft horizontal accuracy.
