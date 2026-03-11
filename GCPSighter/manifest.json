@@ -1,6 +1,6 @@
 {
     "name": "GCPSighter",
-    "description": "Estimates GCP pixel locations from Emlid CSV and drone imagery using the emlid2gcp pipeline.",
+    "description": "Estimates GCP pixel locations from a survey CSV and drone imagery using the csv2gcp pipeline.",
     "version": "0.1.0",
     "author": "jrstear",
     "permissions": []

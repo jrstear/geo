@@ -18,15 +18,15 @@ class GenerateGCPView(APIView):
     def post(self, request, pk):
         task = get_object_or_404(Task, pk=pk, project__owner=request.user)
 
-        emlid_file = request.FILES.get('emlid_csv')
-        if emlid_file is None:
-            return Response({'error': 'emlid_csv file is required'},
+        survey_file = request.FILES.get('survey_csv')
+        if survey_file is None:
+            return Response({'error': 'survey_csv file is required'},
                             status=status.HTTP_400_BAD_REQUEST)
 
         # Write uploaded CSV to a temp file
         with tempfile.NamedTemporaryFile(
                 suffix='.csv', delete=False, mode='wb') as tmp:
-            for chunk in emlid_file.chunks():
+            for chunk in survey_file.chunks():
                 tmp.write(chunk)
             tmp_csv_path = tmp.name
 
@@ -48,7 +48,7 @@ class GenerateGCPView(APIView):
             from .pipeline import run_pipeline
             gcp_list_txt, _ = run_pipeline(
                 images_dir=images_dir,
-                emlid_csv_path=tmp_csv_path,
+                survey_csv_path=tmp_csv_path,
                 reconstruction_path=reconstruction_path,
                 threads=1,
             )

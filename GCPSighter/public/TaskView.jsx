@@ -52,14 +52,14 @@ export default class TaskView extends Component {
         const { task, apiURL } = this.props;
 
         if (!csvFile) {
-            this.setState({ error: "Please select an Emlid CSV file." });
+            this.setState({ error: "Please select a GCP survey CSV file." });
             return;
         }
 
         this.setState({ loading: true, error: null, result: null });
 
         const formData = new FormData();
-        formData.append("emlid_csv", csvFile);
+        formData.append("survey_csv", csvFile);
         formData.append("use_reconstruction", useReconstruction ? "true" : "false");
 
         try {
@@ -93,7 +93,7 @@ export default class TaskView extends Component {
                 <button
                     className="btn btn-sm btn-primary"
                     onClick={this.openModal}
-                    title="Sight GCPs from Emlid CSV"
+                    title="Sight GCPs from survey CSV"
                 >
                     <i className="fa fa-crosshairs fa-fw" />
                     <span className="hidden-xs hidden-sm"> GCPSighter</span>
@@ -111,7 +111,7 @@ export default class TaskView extends Component {
                                 </div>
                                 <div className="modal-body">
                                     <div className="form-group">
-                                        <label>Emlid CSV</label>
+                                        <label>Survey CSV</label>
                                         <input
                                             type="file"
                                             className="form-control-file"

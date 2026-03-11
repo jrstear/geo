@@ -1,5 +1,5 @@
 """
-Thin wrapper that imports run_pipeline from emlid2gcp.
+Thin wrapper that imports run_pipeline from csv2gcp.
 
 Search order:
  1. Same directory as this file (plugin dir — normal deployment)
@@ -16,11 +16,11 @@ for _path in [_HERE, _GEO_REPO]:
         sys.path.insert(0, _path)
 
 try:
-    from emlid2gcp import run_pipeline  # noqa: F401
+    from csv2gcp import run_pipeline  # noqa: F401
 except ImportError as e:
     raise ImportError(
-        "Cannot import emlid2gcp. "
-        "Place emlid2gcp.py alongside this file ({}/) "
+        "Cannot import csv2gcp. "
+        "Place csv2gcp.py alongside this file ({}/) "
         "or ensure ~/git/geo is on the Python path. "
         "Original error: {}".format(_HERE, e)
     )
