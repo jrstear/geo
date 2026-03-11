@@ -147,6 +147,25 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
             f"derived: {still_missing}. {hint}"
         )
 
+    # Deduplicate labels: if two survey points share the same name (e.g. Emlid
+    # auto-increment failure), rename 2nd occurrence to label-1, 3rd to label-2,
+    # etc. — matching Pix4D behaviour so downstream tools see unique IDs.
+    import sys as _sys
+    _seen: dict = {}
+    for g in gcps:
+        orig = g['label']
+        if orig not in _seen:
+            _seen[orig] = 0
+        else:
+            _seen[orig] += 1
+            new_label = f"{orig}-{_seen[orig]}"
+            print(
+                f"WARNING: duplicate label {orig!r} — renamed to {new_label!r} "
+                f"(occurrence {_seen[orig] + 1})",
+                file=_sys.stderr,
+            )
+            g['label'] = new_label
+
     return gcps
 
 
