@@ -63,9 +63,18 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
 
     Raises ValueError if no valid rows are found or lat/lon cannot be determined.
     """
+    import re as _re
+    import io as _io
+
+    # A lone " as a field value (e.g. from an Emlid Flow note entry) produces
+    # ,"\n in the raw CSV, which breaks csv.DictReader by opening an unclosed
+    # quoted field.  Strip any such trailing lone-quote before parsing.
+    raw = open(csv_path, encoding='utf-8-sig').read()
+    raw = _re.sub(r',"\n', ',\n', raw)
+
     gcps = []
     headers: List[str] = []
-    with open(csv_path, newline='', encoding='utf-8-sig') as f:
+    with _io.StringIO(raw) as f:
         reader = csv.DictReader(f)
         headers = [h.strip() for h in reader.fieldnames or []]
         h_lower = [h.lower() for h in headers]
