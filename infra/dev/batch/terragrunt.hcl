@@ -20,16 +20,16 @@ dependency "iam" {
 dependency "ecr" {
   config_path = "../ecr"
   mock_outputs = {
-    ecr_base       = "869054869504.dkr.ecr.us-east-1.amazonaws.com"
-    odm_repo_url   = "869054869504.dkr.ecr.us-east-1.amazonaws.com/geo/odm"
-    tools_repo_url = "869054869504.dkr.ecr.us-east-1.amazonaws.com/geo/tools"
+    ecr_base       = "869054869504.dkr.ecr.us-west-2.amazonaws.com"
+    odm_repo_url   = "869054869504.dkr.ecr.us-west-2.amazonaws.com/geo/odm"
+    tools_repo_url = "869054869504.dkr.ecr.us-west-2.amazonaws.com/geo/tools"
   }
   mock_outputs_allowed_terraform_commands = ["validate", "plan"]
 }
 
 inputs = {
   environment          = "dev"
-  region               = "us-east-1"
+  region               = "us-west-2"
   account_id           = get_aws_account_id()
   job_role_arn         = dependency.iam.outputs.job_role_arn
   service_role_arn     = dependency.iam.outputs.service_role_arn

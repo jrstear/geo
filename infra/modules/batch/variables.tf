@@ -6,7 +6,7 @@ variable "environment" {
 variable "region" {
   description = "AWS region"
   type        = string
-  default     = "us-east-1"
+  default     = "us-west-2"
 }
 
 variable "account_id" {
@@ -36,12 +36,12 @@ variable "spot_fleet_role_arn" {
 }
 
 variable "odm_image_url" {
-  description = "Full ECR image URL for the ODM container (e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/geo/odm:latest)"
+  description = "Full ECR image URL for the ODM container (e.g. 123456789.dkr.ecr.us-west-2.amazonaws.com/geo/odm:latest)"
   type        = string
 }
 
 variable "tools_image_url" {
-  description = "Full ECR image URL for the tools container (e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/geo/tools:latest)"
+  description = "Full ECR image URL for the tools container (e.g. 123456789.dkr.ecr.us-west-2.amazonaws.com/geo/tools:latest)"
   type        = string
 }
 

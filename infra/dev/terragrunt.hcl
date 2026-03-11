@@ -4,6 +4,6 @@ include "root" {
 
 inputs = {
   environment = "dev"
-  region      = "us-east-1"
+  region      = "us-west-2"
   account_id  = get_aws_account_id()
 }
