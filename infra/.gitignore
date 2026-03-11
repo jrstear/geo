@@ -1,0 +1,10 @@
+# Terragrunt cache and generated files
+**/.terragrunt-cache/
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/terraform.tfvars
+
+# Keep lock files in modules (optional — uncomment to commit lock files)
+# !modules/**/.terraform.lock.hcl
