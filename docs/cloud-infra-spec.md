@@ -16,12 +16,16 @@ further clarification.
 
 ## Assumptions and Constraints
 
-- ODM is CPU-intensive; no GPU required.
-- Typical run: ~1700 images, 16 vCPU / 32 GB RAM, 2–4 hours wall-clock.
-- Spot instances are acceptable; ODM runs are restartable with no checkpointing needed.
+- GPU is optional for small jobs (~1.4k images) but materially beneficial for large ones
+  (~6k images); see Instance Sizing section.
+- Job sizes vary significantly: Aztec ~1.4k images/18 GB, Red Rocks ~6.4k images/84 GB.
+- ODM resumes cleanly from any stage via `--rerun-from <stage>`; EBS volumes survive
+  instance stop/modify/start unchanged (enables manual stage switching at no extra cost).
+- Spot instances acceptable for experiments; on-demand preferred for production (Spot
+  interruption mid-run requires full restart from last completed stage).
 - Terraform state is stored in S3 (see `backend.tf`).
 - Terragrunt is used for DRY environment management.
-- AWS region: `us-east-1` (parameterize for override).
+- AWS region: `us-west-2` (Oregon).
 - Python tooling runs in the `geo` conda environment locally; inside containers it uses
   `python:3.11-slim` with pip-installed dependencies.
 
@@ -497,36 +501,111 @@ module "batch" {
 
 ---
 
+## Instance Sizing and Stage Switching
+
+### Stage resource profiles
+
+ODM stages have very different resource requirements. Matching instance type to stage is the
+primary cost-optimization lever for large jobs.
+
+| Stage | Aztec (1.4k imgs) | Red Rocks (6.4k imgs) | Bottleneck | GPU benefit |
+|---|---|---|---|---|
+| Feature extract + match | 20–40 min | 90–150 min | Multi-core CPU, 8–16 GB RAM | Yes (2–4×) |
+| Sparse SfM + bundle adjust | 15–30 min | 45–90 min | CPU (mostly serial), 8–16 GB | No |
+| Dense MVS (depth maps) | 2–5 hr | 10–25 hr | GPU >> CPU (**5–10×**) | **Yes, dominant** |
+| Filter points | 10 min | 20 min | I/O | No |
+| Meshing | 30–60 min | 2–4 hr | RAM-heavy CPU, **64–128 GB** | No |
+| Texturing | 30–60 min | 2–4 hr | RAM-heavy CPU, **64–128 GB** | No |
+| DEM + orthophoto | 30–60 min | 1–2 hr | CPU / I/O, 8 GB | No |
+
+Dense MVS is the absolute bottleneck on large jobs. GPU provides 5–10× speedup there and
+nowhere else in the pipeline.
+
+### Instance recommendations
+
+| Job | Use case | Instance | vCPU | RAM | GPU | $/hr |
+|---|---|---|---|---|---|---|
+| Any | RMSE experiments (sparse only) | c5.4xlarge | 16 | 32 GB | — | $0.68 |
+| Aztec-scale | Full pipeline, no GPU | r5.4xlarge | 16 | 128 GB | — | $1.01 |
+| Aztec-scale | Full pipeline, GPU | g4dn.4xlarge | 16 | 64 GB | 1×T4 | $1.20 |
+| Red Rocks-scale | Full pipeline, single instance | g4dn.12xlarge | 48 | 192 GB | 4×T4 | $3.91 |
+| Red Rocks-scale | Full pipeline, stage-switched | c5.4xlarge → g4dn.12xlarge → r5.8xlarge | — | — | — | see below |
+
+The `infra/ec2/main.tf` default is `m5.4xlarge` (16 vCPU / 64 GB, $0.77/hr). For runs that
+reach meshing/texturing, bump to `r5.4xlarge` or larger.
+
+### Stage switching: manual workflow (no code required)
+
+Because EBS volumes survive `stop → modify-instance-type → start` unchanged, stage switching
+requires no orchestration code:
+
+```bash
+# After completing sparse SfM — switch to GPU instance for dense MVS:
+aws ec2 stop-instances --instance-ids <id>
+aws ec2 wait instance-stopped --instance-ids <id>
+aws ec2 modify-instance-attribute --instance-id <id> --instance-type '{"Value":"g4dn.4xlarge"}'
+aws ec2 start-instances --instance-ids <id>
+# SSH in, then resume: docker run ... opendronemap/odm:3.3.0 --rerun-from openmvs
+
+# After dense + filter points — switch to RAM-heavy instance for meshing/texturing:
+# stop → modify to r5.4xlarge → start → resume --rerun-from meshing
+```
+
+Stage boundaries for switching:
+1. **After `opensfm`**: switch to GPU (c5 → g4dn); resume `--rerun-from openmvs` (or dense stage name)
+2. **After `odm_filterpoints`**: switch to high-RAM (g4dn → r5); resume `--rerun-from odm_meshing`
+3. **After texturing** (optional): downsize to m5.large for DEM/ortho
+
+**Note on stage names**: verify exact names for odm:3.3.0 with
+`docker run opendronemap/odm:3.3.0 --help | grep -A5 rerun-from`.
+
+### Cost comparison: Red Rocks full pipeline
+
+| Approach | Wall time | Total cost |
+|---|---|---|
+| r5.8xlarge, no GPU | 35–50 hr | $71–101 |
+| g4dn.12xlarge, GPU, single instance | 18–28 hr | $70–110 |
+| **Stage-switched** (c5 → g4dn.12xlarge → r5.8xlarge) | **14–22 hr** | **$42–74** |
+
+At Aztec scale the savings are modest (~$2–3/run, 30%). At Red Rocks scale, stage switching
+saves ~$30–40/run and is meaningfully faster. Automate (see `geo-8fg`) when running
+10+ jobs/month.
+
+---
+
 ## Cost Estimates
 
-### Per experiment ODM run
+### Per experiment RMSE run (sparse-only, c5.4xlarge)
 
 | Item | Estimate |
 |---|---|
-| c5.4xlarge Spot (~$0.20/hr) × 3 hr | $0.60 |
-| S3 data transfer (images already in S3; same-region) | ~$0.00 |
-| S3 PUT/GET requests | ~$0.01 |
-| CloudWatch Logs | ~$0.01 |
-| **Per run total** | **~$0.60–$0.80** |
+| c5.4xlarge On-demand ($0.68/hr) × 20–45 min | $0.03–0.08 |
+| S3 data transfer (same-region) | ~$0.00 |
+| S3 PUT/GET + CloudWatch | ~$0.01 |
+| **Per run total** | **~$0.03–0.10** |
 
-### Full ablation experiment suite (~50 runs)
-
-| Item | Estimate |
-|---|---|
-| Compute (50 × $0.70) | $35 |
-| S3 storage: 15 GB images + outputs | $0.50/month |
-| ECR storage | $0.20/month |
-| CloudWatch Logs | ~$2 |
-| **One-time experiment total** | **~$40–$50** |
-
-### Production (per project, ~1700 images)
+### Full ablation experiment suite (~50 runs, sparse-only)
 
 | Item | Estimate |
 |---|---|
-| ODM Spot run | $0.60–$1.00 |
-| S3 storage per project | $0.35/month |
-| **Per project total** | **~$1–$2** |
-| Pix4D Cloud equivalent | $50–$200/project |
+| Compute (50 × $0.07) | $3–5 |
+| S3 storage: images + reconstruction.json outputs | $0.50/month |
+| CloudWatch Logs | ~$0.50 |
+| **One-time experiment total** | **~$4–6** |
+
+### Production full pipeline
+
+| Job size | Approach | Per run |
+|---|---|---|
+| ~1.4k images (Aztec) | r5.4xlarge, single instance, ~7 hr | ~$7 |
+| ~1.4k images (Aztec) | Stage-switched (sparse→GPU→RAM) | ~$4–5 |
+| ~6.4k images (Red Rocks) | g4dn.12xlarge, single instance | ~$70–110 |
+| ~6.4k images (Red Rocks) | Stage-switched | ~$42–74 |
+
+| Item | Estimate |
+|---|---|
+| S3 storage per project (images + outputs) | $1–2/month while active |
+| **Pix4D Cloud equivalent** | $50–200/project |
 
 ### Implementation cost (Claude Sonnet sessions)
 
@@ -582,10 +661,14 @@ All of the following must pass before this spec is considered implemented:
 
 ## Open Questions / Future Work
 
-- **Checkpointing**: ODM does not support mid-run checkpoints. If Spot interruption is
-  frequent in practice, consider switching the compute environment to On-Demand for
-  production runs only (a second compute environment wired to the same queue at lower
-  priority).
+- **Checkpointing / Spot interruption**: ODM resumes from the last completed stage via
+  `--rerun-from`, so Spot interruption only loses the current stage (~30–90 min). For
+  production, prefer On-Demand or use a second compute environment at lower priority.
+- **Automated stage switching** (`geo-8fg`, P4 backlog): Manual switching (stop → modify
+  instance type → start) works for occasional runs with no code required. Automated
+  orchestration (Step Functions / ECS chaining) is worth building at ~10+ runs/month.
+  At Red Rocks scale this saves ~$30–40/run. See Instance Sizing section for the
+  three switching boundaries and cost analysis.
 - **rmse_calc_batch.py**: Not yet written. It must read `reconstruction.json` +
   `master_tags.txt` from S3 and write `rmse_report.json`. See `GCPSighter/` for the
   existing local RMSE logic to adapt.
