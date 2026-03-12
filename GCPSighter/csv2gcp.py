@@ -546,6 +546,9 @@ def _cs_name_to_epsg(cs_name: str) -> Optional[str]:
     candidates = [cs_name.split(' + ')[0].strip(), cs_name]
     for candidate in candidates:
         try:
+            # Strip Emlid-specific numeric suffix e.g. "... (ftUS) (5)" → "... (ftUS)"
+            import re as _re
+            candidate = _re.sub(r'\s+\(\d+\)\s*$', '', candidate)
             crs = CRS.from_user_input(candidate)
             epsg = crs.to_epsg()
             if epsg:
