@@ -142,6 +142,9 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
                 lon, lat = _xfm_cache[epsg].transform(g['easting'], g['northing'])
                 g['lat'] = lat
                 g['lon'] = lon
+                # Backfill cs_name so _write_gcp_list can emit the correct CRS header
+                if not g['cs_name']:
+                    g['cs_name'] = epsg
         except ImportError:
             pass
 
@@ -155,6 +158,56 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
             f"{len(still_missing)} point(s) have no lat/lon and it could not be "
             f"derived: {still_missing}. {hint}"
         )
+
+    # Derive ellipsoidal altitude from elevation for rows that have no explicit
+    # Ellipsoidal Height column.  Two-step conversion:
+    #   1. elevation (CRS native units) → metres via pyproj CRS linear unit factor
+    #   2. orthometric metres → WGS84 ellipsoidal metres via NAVD88 geoid grid
+    #      (us_noaa_g2018u0.tif, ships with pyproj-data).  Falls back to raw
+    #      elevation in metres if the grid is unavailable (prints a warning).
+    needs_ellip = [g for g in gcps
+                   if g['ellip_alt_m'] is None and g['elevation'] is not None
+                   and g['lat'] is not None]
+    if needs_ellip:
+        import sys as _sys
+        try:
+            from pyproj import CRS as _CRS, Transformer as _Transformer
+            _unit_cache: dict = {}
+            _vshift: Optional[object] = None
+            _vshift_ok: Optional[bool] = None   # None = untried
+            for g in needs_ellip:
+                crs_src = g['cs_name'] or fallback_crs or ''
+                epsg = _cs_name_to_epsg(crs_src) if crs_src else (fallback_crs or None)
+                # Get linear unit factor (metres per CRS unit)
+                if epsg not in _unit_cache:
+                    try:
+                        crs_obj = _CRS.from_user_input(epsg)
+                        _unit_cache[epsg] = crs_obj.axis_info[0].unit_conversion_factor
+                    except Exception:
+                        _unit_cache[epsg] = 1.0
+                elev_m = g['elevation'] * _unit_cache.get(epsg, 1.0)
+                # Apply geoid correction once (lazy init)
+                if _vshift_ok is None:
+                    try:
+                        _vshift = _Transformer.from_pipeline(
+                            '+proj=vgridshift +grids=us_noaa_g2018u0.tif +multiplier=1')
+                        _vshift_ok = True
+                    except Exception:
+                        _vshift_ok = False
+                        print(
+                            "  WARNING: NAVD88 geoid grid (us_noaa_g2018u0.tif) not found; "
+                            "using orthometric elevation as approximate ellipsoidal height "
+                            "(error ~10–30 m depending on location — pixel estimates will be "
+                            "less accurate but pipeline will run).",
+                            file=_sys.stderr,
+                        )
+                if _vshift_ok and _vshift is not None:
+                    _, _, ellip_m = _vshift.transform(g['lon'], g['lat'], elev_m)
+                    g['ellip_alt_m'] = ellip_m
+                else:
+                    g['ellip_alt_m'] = elev_m
+        except ImportError:
+            pass
 
     # Deduplicate labels: if two survey points share the same name (e.g. Emlid
     # auto-increment failure), rename 2nd occurrence to label-1, 3rd to label-2,
