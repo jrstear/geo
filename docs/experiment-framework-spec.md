@@ -132,6 +132,92 @@ rmse_calc.py — see the Surveyed Z section below.
 
 ---
 
+## Pipeline Optimization for RMSE Experiments
+
+### Key insight: only sparse SfM is needed
+
+RMSE measures where bundle adjustment *thinks* GCP/CHK points are in 3D space vs.
+surveyed positions. This answer comes entirely from sparse SfM + bundle adjustment.
+The following stages are **irrelevant for RMSE** and must be skipped in the
+experiment driver:
+
+| Stage | RMSE relevance | Skip? |
+|---|---|---|
+| Feature extraction | Builds keypoint graph | Required |
+| Feature matching | Builds image connectivity | Required |
+| Sparse SfM + bundle adjustment | **This IS the RMSE** | Required |
+| Dense reconstruction (MVS) | Point density for DSM | **Skip** |
+| Filter points | Clean point cloud | **Skip** |
+| Meshing | Surface for ortho | **Skip** |
+| Texturing | Color on mesh | **Skip** |
+| DEM / orthophoto | Final deliverables | **Skip** |
+
+Skipping dense reconstruction saves **10–20× per run**. Cost drops from ~$0.60–0.80
+(full ODM at medium quality) to ~$0.03–0.10 (sparse only).
+
+### Do NOT attempt image subsets
+
+SfM requires a fully-connected image graph. Selecting only images near GCPs removes
+the bridging images that chain GCP clusters together, causing the reconstruction to
+fail or split into disconnected components. The speedup from skipping dense
+reconstruction already dominates any image-subset benefit. Blackening non-GCP image
+regions breaks feature matching for the same reason.
+
+### Implementation: two options
+
+#### Option A — OpenSfM direct (preferred, ~20–45 min/run for ~1400 images)
+
+ODM's `dataset` stage creates `opensfm/config.yaml` with the GCP file path, camera
+priors, and coordinate reference. Run that first, then invoke OpenSfM stages directly,
+stopping before `compute_depthmaps`:
+
+```bash
+# Step 1: ODM dataset stage only (populates opensfm/config.yaml with GCP path etc.)
+docker run --rm -v /data/project:/datasets/project opendronemap/odm:3.3.0 \
+  --project-path /datasets project \
+  --rerun-from dataset --end-with dataset
+
+# Step 2: OpenSfM sparse reconstruction only (no depth maps / dense)
+docker run --rm --entrypoint bash \
+  -v /data/project:/datasets/project opendronemap/odm:3.3.0 \
+  -c 'cd /datasets/project && \
+      opensfm detect_features opensfm && \
+      opensfm match_features opensfm && \
+      opensfm create_tracks opensfm && \
+      opensfm reconstruct opensfm'
+```
+
+`reconstruction.json` path: `/datasets/project/opensfm/reconstruction.json`
+
+**Verify before implementing**: confirm `--end-with dataset` is a valid flag in
+`opendronemap/odm:3.3.0` (`docker run opendronemap/odm:3.3.0 --help | grep end-with`).
+If unavailable, fall back to Option B.
+
+#### Option B — ODM minimal flags (fallback, ~1.5–2 hr/run)
+
+Still runs lowest-quality dense reconstruction but skips all downstream stages:
+
+```bash
+docker run --rm -v /data/project:/datasets/project opendronemap/odm:3.3.0 \
+  --project-path /datasets project \
+  --pc-quality lowest --skip-3dmodel --skip-report --orthophoto-resolution 100
+```
+
+`reconstruction.json` path: `/datasets/project/odm_opensfm/reconstruction.json`
+
+**Note the path difference** — `rmse_calc.py` and `run.sh` must use the correct path
+for whichever option is implemented.
+
+### Revised cost estimates
+
+| Approach | Time / run | Cost / run | 50-run ablation |
+|---|---|---|---|
+| Full ODM medium (original plan) | 6–10 hr | $0.60–0.80 | ~$40 |
+| Option B: ODM + skip-3dmodel + lowest | 1.5–2 hr | $0.15–0.20 | ~$10 |
+| Option A: OpenSfM sparse only | 20–45 min | $0.03–0.08 | ~$3 |
+
+---
+
 ## Component 1: rmse_calc.py
 
 **Location:** `/Users/jrstear/git/geo/GCPSighter/rmse_calc.py`

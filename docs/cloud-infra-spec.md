@@ -262,43 +262,83 @@ ENTRYPOINT ["/app/run.sh"]
 
 ### run.sh
 
+**IMPORTANT — sparse-only optimization**: For ablation/RMSE experiments, dense
+reconstruction, meshing, texturing, DEM, and orthophoto are unnecessary. RMSE is
+determined entirely by sparse SfM + bundle adjustment. See
+`docs/experiment-framework-spec.md` → "Pipeline Optimization for RMSE Experiments"
+for full rationale.
+
+The script below implements Option A (OpenSfM direct, ~20–45 min/run). Fallback to
+Option B if `--end-with` is unsupported in the pinned ODM image.
+
+`SPARSE_ONLY` env var controls the mode (default: `true` for experiment runs;
+set `false` only when a full ortho/DEM deliverable is needed).
+
 ```bash
 #!/bin/bash
 set -euo pipefail
 
+SPARSE_ONLY="${SPARSE_ONLY:-true}"
+
 # ── 1. Download inputs from S3 ────────────────────────────────────────────────
 echo "[run.sh] Syncing images from ${S3_PROJECT}/inputs/images/ ..."
-aws s3 sync "${S3_PROJECT}/inputs/images/" /data/images/
-
-echo "[run.sh] Downloading emlid.csv ..."
-aws s3 cp "${S3_PROJECT}/inputs/emlid.csv" /data/emlid.csv
+aws s3 sync "${S3_PROJECT}/inputs/images/" /datasets/project/images/
 
 echo "[run.sh] Downloading gcp_experiment.txt for run ${RUN_ID} ..."
-aws s3 cp "${S3_PROJECT}/runs/${RUN_ID}/gcp_experiment.txt" /data/gcp/geo_cps.txt
+mkdir -p /datasets/project
+aws s3 cp "${S3_PROJECT}/runs/${RUN_ID}/gcp_experiment.txt" \
+  /datasets/project/gcp_list.txt
 
-# ── 2. Run ODM ────────────────────────────────────────────────────────────────
-echo "[run.sh] Starting ODM ..."
-python3 /code/run.py /data \
-  --gcp /data/gcp/geo_cps.txt \
-  --orthophoto-resolution 2 \
-  --pc-quality high \
-  ${ODM_OPTIONS:-}
+# ── 2. Run reconstruction ─────────────────────────────────────────────────────
+if [ "${SPARSE_ONLY}" = "true" ]; then
+  echo "[run.sh] Sparse-only mode: ODM dataset stage + OpenSfM reconstruct ..."
 
-# ── 3. Upload outputs to S3 ───────────────────────────────────────────────────
-echo "[run.sh] Uploading reconstruction.json ..."
-aws s3 cp /data/odm_opensfm/reconstruction.json \
+  # Step 1: ODM dataset stage populates opensfm/config.yaml with GCP path + camera priors
+  python3 /code/run.py /datasets project \
+    --project-path /datasets \
+    --rerun-from dataset --end-with dataset \
+    ${ODM_OPTIONS:-}
+
+  # Step 2: OpenSfM sparse reconstruction (no depth maps / dense)
+  cd /datasets/project
+  opensfm detect_features opensfm
+  opensfm match_features opensfm
+  opensfm create_tracks opensfm
+  opensfm reconstruct opensfm
+
+  RECON_JSON="/datasets/project/opensfm/reconstruction.json"
+
+else
+  echo "[run.sh] Full ODM run (ortho + DEM) ..."
+  python3 /code/run.py /datasets project \
+    --project-path /datasets \
+    --pc-quality medium \
+    --dsm --dtm \
+    --orthophoto-resolution 2 \
+    ${ODM_OPTIONS:-}
+
+  RECON_JSON="/datasets/project/odm_opensfm/reconstruction.json"
+
+  # Upload ortho + DEM only in full mode
+  aws s3 sync /datasets/project/odm_orthophoto/ \
+    "${S3_PROJECT}/runs/${RUN_ID}/outputs/odm_orthophoto/"
+  aws s3 sync /datasets/project/odm_dem/ \
+    "${S3_PROJECT}/runs/${RUN_ID}/outputs/odm_dem/"
+fi
+
+# ── 3. Upload reconstruction.json (both modes) ────────────────────────────────
+echo "[run.sh] Uploading reconstruction.json from ${RECON_JSON} ..."
+aws s3 cp "${RECON_JSON}" \
   "${S3_PROJECT}/runs/${RUN_ID}/outputs/reconstruction.json"
-
-echo "[run.sh] Uploading orthophoto ..."
-aws s3 sync /data/odm_orthophoto/ \
-  "${S3_PROJECT}/runs/${RUN_ID}/outputs/odm_orthophoto/"
-
-echo "[run.sh] Uploading DEM ..."
-aws s3 sync /data/odm_dem/ \
-  "${S3_PROJECT}/runs/${RUN_ID}/outputs/odm_dem/"
 
 echo "[run.sh] Done."
 ```
+
+**Note on `--end-with` flag**: verify availability with
+`docker run opendronemap/odm:3.3.0 --help | grep end-with` before deploying.
+If absent, replace the dataset-stage call with Option B from the spec:
+`--pc-quality lowest --skip-3dmodel --skip-report --orthophoto-resolution 100`
+and change `RECON_JSON` to `/datasets/project/odm_opensfm/reconstruction.json`.
 
 Place `run.sh` at `infra/docker/odm/run.sh`. The `Dockerfile` lives at
 `infra/docker/odm/Dockerfile`.
