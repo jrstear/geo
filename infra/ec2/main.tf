@@ -151,7 +151,7 @@ resource "aws_instance" "odm" {
   # On-demand (Spot quota = 0 on this account; request increase via Service Quotas if desired)
 
   root_block_device {
-    volume_size = 150   # GB: ~14 GB images + 5× ODM working space + outputs
+    volume_size = 300   # GB: ~14 GB images + 5-8× ODM working space + outputs (150 GB was too tight at high quality)
     volume_type = "gp3"
     throughput  = 250   # MB/s
     iops        = 3000
