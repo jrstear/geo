@@ -424,6 +424,9 @@ def main():
     parser.add_argument("--load", type=int, default=100, help="CPU load percentage (default 100)")
     parser.add_argument("--include_empty_tiles", action="store_true", help="Do not delete empty tiles")
     parser.add_argument("--keep-xml", action="store_true", help="Keep PAM XML sidecar files for valid tiles")
+    parser.add_argument("--no-downsize", action="store_true", help="Disable automatic 30%% downsampling for files >20 GB")
+    parser.add_argument("--no-tile", action="store_true", help="Output a single GeoTIFF instead of tiles")
+    parser.add_argument("--web-optimized", action="store_true", help="Output a Cloud Optimized GeoTIFF (COG) instead of tiles (requires GDAL >= 3.1)")
 
     # Contour DXF options
     parser.add_argument("--contour-file", help="Input .dxf contour file")
@@ -524,7 +527,7 @@ def main():
         elif args.downsize_GB:
             # Factor^2 = Target/Current
             resample_factor = (args.downsize_GB / original_size_gb)**0.5
-        elif input_size_gb > 20:
+        elif input_size_gb > 20 and not args.no_downsize:
             print(f"🐘 Input file is large ({input_size_gb:.1f}GB). Defaulting to 30% downsizing to preserve disk space...")
             resample_factor = 0.30
 
@@ -549,6 +552,58 @@ def main():
 
             temp_vrt = create_transformed_vrt(args.tif_file, args.scale, args.anchor_x, args.anchor_y, args.shift_x, args.shift_y, resample_factor)
             input_to_tile = temp_vrt
+
+        # ── Single-file output (--no-tile or --web-optimized) ──────────────────
+        if args.web_optimized or args.no_tile:
+            input_abs = os.path.abspath(args.tif_file)
+            input_dir = os.path.dirname(input_abs)
+            base_name = os.path.splitext(input_filename)[0]
+
+            if args.output_dir:
+                os.makedirs(args.output_dir, exist_ok=True)
+                out_dir = args.output_dir
+            else:
+                out_dir = input_dir
+
+            suffix    = "_cog.tif" if args.web_optimized else "_out.tif"
+            single_out = os.path.join(out_dir, f"{base_name}{suffix}")
+
+            if os.path.exists(single_out) and not args.tif_clobber:
+                print(f"Error: Output already exists: {single_out}")
+                print("Use --tif-clobber to overwrite.")
+                if temp_vrt and os.path.exists(temp_vrt):
+                    os.remove(temp_vrt)
+                sys.exit(1)
+            elif os.path.exists(single_out):
+                print(f"⚠️  Overwriting existing: {os.path.basename(single_out)}")
+
+            if args.web_optimized:
+                print("🌐 Building Cloud Optimized GeoTIFF (requires GDAL >= 3.1)...")
+                cmd = [
+                    "gdal_translate", "-q",
+                    "-of", "COG",
+                    "-co", "COMPRESS=LZW", "-co", "PREDICTOR=2",
+                    "--config", "GDAL_PAM_ENABLED", "NO",
+                    input_to_tile, single_out,
+                ]
+            else:
+                print("📄 Building single compressed GeoTIFF...")
+                cmd = [
+                    "gdal_translate", "-q",
+                    "-co", "TILED=YES", "-co", "COMPRESS=LZW", "-co", "PREDICTOR=2",
+                    "--config", "GDAL_PAM_ENABLED", "NO",
+                    input_to_tile, single_out,
+                ]
+
+            subprocess.run(cmd, check=True)
+
+            if temp_vrt and os.path.exists(temp_vrt):
+                os.remove(temp_vrt)
+
+            out_size_gb = os.path.getsize(single_out) / (1024 ** 3)
+            label = "COG" if args.web_optimized else "GeoTIFF"
+            print(f"✨ Done! {label} ready: {single_out} ({out_size_gb:.2f}GB)")
+            return
 
         # Step 2: Directories
         if args.output_dir:
