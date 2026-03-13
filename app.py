@@ -120,6 +120,12 @@ def run():
 
         if data.get("clobber"):
             args.append("--tif-clobber")
+        if data.get("no_downsize"):
+            args.append("--no-downsize")
+        if data.get("no_tile"):
+            args.append("--no-tile")
+        if data.get("web_optimized"):
+            args.append("--web-optimized")
 
         add_arg("downsize_percent", "--downsize-percent")
         add_arg("tile_size", "--tile-size")

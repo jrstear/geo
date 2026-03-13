@@ -227,13 +227,27 @@
                             <div>
                                 <label class="block text-[10px] font-semibold uppercase text-blue-400/70 mb-1">Tile Size (Px)</label>
                                 <input type="number" id="tile_size"
-                                    class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
+                                    class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200 transition-opacity">
                             </div>
                             <div>
                                 <label class="block text-[10px] font-semibold uppercase text-blue-400/70 mb-1">CPU Load %</label>
                                 <input type="number" id="load" min="1" max="100"
                                     class="w-full border rounded-lg px-2 py-1.5 text-sm text-slate-200">
                             </div>
+                        </div>
+                        <div class="flex flex-wrap gap-x-5 gap-y-2 pt-1">
+                            <label class="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-blue-400/70" title="Disable the automatic 30% downsize that triggers for files larger than 20 GB">
+                                <input type="checkbox" id="no_downsize" class="rounded border-blue-700 bg-blue-900/50 text-blue-500">
+                                No Auto-Downsize
+                            </label>
+                            <label class="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-blue-400/70" title="Output a single compressed GeoTIFF instead of cutting into tiles">
+                                <input type="checkbox" id="no_tile" class="rounded border-blue-700 bg-blue-900/50 text-blue-500" onchange="updateTifOptions()">
+                                No Tiling
+                            </label>
+                            <label class="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-blue-400/70" title="Output a Cloud Optimized GeoTIFF (COG) with internal overviews, efficient for web/HTTP streaming (requires GDAL ≥ 3.1)">
+                                <input type="checkbox" id="web_optimized" class="rounded border-blue-700 bg-blue-900/50 text-blue-500" onchange="updateTifOptions()">
+                                Web Optimized (COG)
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -259,6 +273,16 @@
     </div>
 
     <script>
+        function updateTifOptions() {
+            const noTile  = document.getElementById('no_tile').checked;
+            const webOpt  = document.getElementById('web_optimized').checked;
+            const tileSz  = document.getElementById('tile_size');
+            const disable = noTile || webOpt;
+            tileSz.disabled = disable;
+            tileSz.classList.toggle('opacity-40', disable);
+            tileSz.classList.toggle('cursor-not-allowed', disable);
+        }
+
         function browse(mode, targetId) {
             fetch(`/browse?mode=${mode}`)
                 .then(r => r.json())
@@ -331,6 +355,9 @@
                     tif_file:         document.getElementById('tif_file').value,
                     output_dir:       document.getElementById('output_dir').value,
                     clobber:          document.getElementById('clobber').checked,
+                    no_downsize:      document.getElementById('no_downsize').checked,
+                    no_tile:          document.getElementById('no_tile').checked,
+                    web_optimized:    document.getElementById('web_optimized').checked,
                     downsize_percent: document.getElementById('downsize_percent').value,
                     tile_size:        document.getElementById('tile_size').value,
                     load:             document.getElementById('load').value,
