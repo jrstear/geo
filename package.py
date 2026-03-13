@@ -426,7 +426,7 @@ def main():
     parser.add_argument("--keep-xml", action="store_true", help="Keep PAM XML sidecar files for valid tiles")
     parser.add_argument("--no-downsize", action="store_true", help="Disable automatic 30%% downsampling for files >20 GB")
     parser.add_argument("--no-tile", action="store_true", help="Output a single GeoTIFF instead of tiles")
-    parser.add_argument("--web-optimized", action="store_true", help="Output a Cloud Optimized GeoTIFF (COG) instead of tiles (requires GDAL >= 3.1)")
+    parser.add_argument("--web-optimized", action="store_true", help="Output a Cloud Optimized GeoTIFF (COG) instead of tiles")
 
     # Contour DXF options
     parser.add_argument("--contour-file", help="Input .dxf contour file")
@@ -565,7 +565,7 @@ def main():
             else:
                 out_dir = input_dir
 
-            suffix    = "_cog.tif" if args.web_optimized else "_out.tif"
+            suffix     = "_cog.tif" if args.web_optimized else "_out.tif"
             single_out = os.path.join(out_dir, f"{base_name}{suffix}")
 
             if os.path.exists(single_out) and not args.tif_clobber:
@@ -577,25 +577,44 @@ def main():
             elif os.path.exists(single_out):
                 print(f"⚠️  Overwriting existing: {os.path.basename(single_out)}")
 
-            if args.web_optimized:
-                print("🌐 Building Cloud Optimized GeoTIFF (requires GDAL >= 3.1)...")
-                cmd = [
-                    "gdal_translate", "-q",
-                    "-of", "COG",
-                    "-co", "COMPRESS=LZW", "-co", "PREDICTOR=2",
-                    "--config", "GDAL_PAM_ENABLED", "NO",
-                    input_to_tile, single_out,
-                ]
+            # Fast path: --no-tile with no resampling → copy + geotransform update only.
+            # Preserves original compression, internal overviews, and all pixel data exactly.
+            if args.no_tile and not args.web_optimized and resample_factor == 1.0:
+                print("📄 Copying with coordinate update (no re-encode)...")
+                shutil.copy2(args.tif_file, single_out)
+                if needs_vrt:
+                    # Read the already-computed geotransform from the VRT rather than
+                    # reimplementing the scale/shift/anchor math here.
+                    vrt_ds = gdal.Open(temp_vrt)
+                    new_gt = vrt_ds.GetGeoTransform()
+                    vrt_ds = None
+                    gdal.PushErrorHandler("CPLQuietErrorHandler")
+                    out_ds = gdal.OpenEx(single_out, gdal.GA_Update,
+                                         open_options=["IGNORE_COG_LAYOUT_BREAK=YES"])
+                    out_ds.SetGeoTransform(new_gt)
+                    out_ds.FlushCache()
+                    out_ds = None
+                    gdal.PopErrorHandler()
             else:
-                print("📄 Building single compressed GeoTIFF...")
-                cmd = [
-                    "gdal_translate", "-q",
-                    "-co", "TILED=YES", "-co", "COMPRESS=LZW", "-co", "PREDICTOR=2",
-                    "--config", "GDAL_PAM_ENABLED", "NO",
-                    input_to_tile, single_out,
-                ]
-
-            subprocess.run(cmd, check=True)
+                # Re-encode path (COG conversion, or resampling required for --no-tile).
+                if args.web_optimized:
+                    print("🌐 Building Cloud Optimized GeoTIFF...")
+                    cmd = [
+                        "gdal_translate", "-q",
+                        "-of", "COG",
+                        "-co", "COMPRESS=LZW", "-co", "PREDICTOR=2",
+                        "--config", "GDAL_PAM_ENABLED", "NO",
+                        input_to_tile, single_out,
+                    ]
+                else:
+                    print("📄 Building single compressed GeoTIFF...")
+                    cmd = [
+                        "gdal_translate", "-q",
+                        "-co", "TILED=YES", "-co", "COMPRESS=LZW", "-co", "PREDICTOR=2",
+                        "--config", "GDAL_PAM_ENABLED", "NO",
+                        input_to_tile, single_out,
+                    ]
+                subprocess.run(cmd, check=True)
 
             if temp_vrt and os.path.exists(temp_vrt):
                 os.remove(temp_vrt)
