@@ -13,8 +13,8 @@ while true; do
     echo "$(date -u) Spot termination imminent"
     aws sns publish \
       --topic-arn "${SNS_TOPIC}" \
-      --subject "ODM spot: termination imminent" \
-      --message "Instance ${INSTANCE_ID} interrupted. EBS preserved. AWS will auto-restart the instance (persistent spot) and resume the pipeline. No action needed." \
+      --subject "ODM ${PROJECT}" \
+      --message "Spot interruption warning: instance ${INSTANCE_ID} will stop in ~2 min. EBS preserved. AWS will auto-restart and resume the pipeline. No action needed." \
       --region "${REGION}" || true
     exit 0
   fi
