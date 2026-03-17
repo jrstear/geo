@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "TargetSighter"))
-from csv2gcp import parse_survey_csv, project_pixel_mode_a, project_pixel_mode_b
+from sight import parse_survey_csv, project_pixel_mode_a, project_pixel_mode_b
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ def main():
 
     for label, obs_list in sorted(obs_by_label.items()):
         # gcp_confirmed.txt labels may have a prefix (e.g. "GCP-104" or "CHK-104")
-        # that csv2gcp adds; strip it to look up in the raw survey CSV.
+        # that sight.py adds; strip it to look up in the raw survey CSV.
         survey_label = label.split("-", 1)[1] if "-" in label else label
         gcp = gcp_by_label.get(survey_label) or gcp_by_label.get(label)
         if gcp is None:

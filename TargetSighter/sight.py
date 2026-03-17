@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-csv2gcp — Survey CSV + drone images → GCP pixel estimates.
+sight — Survey CSV + drone images → GCP pixel estimates.
 
 Stages:
   B1  parse_survey_csv()           Parse a survey CSV (all solution statuses).
@@ -1239,7 +1239,7 @@ def run_pipeline(images_dir: str,
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(
-        description='csv2gcp: Survey CSV + drone images → gcpeditpro.txt + pix4d.txt'
+        description='sight: Survey CSV + drone images → gcpeditpro.txt + pix4d.txt'
     )
     parser.add_argument('survey_csv',  help='GCP survey CSV file path')
     parser.add_argument('image_dir',  help='Directory of drone images')

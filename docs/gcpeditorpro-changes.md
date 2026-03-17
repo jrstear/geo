@@ -42,7 +42,7 @@ right.  Hovering over a thumbnail selects it in the right panel.  This allows
 the user to work through images rapidly without switching screens.
 
 Images are shown in the order they appear in the file — which is the
-confidence-ranked order written by `csv2gcp.py` — so the user works through
+confidence-ranked order written by `sight.py` — so the user works through
 the best-quality images first.
 
 ### 3. Adaptive crop from marker bounding box (9th column)

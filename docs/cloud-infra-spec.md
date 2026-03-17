@@ -81,7 +81,7 @@ Create two private repositories:
 | Repository name | Purpose |
 |---|---|
 | `geo/odm` | ODM image (based on `opendronemap/odm:latest`), with `run.sh` adapter script added |
-| `geo/tools` | Tooling image (`python:3.11-slim` + `csv2gcp.py` deps + `rmse_calc_batch.py`) |
+| `geo/tools` | Tooling image (`python:3.11-slim` + `sight.py` deps + `rmse_calc_batch.py`) |
 
 Settings for both repos:
 - Image tag mutability: `MUTABLE` (so `:latest` can be pushed freely during development).

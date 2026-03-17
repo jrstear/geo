@@ -256,7 +256,7 @@ Image Weighting for UAV Photogrammetric Accuracy"*
    evidence for the optimal nadir-weight parameter
 3. Ablation experiments: accuracy vs. (GCP count, GCP geometry, images/GCP,
    nadir-weight) on a real survey dataset
-4. Open-source implementation in csv2gcp.py + GCPEditorPro + rmse_calc.py
+4. Open-source implementation in sight.py + GCPEditorPro + rmse_calc.py
 
 **Structure:** Introduction, Related Work (photogrammetric accuracy standards,
 GCP placement guidelines), Methods (pipeline + algorithms), Experiments (setup +
