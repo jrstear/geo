@@ -101,9 +101,19 @@ if /usr/local/bin/odm-run.sh; then
     --exclude "images/*" \
     --region "${REGION}"
   touch "${DONE_MARKER}"
+
+  # Cancel the spot request so AWS doesn't relaunch a new instance after shutdown.
+  SPOT_REQUEST_ID=$(curl -s http://169.254.169.254/latest/meta-data/spot/spot-instance-request-id 2>/dev/null || true)
+  if [ -n "${SPOT_REQUEST_ID}" ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Cancelling spot request ${SPOT_REQUEST_ID}"
+    aws ec2 cancel-spot-instance-requests \
+      --spot-instance-request-ids "${SPOT_REQUEST_ID}" \
+      --region "${REGION}" || true
+  fi
+
   notify "ODM complete: ${PROJECT}" \
-    "Outputs synced to s3://${BUCKET}/${PROJECT}/. Run 'terraform destroy' to cancel the spot request and delete EBS."
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Done. Shutting down in 2 minutes. Run 'terraform destroy' to fully clean up."
+    "Outputs synced to s3://${BUCKET}/${PROJECT}/. Spot request cancelled. Shutting down."
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Done. Shutting down in 2 minutes."
   /sbin/shutdown -h +2
 else
   # odm-run.sh already sent the failure SNS; leave instance up for debugging.
