@@ -205,3 +205,30 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# macOS
+**/.DS_Store
+
+# Editor artifacts
+**/*.swp
+**/*.swo
+
+# Obsidian vault settings
+docs/.obsidian/
+docs/.Rhistory
+
+# Personal prompt scratch files
+.prompts/
+
+# Build artifacts / scratch
+*.zip
+elevationComparison/
+
+# One-off experiment / scratch files
+analyze_color.py
+TargetSighter/bsn2gcp.py
+docs/mermaid_wide.css
+docs/note
+docs/odm-output-options.md
+infra/ec2/bigger
+.gitattributes
