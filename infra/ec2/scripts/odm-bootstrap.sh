@@ -4,7 +4,11 @@
 #
 # New instance  — images/ empty: syncs project from S3, runs pipeline, uploads outputs.
 # Spot resume   — images/ present: skips sync, resumes pipeline from last complete stage.
-# Already done  — .odm-complete marker: exits immediately.
+# Already done  — .odm-complete marker: waits 5min then shuts down (inspection window).
+#
+# Cancelling auto-shutdown:
+#   touch /data/project/.no-autoshutdown    # before or during the 5-min countdown
+#   (delete it when done to re-enable auto-shutdown on next boot)
 #
 # To iterate: scp this file to /usr/local/bin/odm-bootstrap.sh and re-run directly.
 exec >> /var/log/odm-bootstrap.log 2>&1
@@ -28,9 +32,25 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  odm-bootstrap starting (project: ${PROJECT
 # Persistent spot will keep restarting the instance after shutdown; we shut down
 # each time until the user runs 'terraform destroy' to cancel the spot request.
 if [ -f "${DONE_MARKER}" ]; then
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline already complete — shutting down. Run 'terraform destroy' to fully clean up."
+  NO_SHUTDOWN_FLAG="${PROJECT_DIR}/.no-autoshutdown"
+  if [ -f "${NO_SHUTDOWN_FLAG}" ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline already complete — auto-shutdown DISABLED (.no-autoshutdown present). Instance will remain up."
+    notify "ODM idle restart: ${PROJECT}" \
+      "Instance restarted after completed pipeline. Auto-shutdown disabled by .no-autoshutdown — instance will remain up."
+    exit 0
+  fi
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline already complete — shutting down in 5 minutes. SSH in and touch /data/project/.no-autoshutdown to cancel."
   notify "ODM idle restart: ${PROJECT}" \
-    "Instance restarted after completed pipeline. Shutting down again. Run 'terraform destroy' to cancel the spot request."
+    "Instance restarted after completed pipeline. Shutting down in 5 minutes. Touch /data/project/.no-autoshutdown to cancel. Run 'terraform destroy' to cancel the spot request."
+  for i in $(seq 1 30); do   # 30 × 10s = 5 min
+    sleep 10
+    if [ -f "${NO_SHUTDOWN_FLAG}" ]; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Auto-shutdown cancelled (.no-autoshutdown detected). Instance will remain up."
+      notify "ODM idle restart: ${PROJECT}" "Auto-shutdown cancelled. Instance will remain up."
+      exit 0
+    fi
+  done
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Shutting down now. Run 'terraform destroy' to fully clean up."
   shutdown -h +1
   exit 0
 fi
