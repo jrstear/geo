@@ -137,6 +137,11 @@ for stage in "${STAGES[@]}"; do
   if run_stage "${stage}" "${THREADS}"; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✓ ${stage} complete"
     notify "ODM ${PROJECT}" "Stage ${stage} complete on ${PROJECT}."
+    # Sync outputs to S3 so a terraform destroy+apply can resume from this point.
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Syncing to s3://${BUCKET}/${PROJECT}/ ..."
+    aws s3 sync "${PROJECT_DIR}/" "s3://${BUCKET}/${PROJECT}/" \
+      --exclude "images/*" \
+      --region "${REGION}"
   else
     EXIT=$?
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✗ ${stage} FAILED (exit ${EXIT})"
