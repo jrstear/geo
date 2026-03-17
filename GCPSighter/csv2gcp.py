@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 METERS_PER_DEG_LAT = 111319.9
 FULL_FRAME_DIAG_MM = math.sqrt(36**2 + 24**2)   # 43.267 mm
-FT_TO_M = 0.3048
+FT_TO_M = 0.3048006096012192   # US survey foot
 NADIR_TOL_DEG = 10.0   # pitch within 10° of -90° is treated as nadir
 
 # ---------------------------------------------------------------------------
@@ -553,21 +553,42 @@ def project_pixel_mode_b(gcp: dict,
     if p_cam[2] <= 0:
         return None  # behind camera
 
-    # Intrinsics (OpenSfM normalized focal: focal_px / max(w, h))
+    # Intrinsics — OpenSfM uses two camera model conventions:
+    #   perspective: 'focal' (one value, normalised by max(w,h))
+    #   brown:       'focal_x'/'focal_y' + principal point 'c_x'/'c_y'
+    #                + full Brown distortion k1,k2,k3,p1,p2
     w, h = camera['width'], camera['height']
-    focal_px = camera['focal'] * max(w, h)
-    k1 = camera.get('k1', 0.0)
-    k2 = camera.get('k2', 0.0)
+    mwh = max(w, h)
 
-    # Normalized image coords + radial distortion
+    if 'focal' in camera:
+        # Simple perspective model
+        fx = fy = camera['focal'] * mwh
+        cx_off = cy_off = 0.0
+        k1 = camera.get('k1', 0.0)
+        k2 = camera.get('k2', 0.0)
+        k3 = p1 = p2 = 0.0
+    else:
+        # Brown model
+        fx = camera['focal_x'] * mwh
+        fy = camera['focal_y'] * mwh
+        cx_off = camera.get('c_x', 0.0) * mwh
+        cy_off = camera.get('c_y', 0.0) * mwh
+        k1 = camera.get('k1', 0.0)
+        k2 = camera.get('k2', 0.0)
+        k3 = camera.get('k3', 0.0)
+        p1 = camera.get('p1', 0.0)
+        p2 = camera.get('p2', 0.0)
+
+    # Normalized image coords + Brown distortion (radial + tangential)
     xn = p_cam[0] / p_cam[2]
     yn = p_cam[1] / p_cam[2]
     r2 = xn**2 + yn**2
-    distort = 1 + k1 * r2 + k2 * r2**2
-    xd, yd = xn * distort, yn * distort
+    radial = 1 + k1 * r2 + k2 * r2**2 + k3 * r2**3
+    xd = xn * radial + 2 * p1 * xn * yn + p2 * (r2 + 2 * xn**2)
+    yd = yn * radial + p1 * (r2 + 2 * yn**2) + 2 * p2 * xn * yn
 
-    px = focal_px * xd + w / 2.0
-    py = focal_px * yd + h / 2.0
+    px = fx * xd + cx_off + w / 2.0
+    py = fy * yd + cy_off + h / 2.0
 
     if 0 <= px < w and 0 <= py < h:
         return (px, py)
