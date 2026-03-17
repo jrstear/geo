@@ -62,6 +62,9 @@ run_stage() {
   local stage=$1 threads=$2
   local container="odm-${stage}"
 
+  # Remove any stale container from a prior interrupted run (would cause exit 125).
+  docker rm -f "${container}" 2>/dev/null || true
+
   # Absolute backstop: kill if stage exceeds STAGE_TIMEOUT regardless of CPU
   timeout "${STAGE_TIMEOUT}" \
     docker run --rm --name "${container}" \
