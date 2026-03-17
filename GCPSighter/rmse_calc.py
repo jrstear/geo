@@ -300,6 +300,9 @@ def compute_rmse(
     skipped_labels: List[str] = []
 
     for label, obs in sorted(obs_by_label.items()):
+        # Labels in chk_confirmed.txt may carry a csv2gcp prefix (e.g. "CHK-101",
+        # "GCP-102"). Strip it for lookup against raw survey CSV labels ("101").
+        survey_label = label.split("-", 1)[1] if "-" in label else label
         # Check all shots exist; warn about missing ones
         missing_shots = [img for img, _, _ in obs if img not in shots]
         for img in missing_shots:
@@ -332,12 +335,11 @@ def compute_rmse(
         )
 
         # Survey ground truth
-        if label not in survey_by_label:
+        g = survey_by_label.get(survey_label) or survey_by_label.get(label)
+        if g is None:
             print(f"WARNING: label {label!r} not found in emlid.csv — skipped", file=sys.stderr)
             skipped_labels.append(label)
             continue
-
-        g = survey_by_label[label]
         survey_x = g["easting"]    # projected, CRS units
         survey_y = g["northing"]   # projected, CRS units
         survey_z = g["elevation"]  # orthometric, CRS units
