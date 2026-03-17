@@ -4,7 +4,7 @@ rmse_calc.py — 3D RMSE from WebODM reconstruction.json + tagged check pixels.
 
 Usage:
     conda run -n geo python GCPSighter/rmse_calc.py \\
-        reconstruction.json chk_confirmed.txt emlid.csv [--crs EPSG:6529]
+        reconstruction.json chk_confirmed.txt
 
     conda run -n geo python GCPSighter/rmse_calc.py --test
 
@@ -13,7 +13,11 @@ For each CHK-* label in chk_confirmed.txt:
   2. Builds viewing rays through SfM-optimised camera poses (Rodrigues rotation).
   3. Triangulates 3D position via linear DLT (least-squares on projection-error system).
   4. Converts ENU reconstruction coords → projected world CRS (pyproj).
-  5. Computes dX/dY/dZ vs surveyed position from emlid.csv.
+  5. Computes dX/dY/dZ vs surveyed position from chk_confirmed.txt cols 1-3.
+
+chk_confirmed.txt is produced by prepare_odm.py and already contains the
+surveyed XYZ in the output CRS (e.g. EPSG:32613 metres). No external survey
+CSV is required.
 
 Outputs per-point table + RMS_X/RMS_Y/RMS_Z/RMS_3D to stdout as JSON.
 Human-readable summary to stderr.
@@ -24,7 +28,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
@@ -41,21 +44,11 @@ except ImportError:
     raise RuntimeError("pyproj is required: conda install pyproj")
 
 # ---------------------------------------------------------------------------
-# Import parse_survey_csv from sibling module
-# ---------------------------------------------------------------------------
-
-try:
-    from .csv2gcp import parse_survey_csv  # type: ignore[import]
-except ImportError:
-    sys.path.insert(0, os.path.dirname(__file__))
-    from csv2gcp import parse_survey_csv  # type: ignore[import]
-
-# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 METERS_PER_DEG_LAT = 111319.9
-FT_TO_M = 0.3048006096012192   # US survey foot (more precise than 0.3048)
+FT_TO_M = 0.3048006096012192   # US survey foot
 
 
 # ---------------------------------------------------------------------------
@@ -118,13 +111,18 @@ def parse_reconstruction(recon_path: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def parse_chk_confirmed(chk_path: str) -> Tuple[str, Dict[str, List[Tuple[str, float, float]]]]:
+def parse_chk_confirmed(
+    chk_path: str,
+) -> Tuple[str, Dict[str, Tuple[float, float, float]], Dict[str, List[Tuple[str, float, float]]]]:
     """
-    Parse chk_confirmed.txt (same tab-separated format as gcp_list.txt).
+    Parse chk_confirmed.txt (tab-separated ODM GCP format produced by prepare_odm.py).
 
     Returns:
-        crs_header  : str  — CRS string from line 1 (e.g. 'EPSG:6529')
-        obs_by_label: dict — label → [(image_name, px, py), ...]
+        crs_header   : str  — CRS string from line 1 (e.g. 'EPSG:32613')
+        coords_by_label : dict — label → (geo_x, geo_y, geo_z) in the output CRS
+        obs_by_label : dict — label → [(image_name, px, py), ...]
+
+    cols: geo_x geo_y geo_z px py image_name label [confidence ...]
     """
     with open(chk_path) as f:
         lines = f.readlines()
@@ -133,6 +131,7 @@ def parse_chk_confirmed(chk_path: str) -> Tuple[str, Dict[str, List[Tuple[str, f
         raise ValueError(f"chk_confirmed.txt is empty: {chk_path}")
 
     crs_header = lines[0].rstrip("\n").strip()
+    coords_by_label: Dict[str, Tuple[float, float, float]] = {}
     obs_by_label: Dict[str, List[Tuple[str, float, float]]] = {}
 
     for raw_line in lines[1:]:
@@ -142,17 +141,22 @@ def parse_chk_confirmed(chk_path: str) -> Tuple[str, Dict[str, List[Tuple[str, f
         fields = line.split("\t")
         if len(fields) < 7:
             continue
-        # geo_x geo_y geo_z px py image_name gcp_label [confidence [marker_bbox]]
         try:
+            geo_x = float(fields[0])
+            geo_y = float(fields[1])
+            geo_z = float(fields[2])
             px = float(fields[3])
             py = float(fields[4])
         except ValueError:
             continue
         image_name = fields[5]
         label = fields[6]
+
+        if label not in coords_by_label:
+            coords_by_label[label] = (geo_x, geo_y, geo_z)
         obs_by_label.setdefault(label, []).append((image_name, px, py))
 
-    return crs_header, obs_by_label
+    return crs_header, coords_by_label, obs_by_label
 
 
 # ---------------------------------------------------------------------------
@@ -267,11 +271,13 @@ def triangulate_dlt(rays: List[Tuple[np.ndarray, np.ndarray]]) -> Optional[np.nd
 def compute_rmse(
     recon_path: str,
     chk_path: str,
-    emlid_csv: str,
     crs_override: Optional[str] = None,
 ) -> dict:
     """
     Full pipeline: parse inputs, triangulate, convert coords, compute RMSE.
+
+    Ground truth XYZ is read directly from chk_confirmed.txt cols 1-3 (already
+    in the output CRS, produced by prepare_odm.py).
 
     Returns a dict suitable for JSON output.
     """
@@ -282,27 +288,20 @@ def compute_rmse(
     ref_lla = recon["reference_lla"]
 
     # --- Step 2: parse chk_confirmed.txt ---
-    crs_header, obs_by_label = parse_chk_confirmed(chk_path)
+    crs_header, coords_by_label, obs_by_label = parse_chk_confirmed(chk_path)
     crs = crs_override or crs_header
     if not crs:
         raise ValueError("CRS not found in chk_confirmed.txt header and --crs not provided.")
 
-    # --- Step 3: parse emlid.csv ---
-    survey_gcps = parse_survey_csv(emlid_csv, fallback_crs=crs)
-    survey_by_label: Dict[str, dict] = {g["label"]: g for g in survey_gcps}
-
-    # --- Determine CRS units ---
+    # Determine whether the output CRS uses feet (for x_proj/y_proj → metres conversion)
     unit = crs_axis_unit(crs)
     uses_feet = "foot" in unit.lower()
 
-    # --- Steps 4-5: triangulate + compare ---
+    # --- Steps 3-4: triangulate + compare ---
     points = []
     skipped_labels: List[str] = []
 
     for label, obs in sorted(obs_by_label.items()):
-        # Labels in chk_confirmed.txt may carry a csv2gcp prefix (e.g. "CHK-101",
-        # "GCP-102"). Strip it for lookup against raw survey CSV labels ("101").
-        survey_label = label.split("-", 1)[1] if "-" in label else label
         # Check all shots exist; warn about missing ones
         missing_shots = [img for img, _, _ in obs if img not in shots]
         for img in missing_shots:
@@ -334,44 +333,31 @@ def compute_rmse(
             X_enu, ref_lla["latitude"], ref_lla["longitude"], ref_lla["altitude"], crs
         )
 
-        # Survey ground truth
-        g = survey_by_label.get(survey_label) or survey_by_label.get(label)
-        if g is None:
-            print(f"WARNING: label {label!r} not found in emlid.csv — skipped", file=sys.stderr)
+        # Survey ground truth — read directly from check file cols 1-3.
+        # coords are already in the output CRS (metres for EPSG:32613).
+        coords = coords_by_label.get(label)
+        if coords is None:
+            print(f"WARNING: label {label!r} not found in chk_confirmed coords — skipped",
+                  file=sys.stderr)
             skipped_labels.append(label)
             continue
 
-        # Reproject survey lat/lon → output CRS for XY.  This avoids any
-        # ambiguity from the survey CSV's native units (feet vs metres) — the
-        # lat/lon fields from parse_survey_csv are always WGS84 degrees.
-        gt_xfm = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        survey_x_m, survey_y_m = gt_xfm.transform(g["lon"], g["lat"])
+        survey_x, survey_y, survey_z = coords
 
-        # Z: use ellipsoidal height (always metres) if available; otherwise
-        # convert the native elevation using the survey CRS unit.
-        if g["ellip_alt_m"] is not None:
-            survey_z_m = g["ellip_alt_m"]
-        elif g["elevation"] is not None:
-            survey_z_m = g["elevation"] * FT_TO_M if uses_feet else g["elevation"]
-        else:
-            print(
-                f"WARNING: label {label!r} has no elevation data — Z residual set to NaN",
-                file=sys.stderr,
-            )
-            survey_z_m = float("nan")
+        # Convert both projected point and survey XY to metres if CRS uses feet.
+        x_proj_m = x_proj * FT_TO_M if uses_feet else x_proj
+        y_proj_m = y_proj * FT_TO_M if uses_feet else y_proj
+        survey_x_m = survey_x * FT_TO_M if uses_feet else survey_x
+        survey_y_m = survey_y * FT_TO_M if uses_feet else survey_y
 
-        # enu_to_projected already returns metres when crs is a metre-based CRS
-        # (e.g. EPSG:32613); convert only if output CRS uses feet.
-        if uses_feet:
-            x_proj_m = x_proj * FT_TO_M
-            y_proj_m = y_proj * FT_TO_M
-        else:
-            x_proj_m = x_proj
-            y_proj_m = y_proj
+        # Z: z_ellip_m is ellipsoidal altitude in metres (from enu_to_projected).
+        # survey_z from prepare_odm.py is the survey elevation in metres.
+        # Any systematic offset (e.g. geoid separation ~20-24 m) is expected and documented.
+        survey_z_m = survey_z
 
         dX = x_proj_m - survey_x_m
         dY = y_proj_m - survey_y_m
-        dZ = z_ellip_m - survey_z_m  # geoid offset not corrected; systematic bias expected
+        dZ = z_ellip_m - survey_z_m
         d3D = math.sqrt(dX ** 2 + dY ** 2 + dZ ** 2)
 
         points.append({
@@ -448,12 +434,10 @@ def run_synthetic_test() -> bool:
     Returns True if the test passes, False otherwise.
     """
     import tempfile
-    import io
 
     print("Running synthetic test...", file=sys.stderr)
 
     # ---- Known 3D points in ENU (metres) ----
-    # Place two check points at known positions within a simulated survey site.
     chk_points_enu = {
         "CHK-1": np.array([10.0, 20.0, -5.0]),
         "CHK-2": np.array([-8.0, 15.0, -6.5]),
@@ -472,28 +456,15 @@ def run_synthetic_test() -> bool:
     cx, cy = width / 2.0, height / 2.0
 
     # ---- Three synthetic camera poses ----
-    # Cameras hovering above the scene looking straight down (nadir),
-    # offset in XY so each gives a different viewing angle on the CHK points.
-    # pose: camera centre in ENU (world), then derive R and t.
-    #
-    # For a nadir camera at position P looking straight down:
-    #   - camera Z axis ≈ -world-Z, camera X ≈ world-X, camera Y ≈ -world-Y
-    #   - Rotation R (world→camera) has rows [X_cam_in_world, Y_cam_in_world, Z_cam_in_world]
-    # We use small pitch/yaw perturbations so triangulation is well-conditioned.
-
     camera_centres = [
-        np.array([0.0, 0.0, 100.0]),    # directly above origin
-        np.array([30.0, 5.0, 100.0]),   # offset east
-        np.array([-5.0, 25.0, 100.0]),  # offset north
+        np.array([0.0, 0.0, 100.0]),
+        np.array([30.0, 5.0, 100.0]),
+        np.array([-5.0, 25.0, 100.0]),
     ]
 
-    # Build R for a camera pointing from C toward the scene centroid (0,0,0).
-    # Camera convention: +Z forward (into scene), +X right, +Y down.
     def make_R(C: np.ndarray) -> np.ndarray:
-        """Simple nadir-ish rotation: camera -Z axis points from C toward origin."""
         forward = np.array([0.0, 0.0, 0.0]) - C
         forward /= np.linalg.norm(forward)
-        # right = forward × world_up... use a stable Gram-Schmidt
         world_north = np.array([0.0, 1.0, 0.0])
         right = np.cross(forward, world_north)
         if np.linalg.norm(right) < 1e-6:
@@ -501,15 +472,13 @@ def run_synthetic_test() -> bool:
         right /= np.linalg.norm(right)
         down = np.cross(forward, right)
         down /= np.linalg.norm(down)
-        # R rows: [right, down, forward] — world→camera
-        R = np.vstack([right, down, forward])
-        return R
+        return np.vstack([right, down, forward])
 
     shots_dict: Dict[str, dict] = {}
     cam_key = "synthetic_cam 4000 3000 perspective 0"
     for i, C in enumerate(camera_centres):
         R = make_R(C)
-        t = -R @ C          # world→camera translation
+        t = -R @ C
         rotvec = Rotation.from_matrix(R).as_rotvec().tolist()
         img_name = f"IMG_{i:04d}.JPG"
         shots_dict[img_name] = {
@@ -539,8 +508,9 @@ def run_synthetic_test() -> bool:
         "points": {},
     }]
 
-    # ---- Forward-project CHK points through each camera ----
-    def project_point(P_world: np.ndarray, R: np.ndarray, t: np.ndarray) -> Optional[Tuple[float, float]]:
+    def project_point(
+        P_world: np.ndarray, R: np.ndarray, t: np.ndarray
+    ) -> Optional[Tuple[float, float]]:
         p_cam = R @ P_world + t
         if p_cam[2] <= 0:
             return None
@@ -555,15 +525,13 @@ def run_synthetic_test() -> bool:
             return (px, py)
         return None
 
-    # Build chk_confirmed.txt content in memory
-    crs_header = "EPSG:6529"
+    # Build chk_confirmed.txt — cols 0-2 are the surveyed position in the output CRS.
+    # Use EPSG:32613 (metres) to match prepare_odm.py output.
+    crs_header = "EPSG:32613"
     chk_lines = [crs_header]
 
-    # Build a lookup of surveyed positions — for the synthetic test, we use the
-    # ENU → projected conversion to generate "surveyed" coordinates.
-    # The RMSE should be near zero because the triangulated result should match.
-
     for label, P_enu in chk_points_enu.items():
+        x_p, y_p, z_e = enu_to_projected(P_enu, ref_lat, ref_lon, ref_alt, crs_header)
         for i, C in enumerate(camera_centres):
             R = make_R(C)
             t = -R @ C
@@ -572,40 +540,23 @@ def run_synthetic_test() -> bool:
             if proj is None:
                 continue
             px, py = proj
-            # geo_x, geo_y, geo_z from ENU→projected (as a synthetic survey position)
-            x_p, y_p, z_e = enu_to_projected(P_enu, ref_lat, ref_lon, ref_alt, crs_header)
             chk_lines.append(
                 f"{x_p:.3f}\t{y_p:.3f}\t{z_e:.3f}\t{px:.3f}\t{py:.3f}\t{img_name}\t{label}\tprojection"
             )
 
     chk_content = "\n".join(chk_lines) + "\n"
 
-    # Build emlid.csv content in memory — synthetic survey file with easting/northing/elevation
-    # Use the exact projected coords derived from ENU positions.
-    emlid_rows = ["Name,Easting,Northing,Elevation,CS name"]
-    for label, P_enu in chk_points_enu.items():
-        x_p, y_p, z_e = enu_to_projected(P_enu, ref_lat, ref_lon, ref_alt, crs_header)
-        # x_p, y_p are in feet (EPSG:6529 ftUS); z_e is in metres.
-        # compute_rmse applies FT_TO_M to elevation when uses_feet=True,
-        # so store elevation in feet here to match real Emlid CSV behaviour.
-        z_e_ft = z_e / FT_TO_M
-        emlid_rows.append(f"{label},{x_p:.6f},{y_p:.6f},{z_e_ft:.6f},")
-    emlid_content = "\n".join(emlid_rows) + "\n"
-
-    # Write temp files
     with tempfile.TemporaryDirectory() as tmpdir:
+        import os
         recon_path = os.path.join(tmpdir, "synthetic_recon.json")
         chk_path = os.path.join(tmpdir, "synthetic_chk.txt")
-        emlid_path = os.path.join(tmpdir, "synthetic_emlid.csv")
 
         with open(recon_path, "w") as f:
             json.dump(reconstruction_data, f)
         with open(chk_path, "w") as f:
             f.write(chk_content)
-        with open(emlid_path, "w") as f:
-            f.write(emlid_content)
 
-        result = compute_rmse(recon_path, chk_path, emlid_path, crs_override="EPSG:6529")
+        result = compute_rmse(recon_path, chk_path)
 
     print_summary(result)
 
@@ -634,12 +585,12 @@ def main() -> None:
         description="Compute 3D RMSE for CHK-* check points from ODM reconstruction.json."
     )
     parser.add_argument("reconstruction", nargs="?", help="Path to reconstruction.json")
-    parser.add_argument("chk_confirmed", nargs="?", help="Path to chk_confirmed.txt")
-    parser.add_argument("emlid_csv", nargs="?", help="Path to emlid.csv (rover survey)")
+    parser.add_argument("chk_confirmed", nargs="?",
+                        help="Path to chk_confirmed.txt (produced by prepare_odm.py)")
     parser.add_argument(
         "--crs",
         default=None,
-        help="CRS override (e.g. EPSG:6529). Falls back to header in chk_confirmed.txt.",
+        help="CRS override (e.g. EPSG:32613). Falls back to header in chk_confirmed.txt.",
     )
     parser.add_argument(
         "--test",
@@ -652,11 +603,10 @@ def main() -> None:
         ok = run_synthetic_test()
         sys.exit(0 if ok else 1)
 
-    # Normal run
-    if not args.reconstruction or not args.chk_confirmed or not args.emlid_csv:
-        parser.error("reconstruction, chk_confirmed, and emlid_csv are required unless --test is used.")
+    if not args.reconstruction or not args.chk_confirmed:
+        parser.error("reconstruction and chk_confirmed are required unless --test is used.")
 
-    result = compute_rmse(args.reconstruction, args.chk_confirmed, args.emlid_csv, args.crs)
+    result = compute_rmse(args.reconstruction, args.chk_confirmed, args.crs)
     print_summary(result)
     json.dump(result, sys.stdout, indent=2)
     print()  # trailing newline
