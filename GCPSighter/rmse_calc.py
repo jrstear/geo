@@ -186,22 +186,43 @@ def build_rays(
         C = -R.T @ t  # camera centre in world (ENU)
 
         w, h = cam["width"], cam["height"]
-        focal_px = cam["focal"] * max(w, h)
-        k1 = cam.get("k1", 0.0)
-        k2 = cam.get("k2", 0.0)
+        mwh = max(w, h)
+
+        # Support both OpenSfM camera model conventions:
+        #   perspective: 'focal'           (one value, normalised by max(w,h))
+        #   brown:       'focal_x'/'focal_y' + principal point 'c_x'/'c_y'
+        if "focal" in cam:
+            fx = fy = cam["focal"] * mwh
+            cx_off = cy_off = 0.0
+            k1 = cam.get("k1", 0.0)
+            k2 = cam.get("k2", 0.0)
+            k3 = p1 = p2 = 0.0
+        else:
+            fx = cam["focal_x"] * mwh
+            fy = cam["focal_y"] * mwh
+            cx_off = cam.get("c_x", 0.0) * mwh
+            cy_off = cam.get("c_y", 0.0) * mwh
+            k1 = cam.get("k1", 0.0)
+            k2 = cam.get("k2", 0.0)
+            k3 = cam.get("k3", 0.0)
+            p1 = cam.get("p1", 0.0)
+            p2 = cam.get("p2", 0.0)
+
         cx, cy = w / 2.0, h / 2.0
 
-        # Unproject pixel to normalised image coordinates
-        xn = (px - cx) / focal_px
-        yn = (py - cy) / focal_px
+        # Unproject pixel to normalised image coordinates (undo principal point)
+        xn = (px - cx - cx_off) / fx
+        yn = (py - cy - cy_off) / fy
 
-        # Apply inverse radial distortion (3 fixed-point iterations)
+        # Inverse distortion: 3 fixed-point iterations (handles k1,k2,k3,p1,p2)
         xnd, ynd = xn, yn
         for _ in range(3):
             r2 = xnd ** 2 + ynd ** 2
-            factor = 1.0 + k1 * r2 + k2 * r2 ** 2
-            xnd = xn / factor
-            ynd = yn / factor
+            radial = 1.0 + k1 * r2 + k2 * r2 ** 2 + k3 * r2 ** 3
+            tang_x = 2 * p1 * xnd * ynd + p2 * (r2 + 2 * xnd ** 2)
+            tang_y = p1 * (r2 + 2 * ynd ** 2) + 2 * p2 * xnd * ynd
+            xnd = (xn - tang_x) / radial
+            ynd = (yn - tang_y) / radial
 
         # Ray direction in camera frame → world frame
         d_cam = np.array([xnd, ynd, 1.0])
