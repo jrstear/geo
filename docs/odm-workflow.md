@@ -8,54 +8,47 @@ using Emlid GNSS survey data and GCPEditorPro pixel tagging.
 ## Overview
 
 ```
-BSN design-grid control (.dc)
-    └─ extract_dc_points.py ─────────────────────────────┐
-                                                          ▼
-Emlid rover CSV ──► csv2gcp.py ──► {job}_tagged.txt ──► GCPEditorPro
-                    (+ images)      (pixel estimates)    (manual confirm)
-                                                          │
-                                            {job}_confirmed.txt
-                                            (GCP- + CHK-, EPSG:3618, feet)
-                                                          │
-                                           prepare_odm.py │
-                                          ┌───────────────┴───────────────┐
-                                          ▼                               ▼
-                               {job}_control.txt                {job}_check.txt
-                             (GCP- only, EPSG:32613)         (CHK- only, EPSG:32613)
-                                          │                               │
-                                     ODM run                        rmse_calc.py
-                                    (opensfm)                      (accuracy QC)
-                                          │
-                                    orthomosaic
-                                    (EPSG:32613 out)
-                                          │
-                                  reproject + shift
-                                   ─► delivery CRS
+Control monuments (EPSG:3618)
+    │
+    ▼
+Emlid rover CSV ──► csv2gcp.py ──► {job}.txt ──────► GCPEditorPro
+                    (+ images)    (pixel estimates)   (manual confirm)
+                                                       │
+                                         {job}_confirmed.txt
+                                         (GCP- + CHK-, EPSG:3618, feet)
+                                                       │
+                                        prepare_odm.py │
+                                       ┌───────────────┴───────────────┐
+                                       ▼                               ▼
+                            {job}_control.txt                {job}_check.txt
+                          (GCP- only, EPSG:32613)         (CHK- only, EPSG:32613)
+                                       │                               │
+                  S3 + terraform apply │                         rmse_calc.py
+                                       ▼                        (accuracy QC)
+                                   ODM on EC2
+                                  (opensfm → ortho)
 ```
 
 ---
 
 ## File naming convention
 
-| Stage | File | Contents |
+| Stage | File | Location |
 |-------|------|----------|
-| BSN input | `F{job}.dc` | Trimble design-grid control |
-| BSN control | `F{job}_points.csv` | Monuments in EPSG:3618 (from `extract_dc_points.py`) |
-| Emlid survey | `{job}_{date}.csv` | All points, Emlid Flow export |
-| Pipeline input | `{job}_{filter}.csv` | Subset for tagging (e.g. `aztec_3_9.csv`) |
-| Tagging file | `{job}_tagged.txt` | csv2gcp.py output for GCPEditorPro |
-| GCPEditorPro export | `{job}_confirmed.txt` | All confirmed observations (GCP- + CHK-) |
-| ODM control | `{job}_control.txt` | GCP- only, EPSG:32613, metres |
-| RMSE check | `{job}_check.txt` | CHK- only, EPSG:32613, metres |
+| Control monuments | `{job}_points.csv` | `~/stratus/{job}/` — EPSG:3618, from BSN/survey |
+| Emlid survey | `{job}.csv` | `~/stratus/{job}/` — all points, Emlid Flow export |
+| Pipeline input | `{job}_filtered.csv` | `~/stratus/{job}/` — subset for tagging |
+| Tagging file | `{job}.txt` | `~/stratus/{job}/` — csv2gcp.py output for GCPEditorPro |
+| GCPEditorPro export | `{job}_confirmed.txt` | `~/stratus/{job}/` — all confirmed (GCP- + CHK-) |
+| ODM control | `{job}_control.txt` | `~/stratus/{job}/` — GCP- only, EPSG:32613 |
+| RMSE check | `{job}_check.txt` | `~/stratus/{job}/` — CHK- only, EPSG:32613 |
 
-**Do not use `gcp_list.txt`** — ambiguous name (contains both GCP and CHK observations).
+**Do not use `gcp_list.txt`** as a working filename — it is only used as the
+S3/EC2 handoff name expected by `odm-bootstrap.sh`.
 
 ---
 
 ## Critical CRS rules
-
-ODM receives XYZ ground coordinates and must map them to the 3D world. Avoid any
-CRS ambiguity that could cause a feet/metres mismatch:
 
 | CRS | Use | Notes |
 |-----|-----|-------|
@@ -63,93 +56,119 @@ CRS ambiguity that could cause a feet/metres mismatch:
 | **EPSG:3618** (NAD83 NM Central, feet) | Field survey, internal analysis | CSV/QGIS only |
 | **EPSG:6529** (NAD83(2011) NM Central, feet) | Emlid native output | Same zone as 3618; convert before ODM |
 
-**Why EPSG:32613 for ODM?**  EPSG:3618 and 6529 are 2D CRS — they define XY units (US
-survey feet) but not vertical units.  ODM assumes Z is in metres for any 2D CRS, which
-causes a ~3.28× Z scale error when Z is supplied in feet.  EPSG:32613 is a well-defined
-2D horizontal CRS in metres; ODM treats Z as metres and the XY transformation is
-unambiguous.
-
-`prepare_odm.py` converts automatically:
-- XY: `pyproj` transform EPSG:6529 → EPSG:32613
-- Z: multiply by `FT_TO_M = 0.3048006096012192` (US survey foot)
+**Why EPSG:32613 for ODM?**  EPSG:3618 and 6529 are 2D — they define XY units (US
+survey feet) but not vertical units.  ODM assumes Z is in metres for any 2D CRS,
+causing a ~3.28× Z scale error when Z is in feet.  EPSG:32613 is unambiguous:
+all axes in metres.  `prepare_odm.py` handles the conversion automatically.
 
 ---
 
 ## Step-by-step
 
-### 1. Prepare control monuments (one-time per job)
+### 1. Obtain control monument coordinates
 
-```bash
-cd ~/stratus/{job}
-python python/extract_dc_points.py   # → F{job}_points.csv  (EPSG:3618)
-```
+You need control monument coordinates in EPSG:3618 before going to the field.
+
+**BSN/Trimble jobs**: BSN provides a `.dc` data collector file with design-grid
+coordinates. A job-specific extraction script (e.g.
+`~/stratus/{job}/python/extract_dc_points.py`) converts them to state plane
+EPSG:3618 and writes `{job}_points.csv`.  See `~/stratus/aztec/jrs/Control_Info_F100340_AZTEC.md`
+for how the offset was derived for the Aztec job.
+
+**Other jobs**: obtain monument coordinates in EPSG:3618 directly from the surveyor.
+
+Use `{job}_points.csv` for Emlid RS3 base/rover localization in the field.
 
 ### 2. Build tagging file
 
 ```bash
 conda run -n geo python GCPSighter/csv2gcp.py \
-    "{job}_{filter}.csv" \
-    images/ \
+    ~/stratus/{job}/{job}_filtered.csv \
+    ~/stratus/{job}/images/ \
     --out-name "{job}"
-# → {job}.txt    (tagging file)
-# → marks.csv   (image observations for import into GCPEditorPro)
+# → ~/stratus/{job}/{job}.txt    (GCPEditorPro tagging file)
+# → ~/stratus/{job}/marks.csv   (Pix4D parallel workflow — not used in ODM path)
 ```
 
 ### 3. Tag and confirm in GCPEditorPro
 
 1. Open GCPEditorPro
-2. Load tagging file + images directory
-3. Import marks.csv (pre-populated pixel estimates)
-4. Review each GCP- and CHK- point; confirm observations
-5. Export → save as **`{job}_confirmed.txt`**
+2. Load **`{job}.txt`** and the images directory
+3. Review each GCP- and CHK- point; confirm observations
+4. Export → save as **`~/stratus/{job}/{job}_confirmed.txt`**
 
-GCP- labels = ground control (used by ODM to georeference)
-CHK- labels = independent check points (NOT given to ODM; used for accuracy QC only)
+GCP- labels = ground control (given to ODM to georeference the reconstruction)
+CHK- labels = independent check points (withheld from ODM; used for accuracy QC only)
+
+> `marks.csv` supports the parallel Pix4D workflow and is not used here.
 
 ### 4. Split into control + check files
 
 ```bash
 conda run -n geo python GCPSighter/prepare_odm.py \
-    {job}_confirmed.txt \
-    --out-dir ~/stratus/{project}/ \
+    ~/stratus/{job}/{job}_confirmed.txt \
+    --out-dir ~/stratus/{job}/ \
     --stem {job}
-# → {job}_control.txt   (GCP- only, EPSG:32613)
-# → {job}_check.txt     (CHK- only, EPSG:32613)
+# → ~/stratus/{job}/{job}_control.txt   (GCP- only, EPSG:32613)
+# → ~/stratus/{job}/{job}_check.txt     (CHK- only, EPSG:32613)
 ```
 
-### 5. Run ODM on EC2
-
-Copy the control file to the project and launch via `odm-bootstrap.sh`:
+### 5. Launch ODM on EC2
 
 ```bash
-# On your Mac
-scp ~/stratus/{project}/{job}_control.txt  ec2:/home/ec2-user/project/
+# Upload images (one-time; skip if already in S3)
+aws s3 sync ~/stratus/{job}/images/ \
+    s3://stratus-jrstear/{PROJECT}/images/ \
+    --profile personal
 
-# On EC2 — bootstrap handles S3 sync of images + runs ODM + syncs output + shuts down
-bash infra/ec2/scripts/odm-bootstrap.sh
+# Upload control file as gcp_list.txt (the name bootstrap.sh expects)
+aws s3 cp ~/stratus/{job}/{job}_control.txt \
+    s3://stratus-jrstear/{PROJECT}/gcp_list.txt \
+    --profile personal
+
+# Launch EC2 instance — pipeline starts automatically on boot
+cd ~/git/geo/infra/ec2
+terraform apply \
+    --var="project={PROJECT}" \
+    --var="notify_email=your@email.com"
 ```
 
-Recommended ODM flags (medium quality, 1385-image corridor):
+Where `{PROJECT}` is the S3 prefix, e.g. `bsn/aztec3`.
+
+You will receive SNS emails as each stage completes, and on spot
+interruption/resume events. The instance cancels its own spot request
+and shuts down when the pipeline finishes.
+
+Recommended ODM flags (set in `main.tf` `local.odm_flags`):
 ```
---gcp /path/to/{job}_control.txt
---pc-quality medium
---feature-quality high
---orthophoto-resolution 5
---optimize-disk-space
---max-concurrency 16
+--pc-quality medium --feature-quality high --orthophoto-resolution 5 --optimize-disk-space
 ```
 
 Expected runtime: ~20 hours on m5.4xlarge (16 vCPU). See `docs/cloud-infra-spec.md`.
 
-### 6. Verify accuracy with rmse_calc.py
-
-After the ODM run completes and `opensfm/reconstruction.json` is available:
+**To destroy and resume on a fresh instance** (e.g. to pick up updated scripts/policies):
 
 ```bash
+terraform destroy   # outputs already synced to S3 after each stage
+terraform apply --var="project={PROJECT}" --var="notify_email=your@email.com"
+# new instance syncs from S3 and resumes from the next incomplete stage
+```
+
+### 6. Verify accuracy with rmse_calc.py
+
+After the pipeline completes, sync the reconstruction down and run the check:
+
+```bash
+# Sync opensfm outputs from S3
+aws s3 sync s3://stratus-jrstear/{PROJECT}/opensfm/ \
+    ~/stratus/{job}/opensfm/ \
+    --profile personal
+
+# Run RMSE analysis
 conda run -n geo python GCPSighter/rmse_calc.py \
-    {odm_project}/opensfm/reconstruction.json \
-    ~/stratus/{project}/{job}_check.txt \
-    "{job}_{filter}.csv"
+    ~/stratus/{job}/opensfm/reconstruction.json \
+    ~/stratus/{job}/{job}_check.txt \
+    ~/stratus/{job}/{job}_filtered.csv
 ```
 
 Expected accuracy (250 ft AGL, drone RTK active, 5 BSN monument GCPs):
@@ -158,18 +177,24 @@ Expected accuracy (250 ft AGL, drone RTK active, 5 BSN monument GCPs):
 |-----------|----------|
 | Horizontal RMS | 0.08–0.12 ft (0.024–0.037 m) |
 | Vertical RMS | 0.12–0.18 ft (0.037–0.055 m) |
-| GCP residuals (ODM report) | < 0.05 m |
 
-RMS_Z should be < 0.10 m after geoid correction. If it is near 4,000 m, the Z unit
-conversion was not applied (feet-as-metres error).
+RMS_Z will show a small systematic offset (~geoid separation, ~24 m) which is normal —
+ODM works in ellipsoidal height internally. The residual *variation* around that offset
+is the accuracy metric. If RMS_Z is near 4,000 m, the Z unit conversion was not applied.
 
 ### 7. Deliver
 
 ```bash
+# Sync orthophoto and report from S3
+aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_orthophoto/ \
+    ~/stratus/{job}/odm_orthophoto/ --profile personal
+aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_report/ \
+    ~/stratus/{job}/odm_report/ --profile personal
+
 # Reproject to state plane (optional — QGIS handles on-the-fly)
 gdalwarp -s_srs EPSG:32613 -t_srs EPSG:3618 odm_orthophoto.tif ortho_3618.tif
 
-# Apply BSN design-grid shift for delivery (Aztec job)
+# Apply BSN design-grid shift for delivery (Aztec job only)
 python package.py \
     --no-tile \
     --shift-x 1546702.929 \
@@ -182,8 +207,8 @@ python package.py \
 ## Aztec Highway F100340 — specific notes
 
 - Survey CSV: `~/stratus/aztec/Aztec Highway 3_9.csv` (filtered 3/9 points)
-- Confirmed file: `~/stratus/aztec/gcp_list.txt` (historical name; contains GCP- + CHK-)
-- aztec3 control: `~/stratus/aztec3/aztec_control.txt`
+- Confirmed file: `~/stratus/aztec/gcp_list.txt` (historical name; the `_confirmed.txt` equivalent)
+- aztec3 control: `~/stratus/aztec3/aztec_control.txt` → S3 as `bsn/aztec3/gcp_list.txt`
 - aztec3 check: `~/stratus/aztec3/aztec_check.txt`
 - Design-grid shift: state_E + 1,546,702.929 ft; state_N − 3,567.471 ft
 - CRS detail: see `~/stratus/aztec/jrs/Control_Info_F100340_AZTEC.md`
