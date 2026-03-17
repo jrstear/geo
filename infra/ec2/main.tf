@@ -194,6 +194,20 @@ resource "aws_iam_role_policy" "odm_sns" {
   policy = data.aws_iam_policy_document.sns_publish.json
 }
 
+data "aws_iam_policy_document" "ec2_spot" {
+  statement {
+    effect    = "Allow"
+    actions   = ["ec2:CancelSpotInstanceRequests"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "odm_ec2_spot" {
+  name   = "geo-odm-ec2-spot"
+  role   = aws_iam_role.odm.name
+  policy = data.aws_iam_policy_document.ec2_spot.json
+}
+
 resource "aws_iam_instance_profile" "odm" {
   name = "geo-odm-ec2-profile"
   role = aws_iam_role.odm.name
