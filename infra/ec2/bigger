@@ -1,0 +1,2 @@
+# texturing ran out of memory so we increased the instance size
+ssh -i ~/.ssh/geo-odm-ec2.pem ec2-user@54.218.59.210

@@ -70,7 +70,7 @@ class GenerateGCPView(APIView):
         # Derive the download URL from the current request path rather than
         # hardcoding the plugin name, so it works regardless of how WebODM
         # assigns the plugin slug.
-        api_base = request.path.split('/task/')[0]  # e.g. /api/plugins/GCPSighter
+        api_base = request.path.split('/task/')[0]  # e.g. /api/plugins/TargetSighter
         return Response({
             'gcp_list_txt': '{}/task/{}/download/gcp_list.txt'.format(api_base, pk),
         })

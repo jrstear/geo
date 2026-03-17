@@ -6,42 +6,76 @@ using Emlid GNSS survey data and GCPEditorPro pixel tagging.
 ---
 
 ## Overview
+```mermaid
+flowchart TD
+    cust_dc["{customer}_{job}.dc"]
+    extract(["extract_dc_points.py"])
+    cust_csv["{customer}_{job}.csv"]
+    emlid(["Emlid Survey"])
+    filter
+    filtered["{job}.csv"]
+    sighter(["sight.py"])
+    marks["marks.csv for Pix4D"]
+    tagged["{job}.txt"]
+    gcpeditor(["GCPEditorPro"])
+    confirmed["{job}_confirmed.txt"]
+    prepare(["prepare_odm.py"])
+    control["{job}_control.txt"]
+    check["{job}_check.txt"]
+    s3(["s3 sync & terraform apply"])
+    odm["ODM on EC2"]
+    rmse(["rmse_calc.py"])
+    drone[/"Drone"\]
+    images[["images/*.JPG"]]
+    deliverables[["orthophoto,contours,surface"]]
+    packager(["GeoPackager"])
+    report["Accuracy report"]
+    model["reconstruction.json"]
+    customer[\"Customer"/]
 
-```
-Control monuments (EPSG:3618)
-    │
-    ▼
-Emlid rover CSV ──► csv2gcp.py ──► {job}.txt ──────► GCPEditorPro
-                    (+ images)    (pixel estimates)   (manual confirm)
-                                                       │
-                                         {job}_confirmed.txt
-                                         (GCP- + CHK-, EPSG:3618, feet)
-                                                       │
-                                        prepare_odm.py │
-                                       ┌───────────────┴───────────────┐
-                                       ▼                               ▼
-                            {job}_control.txt                {job}_check.txt
-                          (GCP- only, EPSG:32613)         (CHK- only, EPSG:32613)
-                                       │                               │
-                  S3 + terraform apply │                         rmse_calc.py
-                                       ▼                        (accuracy QC)
-                                   ODM on EC2
-                                  (opensfm → ortho)
+	subgraph Surveyed eg EPSG:3618
+	    cust_dc --> extract --> cust_csv --> emlid
+	    emlid --> filter --> filtered
+	    filtered --> sighter --> tagged
+	    sighter --> marks
+	    tagged --> gcpeditor
+	    gcpeditor --> confirmed
+	    confirmed --> prepare
+	    customer
+	end
+    
+    subgraph Cloud eg EPSG:32613
+	    drone --> images
+	    prepare --> control
+	    prepare --> check
+	    control --> s3
+	    s3 --> odm --> deliverables
+	    odm --> model --> rmse
+	    check --> rmse --> report
+            deliverables --> packager
+	end
+
+    images --> csv2gcp
+    images --> s3
+    packager --> customer
+    report --> customer
+
 ```
 
 ---
 
 ## File naming convention
+All of these files should be in a {job} folder (eg ~/stratus/aztec/)
 
 | Stage | File | Location |
 |-------|------|----------|
-| Control monuments | `{job}_points.csv` | `~/stratus/{job}/` — EPSG:3618, from BSN/survey |
-| Emlid survey | `{job}.csv` | `~/stratus/{job}/` — all points, Emlid Flow export |
-| Pipeline input | `{job}_filtered.csv` | `~/stratus/{job}/` — subset for tagging |
-| Tagging file | `{job}.txt` | `~/stratus/{job}/` — csv2gcp.py output for GCPEditorPro |
-| GCPEditorPro export | `{job}_confirmed.txt` | `~/stratus/{job}/` — all confirmed (GCP- + CHK-) |
-| ODM control | `{job}_control.txt` | `~/stratus/{job}/` — GCP- only, EPSG:32613 |
-| RMSE check | `{job}_check.txt` | `~/stratus/{job}/` — CHK- only, EPSG:32613 |
+| customer | `{job}_all.dc` | from customer |
+| Emlid survey | `{job}_all.csv` | all points, Emlid Flow export |
+| Pipeline input | `{job}_filtered.csv` | subset for tagging |
+| Tagging file | `{job}.txt` | csv2gcp.py output for GCPEditorPro |
+| GCPEditorPro export | `{job}_confirmed.txt` | all confirmed (GCP- + CHK-) |
+| ODM control | `{job}_control.txt` | GCP- only |
+| RMSE check | `{job}_check.txt` | CHK- only |
 
 **Do not use `gcp_list.txt`** as a working filename — it is only used as the
 S3/EC2 handoff name expected by `odm-bootstrap.sh`.
@@ -86,7 +120,7 @@ conda run -n geo python GCPSighter/csv2gcp.py \
     ~/stratus/{job}/{job}_filtered.csv \
     ~/stratus/{job}/images/ \
     --out-name "{job}"
-# → ~/stratus/{job}/{job}.txt    (GCPEditorPro tagging file)
+# → ~/stratus/{job}/{job}.txt    (for input to GCPEditorPro)
 # → ~/stratus/{job}/marks.csv   (Pix4D parallel workflow — not used in ODM path)
 ```
 
