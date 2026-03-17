@@ -340,44 +340,28 @@ def compute_rmse(
             print(f"WARNING: label {label!r} not found in emlid.csv — skipped", file=sys.stderr)
             skipped_labels.append(label)
             continue
-        survey_x = g["easting"]    # projected, CRS units
-        survey_y = g["northing"]   # projected, CRS units
-        survey_z = g["elevation"]  # orthometric, CRS units
 
-        if survey_x is None or survey_y is None:
-            print(f"WARNING: label {label!r} has no easting/northing — skipped", file=sys.stderr)
-            skipped_labels.append(label)
-            continue
+        # Reproject survey lat/lon → output CRS for XY.  This avoids any
+        # ambiguity from the survey CSV's native units (feet vs metres) — the
+        # lat/lon fields from parse_survey_csv are always WGS84 degrees.
+        gt_xfm = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        survey_x_m, survey_y_m = gt_xfm.transform(g["lon"], g["lat"])
 
-        if survey_z is None:
-            # Fall back to ellipsoidal height if available
-            if g["ellip_alt_m"] is not None:
-                survey_z_m = g["ellip_alt_m"]
-                print(
-                    f"WARNING: label {label!r} has no orthometric elevation; "
-                    "falling back to ellipsoidal height (metres)",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    f"WARNING: label {label!r} has no elevation data — Z residual set to NaN",
-                    file=sys.stderr,
-                )
-                survey_z_m = float("nan")
-            survey_x_m = survey_x * FT_TO_M if uses_feet else survey_x
-            survey_y_m = survey_y * FT_TO_M if uses_feet else survey_y
+        # Z: use ellipsoidal height (always metres) if available; otherwise
+        # convert the native elevation using the survey CRS unit.
+        if g["ellip_alt_m"] is not None:
+            survey_z_m = g["ellip_alt_m"]
+        elif g["elevation"] is not None:
+            survey_z_m = g["elevation"] * FT_TO_M if uses_feet else g["elevation"]
         else:
-            # Convert to metres for consistent residual computation
-            if uses_feet:
-                survey_x_m = survey_x * FT_TO_M
-                survey_y_m = survey_y * FT_TO_M
-                survey_z_m = survey_z * FT_TO_M
-            else:
-                survey_x_m = survey_x
-                survey_y_m = survey_y
-                survey_z_m = survey_z
+            print(
+                f"WARNING: label {label!r} has no elevation data — Z residual set to NaN",
+                file=sys.stderr,
+            )
+            survey_z_m = float("nan")
 
-        # Projected coords to metres
+        # enu_to_projected already returns metres when crs is a metre-based CRS
+        # (e.g. EPSG:32613); convert only if output CRS uses feet.
         if uses_feet:
             x_proj_m = x_proj * FT_TO_M
             y_proj_m = y_proj * FT_TO_M
