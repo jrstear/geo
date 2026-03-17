@@ -51,7 +51,7 @@ if [ -f "${DONE_MARKER}" ]; then
     fi
   done
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Shutting down now. Run 'terraform destroy' to fully clean up."
-  shutdown -h +1
+  /sbin/shutdown -h +1
   exit 0
 fi
 
@@ -104,7 +104,7 @@ if /usr/local/bin/odm-run.sh; then
   notify "ODM complete: ${PROJECT}" \
     "Outputs synced to s3://${BUCKET}/${PROJECT}/. Run 'terraform destroy' to cancel the spot request and delete EBS."
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Done. Shutting down in 2 minutes. Run 'terraform destroy' to fully clean up."
-  shutdown -h +2
+  /sbin/shutdown -h +2
 else
   # odm-run.sh already sent the failure SNS; leave instance up for debugging.
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline failed — instance remains up. SSH in to investigate."
