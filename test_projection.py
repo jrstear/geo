@@ -27,10 +27,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
-# Import from GCPSighter
+# Import from TargetSighter
 # ---------------------------------------------------------------------------
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "GCPSighter"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "TargetSighter"))
 from csv2gcp import parse_survey_csv, project_pixel_mode_a, project_pixel_mode_b
 
 

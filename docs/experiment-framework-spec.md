@@ -220,7 +220,7 @@ for whichever option is implemented.
 
 ## Component 1: rmse_calc.py
 
-**Location:** `/Users/jrstear/git/geo/GCPSighter/rmse_calc.py`
+**Location:** `/Users/jrstear/git/geo/TargetSighter/rmse_calc.py`
 
 **Purpose:** Given a completed ODM reconstruction and a set of user-confirmed check
 points, triangulate each check point from its confirmed pixel observations, convert to
@@ -231,7 +231,7 @@ the survey CRS, and report RMSE statistics.
 ### CLI
 
 ```
-conda run -n geo python GCPSighter/rmse_calc.py \
+conda run -n geo python TargetSighter/rmse_calc.py \
     reconstruction.json \
     chk_confirmed.txt \
     emlid.csv \
@@ -303,7 +303,7 @@ Reuse `parse_survey_csv()` from `csv2gcp.py`. Import it directly:
 
 ```python
 import sys, os
-sys.path.insert(0, os.path.dirname(__file__))   # GCPSighter/
+sys.path.insert(0, os.path.dirname(__file__))   # TargetSighter/
 from csv2gcp import parse_survey_csv, _cs_name_to_epsg
 ```
 
@@ -461,7 +461,7 @@ Per-point:
    - Run `rmse_calc.py` and assert `RMS_3D < 0.001 m`.
    - Test command:
      ```
-     conda run -n geo python GCPSighter/rmse_calc.py \
+     conda run -n geo python TargetSighter/rmse_calc.py \
          /tmp/synthetic_recon.json \
          /tmp/synthetic_chk.txt \
          /tmp/synthetic_emlid.csv \
@@ -477,7 +477,7 @@ Per-point:
 
 ## Component 2: experiment_gen.py
 
-**Location:** `/Users/jrstear/git/geo/GCPSighter/experiment_gen.py`
+**Location:** `/Users/jrstear/git/geo/TargetSighter/experiment_gen.py`
 
 **Purpose:** Given a master tag file (all confirmed GCP-* and CHK-* rows in pipeline
 priority order) and an experiment config, produce a trimmed `gcp_experiment.txt`
@@ -486,7 +486,7 @@ suitable for submission to ODM as the GCP control file.
 ### CLI
 
 ```
-conda run -n geo python GCPSighter/experiment_gen.py \
+conda run -n geo python TargetSighter/experiment_gen.py \
     master_tags.txt \
     --config config.json \
     --out gcp_experiment.txt
@@ -601,7 +601,7 @@ Notes:
 
 ## Component 3: experiment_driver.py
 
-**Location:** `/Users/jrstear/git/geo/GCPSighter/experiment_driver.py`
+**Location:** `/Users/jrstear/git/geo/TargetSighter/experiment_driver.py`
 
 **Purpose:** Orchestrate a matrix of ODM runs that vary GCP count, image count per
 GCP, and pipeline parameters. For each run: generate the GCP file, submit to cloud,
@@ -643,7 +643,7 @@ resources exist.
 ### CLI
 
 ```
-conda run -n geo python GCPSighter/experiment_driver.py \
+conda run -n geo python TargetSighter/experiment_driver.py \
     --master-tags master_tags.txt \
     --chk-confirmed chk_confirmed.txt \
     --emlid emlid.csv \
@@ -687,7 +687,7 @@ rate limits.
 
 | File | Path |
 |---|---|
-| Existing pipeline (reference) | `/Users/jrstear/git/geo/GCPSighter/csv2gcp.py` |
+| Existing pipeline (reference) | `/Users/jrstear/git/geo/TargetSighter/csv2gcp.py` |
 | `parse_survey_csv()` | In `csv2gcp.py` — import directly |
 | `_cs_name_to_epsg()` | In `csv2gcp.py` — import directly |
 | `project_pixel_mode_b()` | In `csv2gcp.py` — reference for reconstruction.json camera math |

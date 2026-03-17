@@ -122,7 +122,7 @@ merge when done.
 
 **Use this when:** two agents need to edit different files in the same repo at the
 same time (e.g. rmse_calc.py agent and experiment_gen.py agent both modifying
-files in GCPSighter/).
+files in TargetSighter/).
 
 Without worktrees, parallel agents on the same repo will conflict.  The fix is
 either worktrees or sequencing.
@@ -224,7 +224,7 @@ The three repos are already public.  To maximize their signal value:
    confidence column, progress badges).  A PR description or branch README
    would make this visible.
 
-3. **WebODM plugin** — same branch.  The GCPSighter plugin is production-quality.
+3. **WebODM plugin** — same branch.  The TargetSighter plugin is production-quality.
    Opening a WebODM upstream PR once the accuracy report is integrated would be
    the highest-visibility contribution.
 
@@ -239,7 +239,7 @@ that their professional users want.  Concrete path:
 3. Open a PR to ODM/WebODM with the feature + tests
 4. That PR is your contract application — it demonstrates the capability directly
 
-The plugin architecture (`geo/GCPSighter/plugin.py`) already shows you know how
+The plugin architecture (`geo/TargetSighter/plugin.py`) already shows you know how
 WebODM's plugin system works.  The accuracy report integration goes one level
 deeper (into core ODM output), which is the level where contracting engagement
 typically happens.

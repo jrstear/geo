@@ -13,7 +13,7 @@ from US survey feet to metres when the input CRS is a feet-based state plane
 (rows whose 8th column is "confirmed", or all rows if column 8 is absent).
 
 Usage:
-    conda run -n geo python GCPSighter/prepare_odm.py \\
+    conda run -n geo python TargetSighter/prepare_odm.py \\
         <confirmed_file> \\
         --out-dir <output_dir> \\
         [--stem <name>] \\

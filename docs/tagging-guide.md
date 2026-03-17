@@ -9,7 +9,7 @@ images to a `gcp_confirmed.txt` ready for OpenDroneMap or WebODM.
 
 - Emlid Reach rover export CSV (one row per GCP survey point)
 - Raw drone images (the full flight folder)
-- WebODB with GCPSighter plugin, or Python environment with `emlid2gcp.py` dependencies installed (`setup.sh`)
+- WebODB with TargetSighter plugin, or Python environment with `emlid2gcp.py` dependencies installed (`setup.sh`)
 - [GCPEditorPro](https://uav4geo.com/software/gcpeditorpro)
 
 ---
@@ -17,11 +17,11 @@ images to a `gcp_confirmed.txt` ready for OpenDroneMap or WebODM.
 ## Step 1 — Generate `gcp_list.txt`
 
 ```bash
-python GCPSighter/emlid2gcp.py  emlid.csv  /path/to/images/  --out-dir ./output
+python TargetSighter/emlid2gcp.py  emlid.csv  /path/to/images/  --out-dir ./output
 ```
 
 > Users with a WebODM installation can run the same pipeline through a
-> browser-based GUI using the **GCPSighter plugin** (located in `geo/GCPSighter`),
+> browser-based GUI using the **TargetSighter plugin** (located in `geo/TargetSighter`),
 > without needing a local Python environment.
 
 This reads the Emlid CSV and every image in the folder, then:

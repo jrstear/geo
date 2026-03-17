@@ -25,5 +25,5 @@
 
 ## Environment
 - Pipeline requires the `geo` conda env (cv2, numpy, pyproj):
-  `conda run -n geo python GCPSighter/csv2gcp.py ...`
+  `conda run -n geo python TargetSighter/csv2gcp.py ...`
 - WebODM Docker: coreplugins are NOT volume-mounted — use `docker cp` after editing.

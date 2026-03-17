@@ -86,7 +86,7 @@ N ranked candidate locations using greedy farthest-point sampling:
 | 5 | Nearest to centroid (center pin) |
 | 6–N | Perimeter-fill: maximise minimum distance from all placed points |
 
-Deliverable: Python module (`GCPSighter/placement.py`) + CLI.  No external API
+Deliverable: Python module (`TargetSighter/placement.py`) + CLI.  No external API
 calls in this bead — pure geometry.
 
 Test: apply to a corridor polygon derived from the ghostrider gulch dataset and

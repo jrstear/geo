@@ -3,10 +3,10 @@
 rmse_calc.py — 3D RMSE from WebODM reconstruction.json + tagged check pixels.
 
 Usage:
-    conda run -n geo python GCPSighter/rmse_calc.py \\
+    conda run -n geo python TargetSighter/rmse_calc.py \\
         reconstruction.json chk_confirmed.txt
 
-    conda run -n geo python GCPSighter/rmse_calc.py --test
+    conda run -n geo python TargetSighter/rmse_calc.py --test
 
 For each CHK-* label in chk_confirmed.txt:
   1. Gathers tagged (image, px, py) pairs.

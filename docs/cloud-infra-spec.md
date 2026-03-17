@@ -670,7 +670,7 @@ All of the following must pass before this spec is considered implemented:
   At Red Rocks scale this saves ~$30–40/run. See Instance Sizing section for the
   three switching boundaries and cost analysis.
 - **rmse_calc_batch.py**: Not yet written. It must read `reconstruction.json` +
-  `master_tags.txt` from S3 and write `rmse_report.json`. See `GCPSighter/` for the
+  `master_tags.txt` from S3 and write `rmse_report.json`. See `TargetSighter/` for the
   existing local RMSE logic to adapt.
 - **experiment_gen.py**: Not yet written. Generates the `gcp_experiment.txt` variants for
   each ablation condition and optionally submits all jobs in one call.

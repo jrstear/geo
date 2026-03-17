@@ -1,4 +1,4 @@
-# GCPSighter
+# TargetSighter
 
 WebODM community plugin that automatically estimates GCP pixel locations, via line-of-sight
 calculations using an emlid.csv and raw images as inputs.  
@@ -15,14 +15,14 @@ calculations using an emlid.csv and raw images as inputs.
 
 ```bash
 cd /path/to/geo
-zip -r GCPSighter.zip GCPSighter/
+zip -r TargetSighter.zip TargetSighter/
 ```
 
 ### 2. Upload via WebODM Admin
 
 1. Open **http://your-webodm-host/admin/app/plugin/**
 2. Click **Upload Plugin**
-3. Select `GCPSighter.zip` and submit
+3. Select `TargetSighter.zip` and submit
 
 WebODM extracts the zip, installs Python dependencies (`pyproj`, `scipy`, `numpy`), and compiles the UI component.
 
@@ -34,13 +34,13 @@ docker compose restart webapp
 
 ### 4. Verify
 
-The plugin appears in **Admin → Plugins** as **GCPSighter**.
-Open any task's expanded panel — a **GCPSighter** button will appear in the action bar.
+The plugin appears in **Admin → Plugins** as **TargetSighter**.
+Open any task's expanded panel — a **TargetSighter** button will appear in the action bar.
 
 ## Usage
 
 1. Process your drone images in WebODM as usual (with or without GCPs)
-2. Click the **GCPSighter** button on any task
+2. Click the **TargetSighter** button on any task
 3. Upload your Emlid CSV file
 4. Optionally enable **Use reconstruction.json** for more accurate pixel estimates (requires a completed reconstruction)
 5. Click **Generate** — the pipeline runs and produces a `gcpeditpro.txt` file
@@ -60,4 +60,4 @@ Confidence values: `projection` (pipeline estimate), `mouse_click` (user-confirm
 
 ## Updating
 
-Re-zip the `GCPSighter/` directory, delete the existing plugin in Admin, and re-upload.
+Re-zip the `TargetSighter/` directory, delete the existing plugin in Admin, and re-upload.

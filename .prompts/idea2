@@ -1,0 +1,4 @@
+next idea: once all the images for a gcp have been color-refined, identify the color of the chosen
+marks, and if a majority of marks consist of the same-ish color, re-evaluate the images that selected
+a diferent-color mark (or failed to find an appropriate mark), using the majority-identified color
+as an additional hint.

@@ -1,0 +1,67 @@
+❯ take a look at the diagram in docs/odm-workflow.md.  i did not update the entire doc, just the     
+  diagram.  does it make sense, look logical, any suggestions of improvements or corrections?        
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ The structure and CRS grouping are good — the two-subgraph split (surveyed vs. cloud) is a smart
+  way to communicate the coordinate system boundary. A few issues and suggestions:
+
+  Logical errors:
+
+  1. cust_csv → emlid arrow is wrong. The customer control file ({customer}_{job}.csv from
+  extract_dc_points.py) produces monument coordinates used for Emlid RS3 localization in the field —
+  it doesn't produce {job}.csv. The Emlid survey CSV is an independent output of the field work. That
+   arrow implies a data transformation that doesn't exist. Both feed into the process but
+  independently.
+  2. rmse_calc.py is missing its third input. It needs reconstruction.json + {job}_check.txt + the
+  Emlid survey CSV ({job}_filtered.csv or {job}.csv). Only the first two are shown feeding into it.
+  3. customer node is inside the "Surveyed" subgraph but only connects outside it (packager →
+  customer, report → customer). Mermaid will place it inside the "Surveyed" box which looks odd — it
+  should sit outside both subgraphs as a terminal node.
+
+  Minor suggestions:
+
+  4. filter has no display label — it'll render as just the word "filter" in a plain box. Adding
+  filter(["filter (manual)"]) would clarify it.
+  5. marks.csv for Pix4D is a dead-end by design, but a reader might wonder if it's an error. Could
+  use a note style or just label it more clearly as a parallel output.
+  6. Subgraph name "Web eg EPSG:32613" is a little opaque — "Cloud / EC2" or "Processing" might be
+  clearer than "Web".
+
+  Want me to make these corrections?
+
+✻ Crunched for 43s
+
+❯ ok, i clarified the emlid node.  re 2: doesn't {job}_check.txt contain a copy of the surveyed      
+coordinates in it?  if so they rmse_calc.py does NOT need {job}_filtered.csv or {job}.csv from       
+upstream, and we should create a bead to remove that input from it.  do NOT make edits, just reply   
+on this topic                                                                                        
+
+⏺ You're right that {job}_check.txt contains the surveyed coordinates (X, Y, Z from the Emlid CSV,
+  copied in by prepare_odm.py). However, rmse_calc.py currently ignores those coordinates — it only
+  reads the pixel observations (px, py, image, label) from the check file and uses the Emlid CSV
+  directly for the ground truth XY Z. This was a design choice but it's redundant — the coordinates
+  are already in the check file.
+
+  The argument for removing the Emlid CSV input:
+  - The check file already has the ground truth coordinates (they came from the Emlid CSV via
+  prepare_odm.py)
+  - Single input is simpler and less error-prone (no risk of passing mismatched CSV)
+  - The check file is the authoritative artifact for this run
+
+  The one thing to verify: rmse_calc.py currently uses g["lat"]/g["lon"] from parse_survey_csv to
+  reproject ground truth to EPSG:32613 (after the bug fix we just did). The check file has X/Y
+  already in EPSG:32613 — so we could read those directly instead, which is simpler and avoids the
+  whole lat/lon reprojection path.
+
+  Creating the bead:
+
+⏺ Bash(bd create --title="rmse_calc.py: read ground truth XY/Z from check file, drop emlid_csv arg"
+      --type=task --priority=3 --description="rmse_calc.py currently take…)
+  ⎿  ✓ Created issue: geo-0j5
+       Title: rmse_calc.py: read ground truth XY/Z from check file, drop emlid_csv arg
+       Priority: P3
+       Status: open
+
+⏺ Bash(bd sync && git add .beads/issues.jsonl && git commit -m "beads: add geo-0j5 rmse_calc.py drop
+      emlid_csv arg" && git push)

@@ -15,7 +15,7 @@ fi
 echo "Checking for exiftool..."
 if ! command -v exiftool &> /dev/null
 then
-    echo "Warning: exiftool not found. Install it before using copy_gcp_images.py or GCPSighter."
+    echo "Warning: exiftool not found. Install it before using copy_gcp_images.py or TargetSighter."
     echo "  macOS:  brew install exiftool"
     echo "  Linux:  sudo apt install libimage-exiftool-perl"
 fi
