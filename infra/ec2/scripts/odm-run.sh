@@ -140,8 +140,16 @@ for stage in "${STAGES[@]}"; do
   else
     EXIT=$?
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✗ ${stage} FAILED (exit ${EXIT})"
-    notify "ODM ${PROJECT}" \
-      "Stage ${stage} failed on ${PROJECT} (exit ${EXIT}). SSH in to investigate."
+    # Check if failure was caused by a spot interruption.
+    SPOT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
+      "http://169.254.169.254/latest/meta-data/spot/termination-time" || echo 000)
+    if [ "${SPOT_HTTP}" = "200" ]; then
+      notify "ODM ${PROJECT}" \
+        "Stage ${stage} interrupted by spot termination on ${PROJECT}. EBS preserved — AWS will auto-restart and resume."
+    else
+      notify "ODM ${PROJECT}" \
+        "Stage ${stage} failed on ${PROJECT} (exit ${EXIT}). SSH in to investigate."
+    fi
     exit 1
   fi
 done
