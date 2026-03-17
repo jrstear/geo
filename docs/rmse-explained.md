@@ -196,7 +196,7 @@ reproduced with open-source tools once you have the camera poses.
 
 | Tool | Role |
 |------|------|
-| `csv2gcp.py` | Parses Emlid rover CSV + drone image EXIF; outputs `gcp_confirmed.txt` and `chk_confirmed.txt` |
+| `sight.py` | Parses Emlid rover CSV + drone image EXIF; outputs `gcp_confirmed.txt` and `chk_confirmed.txt` |
 | WebODM / OpenDroneMap | Runs the bundle adjustment using `gcp_confirmed.txt`; writes `reconstruction.json` |
 | `rmse_calc.py` (planned) | Reads `reconstruction.json` + `chk_confirmed.txt`; computes per-axis RMSE |
 
@@ -235,7 +235,7 @@ report: per-point residuals, per-axis RMSE, mean error, and standard
 deviation.  The numbers are directly comparable — same math, same
 interpretation.
 
-The `--reconstruction` flag in `csv2gcp.py` already supports reading
+The `--reconstruction` flag in `sight.py` already supports reading
 `reconstruction.json` to improve pixel projection accuracy from ±30–150 px
 (EXIF-only) to ±5–20 px (SfM-refined camera poses).  The same file path will
 be the input to `rmse_calc.py`.

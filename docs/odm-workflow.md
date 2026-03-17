@@ -14,9 +14,9 @@ flowchart TD
     emlid(["Emlid Survey"])
     filter
     filtered["{job}.csv"]
-    sighter(["sight.py"])
+    sight(["sight.py"])
     marks["marks.csv for Pix4D"]
-    tagged["{job}.txt"]
+    targets["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
     confirmed["{job}_confirmed.txt"]
     prepare(["prepare_odm.py"])
@@ -36,9 +36,9 @@ flowchart TD
 	subgraph Surveyed eg EPSG:3618
 	    cust_dc --> extract --> cust_csv --> emlid
 	    emlid --> filter --> filtered
-	    filtered --> sighter --> tagged
-	    sighter --> marks
-	    tagged --> gcpeditor
+	    filtered --> sight --> targets
+	    sight --> marks
+	    targets --> gcpeditor
 	    gcpeditor --> confirmed
 	    confirmed --> prepare
 	    customer
@@ -55,7 +55,7 @@ flowchart TD
             deliverables --> packager
 	end
 
-    images --> csv2gcp
+    images --> sight
     images --> s3
     packager --> customer
     report --> customer
