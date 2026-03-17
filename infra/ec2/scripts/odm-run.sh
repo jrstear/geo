@@ -22,7 +22,7 @@ STAGE_TIMEOUT=12h          # absolute backstop per stage
 threads_for() {
   case "$1" in
     dataset|opensfm|odm_filterpoints|odm_georeferencing|odm_dem|odm_report) echo 16 ;;
-    openmvs|odm_meshing|odm_texturing)                                       echo 8  ;;
+    openmvs|odm_meshing|mvs_texturing)                                       echo 8  ;;
     odm_orthophoto)                                                           echo 4  ;;
     *) echo 8 ;;
   esac
@@ -39,7 +39,7 @@ is_done() {
     openmvs)            [ -f "${PROJECT_DIR}/opensfm/undistorted/openmvs/scene_dense.ply" ] ;;
     odm_filterpoints)   ls "${PROJECT_DIR}"/odm_filterpoints/*.ply &>/dev/null 2>&1 ;;
     odm_meshing)        [ -f "${PROJECT_DIR}/odm_meshing/odm_mesh.ply" ] ;;
-    odm_texturing)      ls "${PROJECT_DIR}"/odm_texturing/*.obj &>/dev/null 2>&1 ;;
+    mvs_texturing)      ls "${PROJECT_DIR}"/odm_texturing/*.obj &>/dev/null 2>&1 ;;
     odm_georeferencing) [ -f "${PROJECT_DIR}/odm_georeferencing/odm_georeferenced_model.las" ] ;;
     odm_dem)            ls "${PROJECT_DIR}"/odm_dem/*.tif &>/dev/null 2>&1 ;;
     odm_orthophoto)     [ -f "${PROJECT_DIR}/odm_orthophoto/odm_orthophoto.tif" ] ;;
@@ -119,7 +119,7 @@ run_stage() {
   return "${exit_code}"
 }
 
-STAGES=(dataset opensfm openmvs odm_filterpoints odm_meshing odm_texturing
+STAGES=(dataset opensfm openmvs odm_filterpoints odm_meshing mvs_texturing
         odm_georeferencing odm_dem odm_orthophoto odm_report)
 
 for stage in "${STAGES[@]}"; do
@@ -133,11 +133,11 @@ for stage in "${STAGES[@]}"; do
 
   if run_stage "${stage}" "${THREADS}"; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✓ ${stage} complete"
-    notify "ODM ✓ ${stage}" "Stage ${stage} complete on ${PROJECT}."
+    notify "ODM ${PROJECT}" "Stage ${stage} complete on ${PROJECT}."
   else
     EXIT=$?
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✗ ${stage} FAILED (exit ${EXIT})"
-    notify "ODM ✗ ${stage} FAILED" \
+    notify "ODM ${PROJECT}" \
       "Stage ${stage} failed on ${PROJECT} (exit ${EXIT}). SSH in to investigate."
     exit 1
   fi
