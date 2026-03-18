@@ -30,6 +30,7 @@ flowchart TD
     drone[/"Drone"\]
     images[["images/*.JPG"]]
     deliverables[["orthophoto,contours,surface"]]
+    reproject(["reproject_deliverable.py"])
     packager(["GeoPackager"])
     report["Accuracy report"]
     model["reconstruction.json"]
@@ -54,12 +55,12 @@ flowchart TD
 	    s3 --> odm --> deliverables
 	    odm --> model --> rmse
 	    check --> rmse --> report
-            deliverables --> packager
+            deliverables --> reproject
 	end
 
     images --> sight
     images --> s3
-    packager --> customer
+    reproject --> packager --> customer
     report --> customer
 
 ```
