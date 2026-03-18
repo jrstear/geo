@@ -43,17 +43,17 @@ Coordinate representation (how a location is expressed)
         │   CS name in Emlid CSV: "NAD83(2011) / New Mexico Central (ftUS) (5)"
         │
         └── EPSG:3618   NAD83(NSRS2007)
-            BSN control monuments after offset removal, QGIS review layer,
+            Customer control monuments after offset removal, QGIS review layer,
             reprojected orthophoto for review and delivery.
             *** For this site, EPSG:6529 and EPSG:3618 give the same numbers
                 to within centimetres.  Treat them as interchangeable. ***
 
-Special: BSN Design Grid
+Special: Customer Design Grid
     Not an EPSG code.  It is EPSG:3618 with a constant translation applied:
         Design E = state_plane_E + 1 546 702.929 ft
         Design N = state_plane_N −     3 567.471 ft
     Appears only in the .dc file (raw 69KI/81CB records) and in
-    BSN-delivery outputs.  Never used inside the processing pipeline.
+    Customer-delivery outputs.  Never used inside the processing pipeline.
 ```
 
 ### Quick recognition guide
@@ -63,7 +63,7 @@ Special: BSN Design Grid
 | −107.9, 36.9 | degrees | Geographic WGS84/NAD83 (EPSG:4326) — Emlid Lat/Lon cols |
 | 237 000 – 260 000 E, 4 080 000 – 4 100 000 N | metres | UTM 13N EPSG:32613 — ODM files |
 | 1 100 000 – 1 200 000 E, 2 120 000 – 2 170 000 N | US survey ft | NM Central state plane EPSG:6529/3618 — Emlid E/N cols, DC-corrected points |
-| 2 600 000 – 2 750 000 E, 2 140 000 – 2 170 000 N | US survey ft | BSN design grid (raw .dc) — NOT state plane |
+| 2 600 000 – 2 750 000 E, 2 140 000 – 2 170 000 N | US survey ft | Customer design grid (raw .dc) — NOT state plane |
 
 ---
 
@@ -73,7 +73,7 @@ Special: BSN Design Grid
 
 | Item | CRS | Notes |
 |---|---|---|
-| `.dc` 69KI / 81CB records (control points) | BSN design grid | Raw easting ~2.6–2.75 M ft; apply offset to get state plane |
+| `.dc` 69KI / 81CB records (control points) | Customer design grid | Raw easting ~2.6–2.75 M ft; apply offset to get state plane |
 | `.dc` 66KI / 66FD records (base stations) | EPSG:4326 (lat/lon) | Converted to EPSG:3618 by `extract_dc_points.py` |
 | `F100340_{job}_points.csv` (output of `extract_dc_points.py`) | EPSG:3618 | Design-grid offset removed; ready for Emlid and QGIS |
 
@@ -100,7 +100,7 @@ Z = `Elevation`, CRS = **EPSG:6529**.
 > using Easting/Northing.
 
 The Emlid localisation check: the `m`-suffix points (e.g. `12m`, `15m`) are
-re-occupations of BSN monuments taken after localisation is applied.  Their
+re-occupations of Customer monuments taken after localisation is applied.  Their
 residuals vs `F100340_{job}_points.csv` should be < 0.2 ft; this confirms the
 Emlid is in the same coordinate system as the DC file.
 
@@ -167,8 +167,8 @@ for the bug that was fixed when the flat-earth formula was used.
 | `odm_orthophoto.original_3618_cog.tif` | EPSG:3618 | COG version; fast QGIS loading |
 | `F100340_{job}_points.csv` | EPSG:3618 | DC control monuments — load X=easting_ft, Y=northing_ft |
 | Emlid `{job}.csv` | EPSG:6529 | Survey points — load X=Easting, Y=Northing |
-| Deliverable orthophoto (BSN) | BSN design grid | Apply +1 546 702.929 ft E / −3 567.471 ft N via `package.py --shift-x/y` |
-| Deliverable contours / TIN (BSN) | BSN design grid | Same shift, applied by `package.py` |
+| Deliverable orthophoto (Customer) | Customer design grid | Apply +1 546 702.929 ft E / −3 567.471 ft N via `package.py --shift-x/y` |
+| Deliverable contours / TIN (Customer) | Customer design grid | Same shift, applied by `package.py` |
 
 **To load ortho in QGIS**: drag-and-drop or Layer → Add Raster.  CRS is embedded
 in the GeoTIFF header.  Set the **project** CRS to EPSG:3618 for all layers to
@@ -180,7 +180,7 @@ display without on-the-fly reprojection overhead.
 
 ```
 .dc file (design grid ft)
-    ↓ extract_dc_points.py  [remove BSN offset]
+    ↓ extract_dc_points.py  [remove Customer offset]
 F100340_points.csv  (EPSG:3618 ft)
     ↓ Emlid RS3 field survey  [localize to monuments]
 {job}.csv Easting/Northing  (EPSG:6529 ft  ≈  EPSG:3618)
@@ -193,7 +193,7 @@ odm_orthophoto.original.tif  (EPSG:32613 m)
     ↓ reproject_deliverable.py  [gdalwarp, pixel resample]
 odm_orthophoto.original_3618.tif  (EPSG:3618 ft)  ← QGIS review
     ↓ package.py --shift-x +1546702.929 --shift-y -3567.471
-deliverable orthophoto  (BSN design grid ft)  ← customer delivery
+deliverable orthophoto  (Customer design grid ft)  ← customer delivery
 ```
 
 ---

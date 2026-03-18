@@ -87,7 +87,7 @@ all axes in metres.  `convert_coords.py` handles the conversion automatically.
 
 You need control monument coordinates in EPSG:3618 before going to the field.
 
-**BSN/Trimble jobs**: BSN provides a `.dc` data collector file with design-grid
+**Customer/Trimble jobs**: Customer provides a `.dc` data collector file with design-grid
 coordinates. A job-specific extraction script converts them to state plane
 EPSG:3618 and writes `{job}_points.csv`.
 
@@ -185,7 +185,7 @@ conda run -n geo python TargetSighter/rmse_calc.py \
     ~/stratus/{job}/chk_list.txt
 ```
 
-Expected accuracy (250 ft AGL, drone RTK active, 5 BSN monument GCPs):
+Expected accuracy (250 ft AGL, drone RTK active, 5 Customer monument GCPs):
 
 | Component | Expected |
 |-----------|----------|
