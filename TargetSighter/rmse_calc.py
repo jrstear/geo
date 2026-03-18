@@ -47,7 +47,6 @@ except ImportError:
 # Constants
 # ---------------------------------------------------------------------------
 
-METERS_PER_DEG_LAT = 111319.9
 FT_TO_M = 0.3048006096012192   # US survey foot
 
 
@@ -64,23 +63,23 @@ def enu_to_projected(
     epsg: str,
 ) -> Tuple[float, float, float]:
     """
-    Convert a point in local ENU (metres) to projected CRS coordinates.
+    Convert a point in ODM's local coordinate system to projected CRS coordinates.
 
-    Uses flat-earth ENU approximation (valid to <1 mm at typical survey scales
-    of a few km). Returns (x_proj, y_proj, z_ellip_m) where z_ellip_m is the
-    ellipsoidal altitude in metres.
+    ODM (via OpenSfM) stores reconstruction.json positions in a UTM-grid-aligned
+    local frame: local_X = UTM_E - ref_UTM_E, local_Y = UTM_N - ref_UTM_N.
+    The correct conversion is therefore a direct offset addition (not a
+    flat-earth lat/lon approximation, which introduces ~90m error at sites
+    with significant UTM meridian convergence, e.g. ~1.75° at 3° from the
+    central meridian at 37° latitude).
+
+    Returns (x_proj, y_proj, z_ellip_m).
     """
-    mid_lat_rad = math.radians(ref_lat_deg)
-
-    dlon = p_enu[0] / (METERS_PER_DEG_LAT * math.cos(mid_lat_rad))
-    dlat = p_enu[1] / METERS_PER_DEG_LAT
-    lon = ref_lon_deg + dlon
-    lat = ref_lat_deg + dlat
-    alt = ref_alt_m + p_enu[2]
-
     xfm = Transformer.from_crs("EPSG:4326", epsg, always_xy=True)
-    x, y = xfm.transform(lon, lat)
-    return x, y, alt
+    ref_x, ref_y = xfm.transform(ref_lon_deg, ref_lat_deg)
+    x = ref_x + p_enu[0]
+    y = ref_y + p_enu[1]
+    z = ref_alt_m + p_enu[2]
+    return x, y, z
 
 
 def crs_axis_unit(epsg: str) -> str:
