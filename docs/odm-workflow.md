@@ -194,8 +194,7 @@ Expected accuracy (250 ft AGL, drone RTK active, 5 BSN monument GCPs):
 
 RMS_Z mean offset is typically near zero — the check file Z is in ellipsoidal metres
 (written by `convert_coords.py`), consistent with ODM's internal reference. The std_dZ
-is the true vertical accuracy metric. If RMS_Z is near 4,000 m, the Z unit conversion
-was not applied.
+is the true vertical accuracy metric.
 
 ### 7. Deliver
 
