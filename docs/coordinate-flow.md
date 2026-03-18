@@ -16,12 +16,12 @@ express a location — angles vs. flat-plane distances).
 Datum
 ├── WGS84  ─────────────────────────────────────────────────────────────────┐
 │   Used by GPS satellites and most global software.                        │
-│                                                                            │ agree to
-├── NAD83(2011)  ──────────────────────────────────────────────────────────┤ ~1 cm
-│   North American Datum 1983, 2011 realization (most current).             │ in NM
-│   Used by Emlid RS3 with NTRIP and by NGS control monuments.             │
-│                                                                            │
-└── NAD83(NSRS2007)  ────────────────────────────────────────────────────┘
+│                                                                           │
+├── NAD83(2011)   ──────────────────────────────────────────────────────────┤
+│   North American Datum 1983, 2011 realization (most current).             │
+│   Used by Emlid RS3 with NTRIP and by NGS control monuments.              │
+│                                                                           │
+└── NAD83(NSRS2007)  ────── agrees w/2011 to ~1cm in NM  ───────────────────┘
     Earlier realization of NAD83.  Coordinates differ from NAD83(2011)
     by millimetres to a few centimetres.  Treated as identical in practice.
 
@@ -33,12 +33,12 @@ Coordinate representation (how a location is expressed)
 │
 └── Projected — flat plane, linear units
     ├── UTM Zone 13N — metres
-    │   └── EPSG:32613   WGS 84 / UTM zone 13N   e.g. (237 992 m E, 4 085 125 m N)
+    │   └── EPSG:32613/WGS 84/UTM zone 13N e.g. (237,992 m E, 4 085,125 m N)
     │       ODM control files, rmse_calc, gdalwarp intermediate.
     │       Central meridian 105 °W.  Covers ~103–111 °W.
     │
     └── New Mexico Central (LCC) — US survey feet
-        ├── EPSG:6529   NAD83(2011)   e.g. (1 147 722 ft E, 2 144 276 ft N)
+        ├── EPSG:6529   NAD83(2011)   e.g. (1,147,722 ft E, 2,144,276 ft N)
         │   Emlid RS3 native output ("Easting" / "Northing" columns).
         │   CS name in Emlid CSV: "NAD83(2011) / New Mexico Central (ftUS) (5)"
         │
@@ -50,8 +50,8 @@ Coordinate representation (how a location is expressed)
 
 Special: Customer Design Grid
     Not an EPSG code.  It is EPSG:3618 with a constant translation applied:
-        Design E = state_plane_E + 1 546 702.929 ft
-        Design N = state_plane_N −     3 567.471 ft
+        Design E = state_plane_E + 1,546,702.929 ft
+        Design N = state_plane_N −     3,567.471 ft
     Appears only in the .dc file (raw 69KI/81CB records) and in
     Customer-delivery outputs.  Never used inside the processing pipeline.
 ```
@@ -61,10 +61,9 @@ Special: Customer Design Grid
 | Numbers look like | Units | What it is |
 |---|---|---|
 | −107.9, 36.9 | degrees | Geographic WGS84/NAD83 (EPSG:4326) — Emlid Lat/Lon cols |
-| 237 000 – 260 000 E, 4 080 000 – 4 100 000 N | metres | UTM 13N EPSG:32613 — ODM files |
-| 1 100 000 – 1 200 000 E, 2 120 000 – 2 170 000 N | US survey ft | NM Central state plane EPSG:6529/3618 — Emlid E/N cols, DC-corrected points |
-| 2 600 000 – 2 750 000 E, 2 140 000 – 2 170 000 N | US survey ft | Customer design grid (raw .dc) — NOT state plane |
-
+| 237,000 – 260,000 E, 4,080,000 – 4,100,000 N | metres | UTM 13N EPSG:32613 — ODM files |
+| 1,100,000 – 1,200,000 E, 2,120,000 – 2,170,000 N | US survey ft | NM Central state plane EPSG:6529/3618 — Emlid E/N cols, DC-corrected points |
+| 2,600,000 – 2,750,000 E, 2,140,000 – 2,170,000 N | US survey ft | Customer design grid (raw .dc) — NOT state plane |
 ---
 
 ## 2. CRS at each pipeline stage
@@ -213,7 +212,7 @@ ortho is reprojected to EPSG:3618.  QGIS on-the-fly reprojection from EPSG:6529
 to EPSG:3618 is a sub-centimetre datum shift — visually invisible.
 
 **If layers do not align**: check the displayed coordinates when you click a
-point.  They should be in the range E = 1 100 000 – 1 200 000 ft,
-N = 2 100 000 – 2 200 000 ft for the Aztec site.  If you see degree-sized
+point.  They should be in the range E = 1,100,000 – 1,200,000 ft,
+N = 2,100,000 – 2,200,000 ft for the Aztec site.  If you see degree-sized
 numbers (−107, 36) you are using the Longitude/Latitude columns instead of
 Easting/Northing.
