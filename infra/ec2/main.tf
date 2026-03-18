@@ -13,7 +13,7 @@
 #   aws s3 sync /path/to/images/ s3://BUCKET/PROJECT/images/ \
 #     --exclude "*.MRK" --exclude "*.nav" --exclude "*.obs" --exclude "*.bin" \
 #     --profile personal --region us-west-2
-#   aws s3 cp gcp_confirmed.txt s3://BUCKET/PROJECT/gcp_list.txt \
+#   aws s3 cp ~/stratus/{job}/gcp_list.txt s3://BUCKET/PROJECT/gcp_list.txt \
 #     --profile personal --region us-west-2
 #
 # STEP 2 — Apply (creates spot instance; pipeline starts automatically):
@@ -490,8 +490,8 @@ output "usage" {
       --exclude "*.MRK" --exclude "*.nav" --exclude "*.obs" --exclude "*.bin" \
       --profile personal --region ${var.region}
 
-    # GCP file (must be named gcp_list.txt):
-    aws s3 cp ~/stratus/${var.project}/gcp_confirmed.txt \
+    # GCP file:
+    aws s3 cp ~/stratus/${var.project}/gcp_list.txt \
       ${local.s3_gcp} \
       --profile personal --region ${var.region}
 

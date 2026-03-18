@@ -21,8 +21,8 @@ flowchart TD
     gcpeditor(["GCPEditorPro"])
     confirmed["{job}_confirmed.txt"]
     prepare(["prepare_odm.py"])
-    control["{job}_control.txt"]
-    check["{job}_check.txt"]
+    control["gcp_list.txt"]
+    check["chk_list.txt"]
     s3(["s3 sync & terraform apply"])
     odm(["ODM on EC2"])
     rmse(["rmse_calc.py"])
@@ -62,9 +62,6 @@ flowchart TD
     report --> customer
 
 ```
-
-**Do not use `gcp_list.txt`** as a working filename — it is only used as the
-S3/EC2 handoff name expected by `odm-bootstrap.sh` et al.
 
 ---
 
@@ -125,10 +122,9 @@ CHK- labels = independent check points (withheld from ODM; used for accuracy QC 
 ```bash
 conda run -n geo python TargetSighter/prepare_odm.py \
     ~/stratus/{job}/{job}_confirmed.txt \
-    --out-dir ~/stratus/{job}/ \
-    --stem {job}
-# → ~/stratus/{job}/{job}_control.txt   (GCP- only, EPSG:32613)
-# → ~/stratus/{job}/{job}_check.txt     (CHK- only, EPSG:32613)
+    --out-dir ~/stratus/{job}/
+# → ~/stratus/{job}/gcp_list.txt   (GCP- only, EPSG:32613)
+# → ~/stratus/{job}/chk_list.txt   (CHK- only, EPSG:32613)
 ```
 
 ### 5. Launch ODM on EC2
@@ -139,8 +135,8 @@ aws s3 sync ~/stratus/{job}/images/ \
     s3://stratus-jrstear/{PROJECT}/images/ \
     --profile personal
 
-# Upload control file as gcp_list.txt (the name bootstrap.sh expects)
-aws s3 cp ~/stratus/{job}/{job}_control.txt \
+# Upload control file
+aws s3 cp ~/stratus/{job}/gcp_list.txt \
     s3://stratus-jrstear/{PROJECT}/gcp_list.txt \
     --profile personal
 
@@ -185,7 +181,7 @@ aws s3 sync s3://stratus-jrstear/{PROJECT}/opensfm/ \
 # Run RMSE analysis
 conda run -n geo python TargetSighter/rmse_calc.py \
     ~/stratus/{job}/opensfm/reconstruction.json \
-    ~/stratus/{job}/{job}_check.txt
+    ~/stratus/{job}/chk_list.txt
 ```
 
 Expected accuracy (250 ft AGL, drone RTK active, 5 BSN monument GCPs):

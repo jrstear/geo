@@ -4,8 +4,8 @@ prepare_odm.py — Split a GCPEditorPro confirmed file into ODM control and chec
 
 Reads a GCPEditorPro confirmed file (tab-separated ODM format, first line = CRS),
 splits observations by label prefix:
-  • GCP-* → _control.txt   (used as ODM --gcp input)
-  • CHK-* → _check.txt     (used by rmse_calc.py for accuracy verification)
+  • GCP-* → gcp_list.txt   (used as ODM --gcp input, or auto-detected if in project root)
+  • CHK-* → chk_list.txt   (used by rmse_calc.py for accuracy verification)
 
 Reprojects XY to EPSG:32613 (WGS 84 / UTM zone 13N, metres) and converts Z
 from US survey feet to metres when the input CRS is a feet-based state plane
@@ -16,12 +16,11 @@ Usage:
     conda run -n geo python TargetSighter/prepare_odm.py \\
         <confirmed_file> \\
         --out-dir <output_dir> \\
-        [--stem <name>] \\
         [--target-crs EPSG:32613]
 
 Outputs (written to --out-dir):
-    <stem>_control.txt   GCP-* only, EPSG:32613
-    <stem>_check.txt     CHK-* only, EPSG:32613
+    gcp_list.txt   GCP-* only, EPSG:32613
+    chk_list.txt   CHK-* only, EPSG:32613
 """
 
 import argparse
@@ -114,21 +113,12 @@ def main():
     ap.add_argument("confirmed", help="Input confirmed file (GCPEditorPro format)")
     ap.add_argument("--out-dir", default=None,
                     help="Output directory (default: same dir as input)")
-    ap.add_argument("--stem", default=None,
-                    help="Output filename stem (default: input stem without _confirmed suffix)")
     ap.add_argument("--target-crs", default=TARGET_CRS_DEFAULT,
                     help=f"Output CRS (default: {TARGET_CRS_DEFAULT})")
     args = ap.parse_args()
 
     in_path = Path(args.confirmed)
     out_dir = Path(args.out_dir) if args.out_dir else in_path.parent
-
-    stem = args.stem
-    if stem is None:
-        stem = in_path.stem
-        if stem.endswith("_confirmed"):
-            stem = stem[: -len("_confirmed")]
-
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Parse ---
@@ -195,8 +185,8 @@ def main():
     print(f"  CHK- points: {unique_chk} unique, {len(check_rows)} observations")
 
     # --- Write ---
-    control_path = out_dir / f"{stem}_control.txt"
-    check_path   = out_dir / f"{stem}_check.txt"
+    control_path = out_dir / "gcp_list.txt"
+    check_path   = out_dir / "chk_list.txt"
 
     print()
     write_gcp_file(control_path, args.target_crs, control_rows)
