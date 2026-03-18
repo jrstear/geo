@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-prepare_odm.py — Split a GCPEditorPro confirmed file into ODM control and check files.
+convert_coords.py — Split a GCPEditorPro confirmed file into ODM control and check files.
 
 Reads a GCPEditorPro confirmed file (tab-separated ODM format, first line = CRS),
 splits observations by label prefix:
@@ -13,7 +13,7 @@ from US survey feet to metres when the input CRS is a feet-based state plane
 (rows whose 8th column is "confirmed", or all rows if column 8 is absent).
 
 Usage:
-    conda run -n geo python TargetSighter/prepare_odm.py \\
+    conda run -n geo python TargetSighter/convert_coords.py \\
         <confirmed_file> \\
         --out-dir <output_dir> \\
         [--target-crs EPSG:32613]

@@ -7,6 +7,7 @@ using Emlid GNSS survey data and GCPEditorPro pixel tagging.
 
 ## Overview
 ```mermaid
+%%{init: {'theme': 'base', 'flowchart': {'nodeSpacing': 20}}}%%
 flowchart TD
     cust_dc["{customer}_{job}.dc"]
     extract(["extract_dc_points.py"])
@@ -20,7 +21,7 @@ flowchart TD
     targets["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
     confirmed["{job}_confirmed.txt"]
-    prepare(["prepare_odm.py"])
+    prepare(["convert_coords.py"])
     control["gcp_list.txt"]
     check["chk_list.txt"]
     s3(["s3 sync & terraform apply"])
@@ -76,7 +77,7 @@ flowchart TD
 **Why EPSG:32613 for ODM?**  EPSG:3618 and 6529 are 2D — they define XY units (US
 survey feet) but not vertical units.  ODM assumes Z is in metres for any 2D CRS,
 causing a ~3.28× Z scale error when Z is in feet.  EPSG:32613 is unambiguous:
-all axes in metres.  `prepare_odm.py` handles the conversion automatically.
+all axes in metres.  `convert_coords.py` handles the conversion automatically.
 
 ---
 
@@ -120,7 +121,7 @@ CHK- labels = independent check points (withheld from ODM; used for accuracy QC 
 ### 4. Split into control + check files
 
 ```bash
-conda run -n geo python TargetSighter/prepare_odm.py \
+conda run -n geo python TargetSighter/convert_coords.py \
     ~/stratus/{job}/{job}_confirmed.txt \
     --out-dir ~/stratus/{job}/
 # → ~/stratus/{job}/gcp_list.txt   (GCP- only, EPSG:32613)
@@ -192,7 +193,7 @@ Expected accuracy (250 ft AGL, drone RTK active, 5 BSN monument GCPs):
 | Vertical RMS | 0.12–0.18 ft (0.037–0.055 m) |
 
 RMS_Z mean offset is typically near zero — the check file Z is in ellipsoidal metres
-(written by `prepare_odm.py`), consistent with ODM's internal reference. The std_dZ
+(written by `convert_coords.py`), consistent with ODM's internal reference. The std_dZ
 is the true vertical accuracy metric. If RMS_Z is near 4,000 m, the Z unit conversion
 was not applied.
 

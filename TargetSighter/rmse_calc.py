@@ -15,7 +15,7 @@ For each CHK-* label in chk_confirmed.txt:
   4. Converts ENU reconstruction coords → projected world CRS (pyproj).
   5. Computes dX/dY/dZ vs surveyed position from chk_confirmed.txt cols 1-3.
 
-chk_confirmed.txt is produced by prepare_odm.py and already contains the
+chk_confirmed.txt is produced by convert_coords.py and already contains the
 surveyed XYZ in the output CRS (e.g. EPSG:32613 metres). No external survey
 CSV is required.
 
@@ -115,7 +115,7 @@ def parse_chk_confirmed(
     chk_path: str,
 ) -> Tuple[str, Dict[str, Tuple[float, float, float]], Dict[str, List[Tuple[str, float, float]]]]:
     """
-    Parse chk_confirmed.txt (tab-separated ODM GCP format produced by prepare_odm.py).
+    Parse chk_confirmed.txt (tab-separated ODM GCP format produced by convert_coords.py).
 
     Returns:
         crs_header   : str  — CRS string from line 1 (e.g. 'EPSG:32613')
@@ -277,7 +277,7 @@ def compute_rmse(
     Full pipeline: parse inputs, triangulate, convert coords, compute RMSE.
 
     Ground truth XYZ is read directly from chk_confirmed.txt cols 1-3 (already
-    in the output CRS, produced by prepare_odm.py).
+    in the output CRS, produced by convert_coords.py).
 
     Returns a dict suitable for JSON output.
     """
@@ -351,7 +351,7 @@ def compute_rmse(
         survey_y_m = survey_y * FT_TO_M if uses_feet else survey_y
 
         # Z: z_ellip_m is ellipsoidal altitude in metres (from enu_to_projected).
-        # survey_z from prepare_odm.py is the survey elevation in metres.
+        # survey_z from convert_coords.py is the survey elevation in metres.
         # Any systematic offset (e.g. geoid separation ~20-24 m) is expected and documented.
         survey_z_m = survey_z
 
@@ -526,7 +526,7 @@ def run_synthetic_test() -> bool:
         return None
 
     # Build chk_confirmed.txt — cols 0-2 are the surveyed position in the output CRS.
-    # Use EPSG:32613 (metres) to match prepare_odm.py output.
+    # Use EPSG:32613 (metres) to match convert_coords.py output.
     crs_header = "EPSG:32613"
     chk_lines = [crs_header]
 
@@ -586,7 +586,7 @@ def main() -> None:
     )
     parser.add_argument("reconstruction", nargs="?", help="Path to reconstruction.json")
     parser.add_argument("chk_confirmed", nargs="?",
-                        help="Path to chk_confirmed.txt (produced by prepare_odm.py)")
+                        help="Path to chk_confirmed.txt (produced by convert_coords.py)")
     parser.add_argument(
         "--crs",
         default=None,
