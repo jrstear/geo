@@ -11,20 +11,24 @@ using Emlid GNSS survey data and GCPEditorPro pixel tagging.
 flowchart TD
     cust_dc["{customer}_{job}.dc"]
     extract(["transform.py dc"])
-    cust_csv["{customer}_{job}.csv"]
+    points_6529["{job}_points_6529.csv"]
+    points["{job}_points.csv"]
+    points_design["{job}_points_design.csv"]
     transform_yaml["transform.yaml"]
     emlid(["Emlid Survey"])
-    all["{job}_all.csv"]
+    all["{job}_surveyed_6529.csv"]
     filter(["filter manually"])
-    filtered["{job}.csv"]
+    filtered["{job}_6529.csv"]
     sight(["sight.py"])
-    marks["marks.csv for Pix4D"]
+    marks["marks_design.csv for Pix4D"]
     targets["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
     confirmed["{job}_confirmed.txt"]
     prepare(["transform.py split"])
     control["gcp_list.txt"]
     check["chk_list.txt"]
+    gcp_design["gcp_list_design.txt"]
+    chk_design["chk_list_design.txt"]
     s3(["s3 sync & terraform apply"])
     odm(["ODM on EC2"])
     rmse(["rmse_calc.py"])
@@ -32,40 +36,95 @@ flowchart TD
     images[["images/*.JPG"]]
     deliverables[["orthophoto,contours,surface"]]
     packager(["package.py"])
+    delivered[["{orthophoto,contours,surface}_design"]]
     report["Accuracy report"]
     model["reconstruction.json"]
     customer[\"Customer"/]
+    qgis_cloud(["QGIS review"])
+    qgis_design(["QGIS review"])
 
-	subgraph Surveyed eg EPSG:3618
-	    cust_dc --> extract --> cust_csv --> emlid
-	    extract --> transform_yaml
-	    emlid --> all --> filter --> filtered
-	    filtered --> sight --> targets
-	    sight --> marks
-	    transform_yaml -.-> sight
-	    targets --> gcpeditor
-	    gcpeditor --> confirmed
-	    confirmed --> prepare
-	    transform_yaml --> prepare
-	    customer
-	end
+    subgraph "Customer Design Grid (job-specific offset, no EPSG)"
+        cust_dc
+        extract
+        points_design
+        gcp_design
+        chk_design
+        marks
+        delivered
+        qgis_design
+        customer
+    end
 
-    subgraph Cloud eg EPSG:32613
-	    drone --> images
-	    prepare --> control
-	    prepare --> check
-	    control --> s3
-	    s3 --> odm --> deliverables
-	    odm --> model --> rmse
-	    check --> rmse --> report
-            deliverables --> packager
-            transform_yaml --> packager
-	end
+    subgraph "Surveyed eg EPSG:6529"
+        points_6529
+        emlid
+        all
+        filter
+        filtered
+    end
 
+    subgraph "Cloud eg EPSG:32613"
+        points
+        drone
+        images
+        targets
+        sight
+        transform_yaml
+        gcpeditor
+        confirmed
+        prepare
+        control
+        check
+        s3
+        odm
+        deliverables
+        model
+        rmse
+        report
+        packager
+        qgis_cloud
+    end
+
+    drone --> images
+    cust_dc --> extract
+    extract --> points_6529
+    extract --> points
+    extract --> points_design
+    extract --> transform_yaml
+    points_6529 --> emlid
+    emlid --> all --> filter --> filtered
+    filtered --> sight
+    transform_yaml --> sight
+    sight --> marks
+    sight --> targets
+    targets --> gcpeditor
+    gcpeditor --> confirmed
+    confirmed --> prepare
+    transform_yaml --> prepare
+    prepare --> control
+    prepare --> check
+    prepare --> gcp_design
+    prepare --> chk_design
     images --> sight
     images --> s3
-    packager --> customer
+    control --> s3
+    s3 --> odm --> deliverables
+    odm --> model --> rmse
+    check --> rmse --> report
+    deliverables --> packager
+    transform_yaml --> packager
+    packager --> delivered
+    delivered --> qgis_design
+    points_design --> qgis_design
+    gcp_design --> qgis_design
+    chk_design --> qgis_design
+    delivered --> customer
     report --> customer
+    deliverables --> qgis_cloud
+    points --> qgis_cloud
+    control --> qgis_cloud
+    check --> qgis_cloud
+    qgis_design -.-> customer
 
 ```
 
