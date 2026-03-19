@@ -1285,11 +1285,64 @@ if __name__ == '__main__':
                         help='Penalty applied to oblique images in the sort score '
                              '(0=treat obliques same as nadirs, 1=all nadirs first; default 0.2)')
     parser.add_argument('--out-name', default='gcp_list.txt',
-                        help='Filename for the gcp_list output (default: gcp_list.txt)')
+                        help='Filename for the gcp_list output (default: gcp_list.txt; '
+                             'auto-set to {job}.txt from transform.yaml if present)')
     parser.set_defaults(classify=True, refine_pixels=True)
     parser.add_argument('--match-only', action='store_true',
                         help='Run image-to-GCP footprint matching only and print results without projecting pixels or writing files')
+    parser.add_argument('--transform-yaml', default=None, metavar='FILE',
+                        help='Path to transform.yaml written by transformer.py dc. '
+                             'Auto-located in the survey CSV directory or cwd if omitted. '
+                             'Provides field_crs (fallback for --crs) and job name (fallback for --out-name).')
     args = parser.parse_args()
+
+    # --- transform.yaml integration ---
+    _yaml_path = None
+    if args.transform_yaml:
+        _yaml_path = Path(args.transform_yaml)
+        if not _yaml_path.exists():
+            import sys as _sys; _sys.exit(f'ERROR: transform.yaml not found: {_yaml_path}')
+    else:
+        for _candidate in [Path(args.survey_csv).parent / 'transform.yaml',
+                            Path.cwd() / 'transform.yaml']:
+            if _candidate.exists():
+                _yaml_path = _candidate
+                break
+
+    if _yaml_path:
+        try:
+            # Minimal YAML reader — matches transformer.py's write_yaml format
+            _transform: dict = {}
+            _section = None
+            for _raw in _yaml_path.read_text(encoding='utf-8').splitlines():
+                _line = _raw.rstrip()
+                if not _line or _line.lstrip().startswith('#'):
+                    continue
+                if _line.startswith('  '):
+                    if _section:
+                        _k, _, _v = _line.strip().partition(': ')
+                        _transform.setdefault(_section, {})[_k] = _v.strip().strip('"')
+                else:
+                    _k, _, _v = _line.partition(': ')
+                    _v = _v.strip().strip('"')
+                    if not _v:
+                        _section = _k.rstrip(':'); _transform[_section] = {}
+                    else:
+                        _section = None; _transform[_k] = _v
+            print(f'Loaded transform.yaml: {_yaml_path}')
+        except Exception as _e:
+            print(f'WARNING: could not read transform.yaml ({_e}); ignoring')
+            _transform = {}
+
+        _field_crs = _transform.get('field_crs')
+        _job_name  = _transform.get('job')
+
+        if _field_crs and not args.crs:
+            args.crs = _field_crs
+            print(f'  field_crs → --crs {_field_crs}')
+        if _job_name and args.out_name == 'gcp_list.txt':
+            args.out_name = f'{_job_name}.txt'
+            print(f'  job → --out-name {args.out_name}')
 
     if args.match_only:
         print(f'Parsing {args.survey_csv}...')

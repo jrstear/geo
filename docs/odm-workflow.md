@@ -112,8 +112,11 @@ Use `{job}_points.csv` for Emlid RS3 base/rover localization in the field.
 ```bash
 conda run -n geo python TargetSighter/sight.py \
     ~/stratus/{job}/{job}.csv \
-    ~/stratus/{job}/images/ \
-    --out-name "{job}"
+    ~/stratus/{job}/images/
+# If transform.yaml is present in ~/stratus/{job}/, sight.py auto-loads it:
+#   field_crs → used as fallback CRS for the survey CSV
+#   job name  → used as output filename ({job}.txt)
+# Without transform.yaml, pass explicitly: --crs EPSG:XXXX --out-name "{job}"
 # → ~/stratus/{job}/{job}.txt    (for input to GCPEditorPro)
 # → ~/stratus/{job}/marks.csv   (Pix4D parallel workflow — not used in ODM path)
 ```
