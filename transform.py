@@ -373,11 +373,6 @@ def cmd_dc(args) -> int:
         print(f"  {t}: {n}")
     print(f"QGIS: Delimited Text, X=easting_ft, Y=northing_ft, CRS={delivery_crs}")
 
-    # Centroid of control points (for transform.yaml anchor)
-    ctrl = [r for r in rows if r["point_type"] == "control" and r["easting_ft"] != ""]
-    anchor_x = round(sum(r["easting_ft"] for r in ctrl) / len(ctrl), 3) if ctrl else None
-    anchor_y = round(sum(r["northing_ft"] for r in ctrl) / len(ctrl), 3) if ctrl else None
-
     # Write transform.yaml
     transform = {
         "job":          job_name,
@@ -390,8 +385,8 @@ def cmd_dc(args) -> int:
             "scale":                1.0,
             "rotation_deg":         0.0,
             "helmert_residual_ft":  None,
-            "anchor_x":             anchor_x,
-            "anchor_y":             anchor_y,
+            "anchor_x":             None,
+            "anchor_y":             None,
         },
     }
     yaml_path = out_dir / "transform.yaml"

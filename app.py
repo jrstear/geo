@@ -108,8 +108,16 @@ def run():
         val = data.get(key)
         if val is not None and str(val).strip() != "":
             default_val = pkg_defaults.get(key)
-            if default_val is None or str(val).strip() != str(default_val).strip():
+            if default_val is None:
                 args.extend([flag, str(val)])
+            else:
+                # Compare numerically when possible ("1" == "1.0", etc.)
+                try:
+                    differs = float(val) != float(default_val)
+                except (ValueError, TypeError):
+                    differs = str(val).strip() != str(default_val).strip()
+                if differs:
+                    args.extend([flag, str(val)])
 
     # ── Step 0: Job config ─────────────────────────────────────────────────────
     if (data.get("transform_yaml") or "").strip():
