@@ -12,6 +12,7 @@ flowchart TD
     cust_dc["{customer}_{job}.dc"]
     extract(["transformer.py dc"])
     cust_csv["{customer}_{job}.csv"]
+    transform_yaml["transform.yaml"]
     emlid(["Emlid Survey"])
     all["{job}_all.csv"]
     filter(["filter manually"])
@@ -38,12 +39,15 @@ flowchart TD
 
 	subgraph Surveyed eg EPSG:3618
 	    cust_dc --> extract --> cust_csv --> emlid
+	    extract --> transform_yaml
 	    emlid --> all --> filter --> filtered
 	    filtered --> sight --> targets
 	    sight --> marks
+	    transform_yaml -.-> sight
 	    targets --> gcpeditor
 	    gcpeditor --> confirmed
 	    confirmed --> prepare
+	    transform_yaml --> prepare
 	    customer
 	end
     
