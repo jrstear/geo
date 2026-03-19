@@ -10,7 +10,7 @@ using Emlid GNSS survey data and GCPEditorPro pixel tagging.
 %%{init: {'theme': 'base', 'flowchart': {'nodeSpacing': 20}}}%%
 flowchart TD
     cust_dc["{customer}_{job}.dc"]
-    extract(["transformer.py dc"])
+    extract(["transform.py dc"])
     cust_csv["{customer}_{job}.csv"]
     transform_yaml["transform.yaml"]
     emlid(["Emlid Survey"])
@@ -22,7 +22,7 @@ flowchart TD
     targets["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
     confirmed["{job}_confirmed.txt"]
-    prepare(["transformer.py split"])
+    prepare(["transform.py split"])
     control["gcp_list.txt"]
     check["chk_list.txt"]
     s3(["s3 sync & terraform apply"])
@@ -32,7 +32,7 @@ flowchart TD
     images[["images/*.JPG"]]
     deliverables[["orthophoto,contours,surface"]]
     reproject(["reproject_deliverable.py"])
-    packager(["GeoPackager"])
+    packager(["package.py"])
     report["Accuracy report"]
     model["reconstruction.json"]
     customer[\"Customer"/]
@@ -93,16 +93,16 @@ all axes in metres.  `convert_coords.py` handles the conversion automatically.
 You need control monument coordinates in EPSG:3618 before going to the field.
 
 **Customer/Trimble jobs**: Customer provides a `.dc` data collector file with design-grid
-coordinates. `transformer.py dc` converts them to state plane and writes
+coordinates. `transform.py dc` converts them to state plane and writes
 `{job}_points.csv` + `transform.yaml` (CRS and shift parameters for the job):
 
 ```bash
-conda run -n geo python transformer.py dc \
+conda run -n geo python transform.py dc \
     ~/stratus/{job}/{customer}_{job}.dc \
     --shift-x <design_E - state_E>  --shift-y <design_N - state_N> \
     --out-dir ~/stratus/{job}/
 # → ~/stratus/{job}/{job}_points.csv   (state-plane, EPSG auto-detected from .dc)
-# → ~/stratus/{job}/transform.yaml     (CRS + shift params; used by transformer.py gcp)
+# → ~/stratus/{job}/transform.yaml     (CRS + shift params; used by transform.py split)
 ```
 
 The shift values are job-specific (derived once from a known monument).
@@ -140,7 +140,7 @@ CHK- labels = independent check points (withheld from ODM; used for accuracy QC 
 ### 4. Split into control + check files
 
 ```bash
-conda run -n geo python transformer.py split \
+conda run -n geo python transform.py split \
     ~/stratus/{job}/{job}_confirmed.txt \
     --out-dir ~/stratus/{job}/
 # Reads ~/stratus/{job}/transform.yaml for field_crs automatically
