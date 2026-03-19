@@ -73,11 +73,12 @@ Special: Customer Design Grid
 | Item | CRS | Notes |
 |---|---|---|
 | `.dc` 69KI / 81CB records (control points) | Customer design grid | Raw easting ~2.6–2.75 M ft; apply offset to get state plane |
-| `.dc` 66KI / 66FD records (base stations) | EPSG:4326 (lat/lon) | Converted to EPSG:3618 by `extract_dc_points.py` |
-| `F100340_{job}_points.csv` (output of `extract_dc_points.py`) | EPSG:3618 | Design-grid offset removed; ready for Emlid and QGIS |
+| `.dc` 66KI / 66FD records (base stations) | EPSG:4326 (lat/lon) | Converted to state plane by `transformer.py dc` |
+| `{job}_points.csv` (output of `transformer.py dc`) | EPSG:6529 | Design-grid offset removed; ready for Emlid and QGIS |
+| `transform.yaml` (output of `transformer.py dc`) | — | Job CRS + design-grid shift params |
 
 **To load in QGIS**: Delimited Text, X = `easting_ft`, Y = `northing_ft`,
-Z = `elevation_ft`, CRS = **EPSG:3618**.
+Z = `elevation_ft`, CRS = **EPSG:6529** (or EPSG:3618 — same numbers for this site).
 
 ---
 
@@ -105,19 +106,20 @@ Emlid is in the same coordinate system as the DC file.
 
 ---
 
-### Stage 3 — GCP tagging (sight.py → GCPEditorPro → convert_coords.py)
+### Stage 3 — GCP tagging (sight.py → GCPEditorPro → transformer.py split)
 
 | Item | CRS | Notes |
 |---|---|---|
 | `{job}.csv` (filtered Emlid survey) | EPSG:6529 | Input to `sight.py` |
 | `{job}.txt` (output of `sight.py`) | EPSG:6529 | GCPEditorPro input |
 | `{job}_confirmed.txt` (GCPEditorPro export) | EPSG:6529 | Z is NAVD88 feet |
-| `gcp_list.txt` (output of `convert_coords.py`) | **EPSG:32613** | X/Y metres, Z ellipsoidal metres |
-| `chk_list.txt` (output of `convert_coords.py`) | **EPSG:32613** | Same as above |
+| `transform.yaml` (output of `transformer.py dc`) | — | CRS and shift params for the job |
+| `gcp_list.txt` (output of `transformer.py split`) | **EPSG:32613** | X/Y metres, Z ellipsoidal metres |
+| `chk_list.txt` (output of `transformer.py split`) | **EPSG:32613** | Same as above |
 
-`convert_coords.py` performs three conversions in one step:
-1. EPSG:6529 (ft) → EPSG:32613 (m) via pyproj
-2. NAVD88 orthometric height (ft) → WGS84 ellipsoidal height (m) via geoid model
+`transformer.py split` performs three conversions in one step:
+1. EPSG:6529 (ft) → EPSG:32613 (m) via pyproj (source CRS read from `transform.yaml`)
+2. NAVD88 orthometric height (ft) → ellipsoidal height (m)
 3. Splits GCP- and CHK- prefixed points into separate files
 
 **Why EPSG:32613 for ODM?**  The NM Central CRS (EPSG:3618/6529) defines only
@@ -179,13 +181,13 @@ display without on-the-fly reprojection overhead.
 
 ```
 .dc file (design grid ft)
-    ↓ extract_dc_points.py  [remove Customer offset]
-F100340_points.csv  (EPSG:3618 ft)
+    ↓ transformer.py dc  [remove Customer offset; auto-detect CRS from .dc]
+{job}_points.csv  (EPSG:6529 ft)  +  transform.yaml
     ↓ Emlid RS3 field survey  [localize to monuments]
 {job}.csv Easting/Northing  (EPSG:6529 ft  ≈  EPSG:3618)
     ↓ sight.py + GCPEditorPro
 {job}_confirmed.txt  (EPSG:6529 ft, NAVD88 Z ft)
-    ↓ convert_coords.py  [project + geoid]
+    ↓ transformer.py split  [project + geoid; reads transform.yaml for field_crs]
 gcp_list.txt / chk_list.txt  (EPSG:32613 m, ellipsoidal Z m)
     ↓ ODM
 odm_orthophoto.original.tif  (EPSG:32613 m)
