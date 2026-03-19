@@ -10,7 +10,7 @@ using Emlid GNSS survey data and GCPEditorPro pixel tagging.
 %%{init: {'theme': 'base', 'flowchart': {'nodeSpacing': 20}}}%%
 flowchart TD
     cust_dc["{customer}_{job}.dc"]
-    extract(["extract_dc_points.py"])
+    extract(["transformer.py dc"])
     cust_csv["{customer}_{job}.csv"]
     emlid(["Emlid Survey"])
     all["{job}_all.csv"]
@@ -21,7 +21,7 @@ flowchart TD
     targets["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
     confirmed["{job}_confirmed.txt"]
-    prepare(["convert_coords.py"])
+    prepare(["transformer.py split"])
     control["gcp_list.txt"]
     check["chk_list.txt"]
     s3(["s3 sync & terraform apply"])
@@ -89,8 +89,19 @@ all axes in metres.  `convert_coords.py` handles the conversion automatically.
 You need control monument coordinates in EPSG:3618 before going to the field.
 
 **Customer/Trimble jobs**: Customer provides a `.dc` data collector file with design-grid
-coordinates. A job-specific extraction script converts them to state plane
-EPSG:3618 and writes `{job}_points.csv`.
+coordinates. `transformer.py dc` converts them to state plane and writes
+`{job}_points.csv` + `transform.yaml` (CRS and shift parameters for the job):
+
+```bash
+conda run -n geo python transformer.py dc \
+    ~/stratus/{job}/{customer}_{job}.dc \
+    --shift-x <design_E - state_E>  --shift-y <design_N - state_N> \
+    --out-dir ~/stratus/{job}/
+# → ~/stratus/{job}/{job}_points.csv   (state-plane, EPSG auto-detected from .dc)
+# → ~/stratus/{job}/transform.yaml     (CRS + shift params; used by transformer.py gcp)
+```
+
+The shift values are job-specific (derived once from a known monument).
 
 **Other jobs**: obtain monument coordinates in EPSG:3618 directly from the surveyor.
 
@@ -122,9 +133,10 @@ CHK- labels = independent check points (withheld from ODM; used for accuracy QC 
 ### 4. Split into control + check files
 
 ```bash
-conda run -n geo python TargetSighter/convert_coords.py \
+conda run -n geo python transformer.py split \
     ~/stratus/{job}/{job}_confirmed.txt \
     --out-dir ~/stratus/{job}/
+# Reads ~/stratus/{job}/transform.yaml for field_crs automatically
 # → ~/stratus/{job}/gcp_list.txt   (GCP- only, EPSG:32613)
 # → ~/stratus/{job}/chk_list.txt   (CHK- only, EPSG:32613)
 ```
