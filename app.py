@@ -111,7 +111,28 @@ def run():
             if default_val is None or str(val).strip() != str(default_val).strip():
                 args.extend([flag, str(val)])
 
-    # ── TIF positional arg + TIF-specific options ──────────────────────────────
+    # ── Step 0: Job config ─────────────────────────────────────────────────────
+    if (data.get("transform_yaml") or "").strip():
+        args += ["--transform-yaml", data["transform_yaml"].strip()]
+
+    # ── Step 1: Reproject — omit if transform-yaml provided (auto-loads delivery_crs)
+    if (data.get("crs") or "").strip() and not (data.get("transform_yaml") or "").strip():
+        args += ["--crs", data["crs"].strip()]
+
+    # ── Steps 2–3: Scale / Shift (apply to all input types) ───────────────────
+    add_arg("scale",    "--scale")
+    # anchor is only meaningful when scale != 1; suppress it otherwise
+    try:
+        _scale_is_one = not str(data.get("scale") or "").strip() or float(data["scale"]) == 1.0
+    except (ValueError, TypeError):
+        _scale_is_one = False
+    if not _scale_is_one:
+        add_arg("anchor_x", "--anchor-x")
+        add_arg("anchor_y", "--anchor-y")
+    add_arg("shift_x",  "--shift-x")
+    add_arg("shift_y",  "--shift-y")
+
+    # ── Step 4: Downsize / Tile / COG (TIF) ───────────────────────────────────
     if tif_file:
         args += ["--tif-file", tif_file]
 
@@ -122,30 +143,25 @@ def run():
             args.append("--tif-clobber")
         if data.get("no_downsize"):
             args.append("--no-downsize")
+
+        add_arg("downsize_percent", "--downsize-percent")
+
         if data.get("no_tile"):
             args.append("--no-tile")
         if data.get("web_optimized"):
             args.append("--web-optimized")
 
-        add_arg("downsize_percent", "--downsize-percent")
         add_arg("tile_size", "--tile-size")
         add_arg("load", "--load")
 
-    # ── Shared transform args (apply to all input types) ──────────────────────
-    add_arg("scale",    "--scale")
-    add_arg("anchor_x", "--anchor-x")
-    add_arg("anchor_y", "--anchor-y")
-    add_arg("shift_x",  "--shift-x")
-    add_arg("shift_y",  "--shift-y")
-
-    # ── Contour DXF args ───────────────────────────────────────────────────────
+    # ── Contour DXF ────────────────────────────────────────────────────────────
     if contour_file:
         args += ["--contour-file", contour_file]
         add_arg("contour_suffix", "--contour-suffix")
         if data.get("contour_clobber"):
             args.append("--contour-clobber")
 
-    # ── TIN XML args ───────────────────────────────────────────────────────────
+    # ── TIN LandXML ────────────────────────────────────────────────────────────
     if tin_file:
         args += ["--tin-file", tin_file]
         add_arg("tin_suffix",     "--tin-suffix")
@@ -192,6 +208,43 @@ def stream():
 
     return Response(event_stream(), mimetype="text/event-stream")
 
+@app.route("/load_yaml", methods=["POST"])
+def load_yaml():
+    """Read design_grid fields from a transform.yaml and return them as JSON."""
+    path = (request.json.get("path") or "").strip()
+    if not path or not os.path.exists(path):
+        return jsonify({"error": f"File not found: {path}"}), 400
+    try:
+        t, sec = {}, None
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                ln = raw.rstrip()
+                if not ln or ln.lstrip().startswith("#"):
+                    continue
+                if ln.startswith("  "):
+                    if sec:
+                        k, _, v = ln.strip().partition(": ")
+                        t.setdefault(sec, {})[k] = v.strip().strip('"')
+                else:
+                    k, _, v = ln.partition(": ")
+                    v = v.strip().strip('"')
+                    if not v:
+                        sec = k.rstrip(":"); t[sec] = {}
+                    else:
+                        sec = None; t[k] = v
+        dg = t.get("design_grid", {})
+        result = {}
+        if t.get("delivery_crs") and str(t["delivery_crs"]) not in ("", "null"):
+            result["delivery_crs"] = str(t["delivery_crs"]).strip()
+        for key in ("shift_x", "shift_y", "scale", "anchor_x", "anchor_y"):
+            val = dg.get(key)
+            if val is not None and str(val) not in ("", "null"):
+                result[key] = val
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/browse")
 def browse():
     """Triggers a native file/folder picker using tkinter in a separate process to avoid macOS threading crashes."""
@@ -204,6 +257,8 @@ def browse():
         dialog_call = 'filedialog.askopenfilename(title="Select Contour DXF", filetypes=[("DXF", "*.dxf")])'
     elif mode == "xml":
         dialog_call = 'filedialog.askopenfilename(title="Select TIN LandXML", filetypes=[("LandXML", "*.xml")])'
+    elif mode == "yaml":
+        dialog_call = 'filedialog.askopenfilename(title="Select transform.yaml", filetypes=[("YAML", "*.yaml *.yml"), ("All files", "*")])'
     else:  # dir
         dialog_call = 'filedialog.askdirectory(title="Select Output Directory")'
 
