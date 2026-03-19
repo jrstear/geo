@@ -31,7 +31,6 @@ flowchart TD
     drone[/"Drone"\]
     images[["images/*.JPG"]]
     deliverables[["orthophoto,contours,surface"]]
-    reproject(["reproject_deliverable.py"])
     packager(["package.py"])
     report["Accuracy report"]
     model["reconstruction.json"]
@@ -50,7 +49,7 @@ flowchart TD
 	    transform_yaml --> prepare
 	    customer
 	end
-    
+
     subgraph Cloud eg EPSG:32613
 	    drone --> images
 	    prepare --> control
@@ -59,12 +58,13 @@ flowchart TD
 	    s3 --> odm --> deliverables
 	    odm --> model --> rmse
 	    check --> rmse --> report
-            deliverables --> reproject
+            deliverables --> packager
+            transform_yaml --> packager
 	end
 
     images --> sight
     images --> s3
-    reproject --> packager --> customer
+    packager --> customer
     report --> customer
 
 ```
@@ -219,14 +219,17 @@ is the true vertical accuracy metric.
 ### 7. Deliver
 
 ```bash
-# Sync orthophoto and report from S3
+# Sync deliverables from S3
 aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_orthophoto/ \
     ~/stratus/{job}/odm_orthophoto/ --profile personal
 aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_report/ \
     ~/stratus/{job}/odm_report/ --profile personal
 
-# Reproject to state plane (optional — QGIS handles on-the-fly)
-gdalwarp -s_srs EPSG:32613 -t_srs EPSG:3618 odm_orthophoto.tif ortho_3618.tif
-
+# Package for customer delivery (reproject + shift to design grid + tile/COG)
+# transform.yaml is auto-loaded from the same directory as the input TIF
+python package.py \
+    --tif-file ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original.tif \
+    --transform-yaml ~/stratus/{job}/transform.yaml
+# Or use the GUI: python app.py → http://localhost:5001
 ```
 

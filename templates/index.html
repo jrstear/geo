@@ -71,11 +71,31 @@
             <!-- Configuration Column -->
             <div class="glass p-6 space-y-4">
 
-                <!-- 01 Shared Parameters -->
+                <!-- 01 Transformation Parameters -->
                 <div class="card-shared">
                     <h2 class="text-sm font-bold mb-3 flex items-center gap-2 text-purple-300 uppercase tracking-wider">
-                        Shared Parameters
+                        Transformation Parameters
                     </h2>
+                    <div class="mb-3">
+                        <label class="block text-[10px] font-semibold uppercase text-purple-400/70 mb-1">
+                            transform.yaml
+                            <span class="normal-case font-normal text-slate-500 ml-1">(optional — populates fields below)</span>
+                        </label>
+                        <div class="flex gap-2">
+                            <input type="text" id="transform_yaml" placeholder="/path/to/transform.yaml"
+                                class="w-full border rounded-lg px-3 py-1.5 text-sm text-slate-200">
+                            <button onclick="browse('yaml', 'transform_yaml')"
+                                class="px-3 py-1.5 bg-purple-900/40 hover:bg-purple-800/50 border border-purple-500/30 rounded-lg text-sm text-purple-300 transition-colors whitespace-nowrap">Browse</button>
+                            <button onclick="loadTransformYaml()"
+                                class="px-3 py-1.5 bg-purple-900/40 hover:bg-purple-800/50 border border-purple-500/30 rounded-lg text-sm text-purple-300 transition-colors whitespace-nowrap">Load</button>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="block text-[10px] font-semibold uppercase text-purple-400/70 mb-1">Reproject to CRS
+                        </label>
+                        <input type="text" id="crs" placeholder="e.g. EPSG:3618"
+                            class="w-full border rounded-lg px-3 py-1.5 text-sm text-slate-200">
+                    </div>
                     <div class="grid grid-cols-3 gap-3">
                         <div>
                             <label class="block text-[10px] font-semibold uppercase text-purple-400/70 mb-1">Scale Factor</label>
@@ -283,6 +303,36 @@
             tileSz.classList.toggle('cursor-not-allowed', disable);
         }
 
+        function loadTransformYaml() {
+            const path = document.getElementById('transform_yaml').value.trim();
+            if (!path) { alert('Enter a path to transform.yaml first.'); return; }
+            fetch('/load_yaml', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) { alert('Load failed: ' + data.error); return; }
+                const fieldMap = { delivery_crs: 'crs', scale: 'scale',
+                                   anchor_x: 'anchor_x', anchor_y: 'anchor_y',
+                                   shift_x: 'shift_x', shift_y: 'shift_y' };
+                let populated = [];
+                for (const [key, id] of Object.entries(fieldMap)) {
+                    if (data[key] !== undefined && data[key] !== null) {
+                        document.getElementById(id).value = data[key];
+                        populated.push(key);
+                    }
+                }
+                if (populated.length === 0) {
+                    alert('transform.yaml loaded but no design_grid fields found.');
+                } else {
+                    console.log('Loaded from transform.yaml:', populated.join(', '));
+                }
+            })
+            .catch(err => alert('Load error: ' + err.message));
+        }
+
         function browse(mode, targetId) {
             fetch(`/browse?mode=${mode}`)
                 .then(r => r.json())
@@ -336,6 +386,8 @@
 
                 const params = {
                     // Shared
+                    transform_yaml: document.getElementById('transform_yaml').value,
+                    crs:      document.getElementById('crs').value,
                     scale:    document.getElementById('scale').value,
                     anchor_x: document.getElementById('anchor_x').value,
                     anchor_y: document.getElementById('anchor_y').value,

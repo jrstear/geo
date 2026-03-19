@@ -402,38 +402,52 @@ def process_tin(input_path, scale, anchor_x, anchor_y, shift_x, shift_y,
 # ------------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Parallel Raster Packager (Scale, Shift, Downsize, Tile, Clean).")
-    parser.add_argument("--tif-file", help="Input GeoTIFF file")
-    parser.add_argument("--output-dir", help="Output directory (default: <input_dir>/<input_basename>_tiles)")
-    parser.add_argument("--tif-clobber", action="store_true", help="Overwrite conflicting files in output directory")
+    parser = argparse.ArgumentParser(
+        description="Package geo-photogrammetry deliverables. "
+                    "Arguments are listed in the order they are applied during processing: "
+                    "reproject → scale → shift → downsize/tile/COG.")
 
-    # transformation / georeferencing options
+    # ── Step 0: Job config ─────────────────────────────────────────────────────
+    parser.add_argument("--transform-yaml", default=None, metavar="FILE",
+                        help="Path to transform.yaml (written by transform.py dc). "
+                             "Auto-located next to the input file or in cwd if omitted. "
+                             "Populates --crs, scale, anchor-x/y, shift-x/y from "
+                             "delivery_crs and design_grid sections.")
+
+    # ── Step 1: Reproject ──────────────────────────────────────────────────────
+    parser.add_argument("--crs", default=None, metavar="EPSG:XXXX",
+                        help="Target CRS for reprojection (e.g. EPSG:3618). "
+                             "Applied via gdalwarp before scale/shift/tiling. "
+                             "Auto-populated from delivery_crs in transform.yaml if omitted.")
+
+    # ── Step 2–3: Scale / Shift ────────────────────────────────────────────────
     parser.add_argument("--scale", type=float, default=1.0, help="Grid-to-ground scale factor (default 1.0)")
     parser.add_argument("--anchor-x", type=float, default=0.0, help="Anchor X for scaling (default 0.0)")
     parser.add_argument("--anchor-y", type=float, default=0.0, help="Anchor Y for scaling (default 0.0)")
     parser.add_argument("--shift-x", type=float, default=0.0, help="X translation shift (default 0.0)")
     parser.add_argument("--shift-y", type=float, default=0.0, help="Y translation shift (default 0.0)")
 
-    # Downsampling / Resolution options
+    # ── Step 4: Downsize / Tile / COG (TIF only) ───────────────────────────────
+    parser.add_argument("--tif-file", help="Input GeoTIFF file")
+    parser.add_argument("--output-dir", help="Output directory (default: <input_dir>/<input_basename>_tiles)")
+    parser.add_argument("--tif-clobber", action="store_true", help="Overwrite conflicting files in output directory")
+    parser.add_argument("--no-downsize", action="store_true", help="Disable automatic 30%% downsampling for files >20 GB")
     parser.add_argument("--downsize-percent", type=float, help="Downsize resolution by percentage (e.g. 50 = 0.5x pixels)")
     parser.add_argument("--downsize-GB", type=float, help="Target total deliverable size in GB (estimate)")
     parser.add_argument("--downsize-gsd", type=float, help="Target Ground Sample Distance in map units (must be larger than source)")
-
-    # Tiling options
-    parser.add_argument("--tile-size", type=int, default=20000, help="Tile size in pixels")
+    parser.add_argument("--no-tile", action="store_true", help="Output a single GeoTIFF instead of tiles")
+    parser.add_argument("--web-optimized", action="store_true", help="Output a Cloud Optimized GeoTIFF (COG) instead of tiles")
+    parser.add_argument("--tile-size", type=int, default=20000, help="Tile size in pixels (default 20000)")
     parser.add_argument("--load", type=int, default=100, help="CPU load percentage (default 100)")
     parser.add_argument("--include_empty_tiles", action="store_true", help="Do not delete empty tiles")
     parser.add_argument("--keep-xml", action="store_true", help="Keep PAM XML sidecar files for valid tiles")
-    parser.add_argument("--no-downsize", action="store_true", help="Disable automatic 30%% downsampling for files >20 GB")
-    parser.add_argument("--no-tile", action="store_true", help="Output a single GeoTIFF instead of tiles")
-    parser.add_argument("--web-optimized", action="store_true", help="Output a Cloud Optimized GeoTIFF (COG) instead of tiles")
 
-    # Contour DXF options
+    # ── Contour DXF ────────────────────────────────────────────────────────────
     parser.add_argument("--contour-file", help="Input .dxf contour file")
     parser.add_argument("--contour-suffix", default="_geo", help="Output suffix for contour DXF (default: _geo)")
     parser.add_argument("--contour-clobber", action="store_true", help="Overwrite existing contour output file")
 
-    # TIN XML options
+    # ── TIN LandXML ────────────────────────────────────────────────────────────
     parser.add_argument("--tin-file", help="Input LandXML .xml TIN file")
     parser.add_argument("--tin-suffix", default="_geo", help="Output suffix for single TIN file (default: _geo)")
     parser.add_argument("--tin-max-mb", type=float, default=0.0, help="Max output XML size in MB; if exceeded, tile (default: 0 = no limit)")
@@ -441,6 +455,64 @@ def main():
     parser.add_argument("--tin-clobber", action="store_true", help="Overwrite existing TIN output file or tile directory")
 
     args = parser.parse_args()
+
+    # --- transform.yaml integration ---
+    _yaml_path = None
+    if args.transform_yaml:
+        _yaml_path = args.transform_yaml
+        if not os.path.exists(_yaml_path):
+            print(f"Error: transform.yaml not found: {_yaml_path}")
+            sys.exit(1)
+    else:
+        _first_input = args.tif_file or args.contour_file or args.tin_file
+        if _first_input:
+            for _c in [os.path.join(os.path.dirname(os.path.abspath(_first_input)), "transform.yaml"),
+                       os.path.join(os.getcwd(), "transform.yaml")]:
+                if os.path.exists(_c):
+                    _yaml_path = _c
+                    break
+
+    if _yaml_path:
+        try:
+            _t, _sec = {}, None
+            with open(_yaml_path, encoding="utf-8") as _f:
+                for _raw in _f:
+                    _ln = _raw.rstrip()
+                    if not _ln or _ln.lstrip().startswith("#"):
+                        continue
+                    if _ln.startswith("  "):
+                        if _sec:
+                            _k, _, _v = _ln.strip().partition(": ")
+                            _t.setdefault(_sec, {})[_k] = _v.strip().strip('"')
+                    else:
+                        _k, _, _v = _ln.partition(": ")
+                        _v = _v.strip().strip('"')
+                        if not _v:
+                            _sec = _k.rstrip(":"); _t[_sec] = {}
+                        else:
+                            _sec = None; _t[_k] = _v
+            _dg = _t.get("design_grid", {})
+            print(f"Loaded transform.yaml: {_yaml_path}")
+            if not args.crs and _t.get("delivery_crs") and str(_t["delivery_crs"]) not in ("", "null"):
+                args.crs = str(_t["delivery_crs"]).strip()
+                print(f"  delivery_crs → --crs {args.crs}")
+            for _attr, _key, _default in [("shift_x",  "shift_x",  0.0),
+                                           ("shift_y",  "shift_y",  0.0),
+                                           ("scale",    "scale",    1.0),
+                                           ("anchor_x", "anchor_x", 0.0),
+                                           ("anchor_y", "anchor_y", 0.0)]:
+                _raw_val = _dg.get(_key)
+                if _raw_val is None or str(_raw_val) in ("", "null"):
+                    continue
+                try:
+                    _parsed = float(_raw_val)
+                except (ValueError, TypeError):
+                    continue
+                if getattr(args, _attr) == _default and _parsed != _default:
+                    setattr(args, _attr, _parsed)
+                    print(f"  {_key} → --{_attr.replace('_','-')} {_parsed}")
+        except Exception as _e:
+            print(f"WARNING: could not read transform.yaml ({_e}); ignoring")
 
     # Validate: at least one input must be provided
     if not args.tif_file and not args.contour_file and not args.tin_file:
@@ -508,6 +580,47 @@ def main():
             print(f"Error: {args.tif_file} not found.")
             sys.exit(1)
 
+        # ── Pre-flight conflict check (before any processing) ──────────────────
+        input_filename = os.path.basename(args.tif_file)
+        _pf_base = os.path.splitext(input_filename)[0]
+        _pf_indir = os.path.dirname(os.path.abspath(args.tif_file))
+        _pf_outdir = args.output_dir or _pf_indir
+        if args.web_optimized or args.no_tile:
+            _pf_out = os.path.join(_pf_outdir, _pf_base + ("_cog.tif" if args.web_optimized else "_out.tif"))
+            if os.path.exists(_pf_out) and not args.tif_clobber:
+                print(f"Error: Output already exists: {_pf_out}")
+                print("Use --tif-clobber to overwrite.")
+                sys.exit(1)
+        else:
+            _pf_tiledir = args.output_dir or os.path.join(_pf_indir, f"{_pf_base}_tiles")
+            _pf_conflicts = [os.path.join(_pf_tiledir, "index.vrt")]
+            for _i in range(1, 10):
+                for _z in (f"{_i}", f"{_i:02d}", f"{_i:03d}"):
+                    _pf_conflicts.append(os.path.join(_pf_tiledir, f"{_pf_base}_{_z}.tif"))
+            _pf_hits = [f for f in _pf_conflicts if os.path.exists(f)]
+            if _pf_hits and not args.tif_clobber:
+                print(f"Error: Conflicting files found in {_pf_tiledir}:")
+                for _c in _pf_hits[:5]:
+                    print(f"  - {os.path.basename(_c)}")
+                if len(_pf_hits) > 5:
+                    print(f"  ... and {len(_pf_hits)-5} more.")
+                print("Use --tif-clobber to overwrite them.")
+                sys.exit(1)
+
+        # ── Step 1: Reproject ──────────────────────────────────────────────────
+        warped_tif = None
+        if args.crs:
+            warped_tif = os.path.splitext(os.path.abspath(args.tif_file))[0] + "_warped.tif"
+            print(f"🌍 Reprojecting to {args.crs}...")
+            warp_cmd = [
+                "gdalwarp", "-q", "-t_srs", args.crs,
+                "-co", "TILED=YES", "-co", "COMPRESS=LZW", "-co", "PREDICTOR=2",
+                "--config", "GDAL_PAM_ENABLED", "NO",
+                args.tif_file, warped_tif,
+            ]
+            subprocess.run(warp_cmd, check=True)
+            args.tif_file = warped_tif
+
         ds = gdal.Open(args.tif_file)
         original_gsd = abs(ds.GetGeoTransform()[1])
         original_size_gb = os.path.getsize(args.tif_file) / (1024**3)
@@ -530,8 +643,6 @@ def main():
         elif input_size_gb > 20 and not args.no_downsize:
             print(f"🐘 Input file is large ({input_size_gb:.1f}GB). Defaulting to 30% downsizing to preserve disk space...")
             resample_factor = 0.30
-
-        input_filename = os.path.basename(args.tif_file)
 
         # Step 1: Transformation (VRT)
         input_to_tile = args.tif_file
@@ -573,6 +684,8 @@ def main():
                 print("Use --tif-clobber to overwrite.")
                 if temp_vrt and os.path.exists(temp_vrt):
                     os.remove(temp_vrt)
+                if warped_tif and os.path.exists(warped_tif):
+                    os.remove(warped_tif)
                 sys.exit(1)
             elif os.path.exists(single_out):
                 print(f"⚠️  Overwriting existing: {os.path.basename(single_out)}")
@@ -618,6 +731,8 @@ def main():
 
             if temp_vrt and os.path.exists(temp_vrt):
                 os.remove(temp_vrt)
+            if warped_tif and os.path.exists(warped_tif):
+                os.remove(warped_tif)
 
             out_size_gb = os.path.getsize(single_out) / (1024 ** 3)
             label = "COG" if args.web_optimized else "GeoTIFF"
@@ -770,9 +885,11 @@ def main():
         vrt_index_path = os.path.join(output_dir, "index.vrt")
         subprocess.run(["gdalbuildvrt", vrt_index_path] + final_tiles, stdout=subprocess.DEVNULL)
 
-        # Cleanup temp scale VRT
+        # Cleanup temp files
         if temp_vrt and os.path.exists(temp_vrt):
             os.remove(temp_vrt)
+        if warped_tif and os.path.exists(warped_tif):
+            os.remove(warped_tif)
 
         # Final summary metrics
         total_tiles_count = len(final_tiles)
