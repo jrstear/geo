@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""transformer.py — Coordinate transformation tool for the survey-to-delivery pipeline.
+"""transform.py — Coordinate transformation tool for the survey-to-delivery pipeline.
 
 Subcommands
 -----------
@@ -12,10 +12,10 @@ split  Reproject + split GCPEditorPro {job}_confirmed.txt → gcp_list.txt + chk
 Typical sequence
 ----------------
   # 1. Before field survey — extract control monuments and record job CRS:
-  python transformer.py dc {customer}_{job}.dc --shift-x X --shift-y Y
+  python transform.py dc {customer}_{job}.dc --shift-x X --shift-y Y
 
   # 2. After GCPEditorPro tagging — reproject for ODM:
-  python transformer.py split {job}_confirmed.txt
+  python transform.py split {job}_confirmed.txt
   #    transform.yaml is found automatically in the same directory
 
 transform.yaml — written by dc, read by split (and future sight.py and package.py --transform-yaml)
@@ -38,8 +38,8 @@ Shift convention (consistent with package.py --shift-x/y):
   design_E = state_E + shift_x     (package.py, delivery output)
 
 Example (Customer/Aztec job):
-  python transformer.py dc "F100340 AZTEC.dc" --shift-x 1546702.929 --shift-y -3567.471
-  python transformer.py split ~/stratus/aztec3/aztec3_confirmed.txt
+  python transform.py dc "F100340 AZTEC.dc" --shift-x 1546702.929 --shift-y -3567.471
+  python transform.py split ~/stratus/aztec3/aztec3_confirmed.txt
 """
 
 import argparse
