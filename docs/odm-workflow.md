@@ -12,23 +12,20 @@ flowchart TD
     cust_dc["{customer}_{job}.dc"]
     extract(["transform.py dc"])
     points_6529["{job}_points_6529.csv"]
-    points["{job}_points.csv"]
     points_design["{job}_points_design.csv"]
     transform_yaml["transform.yaml"]
-    emlid(["Emlid Survey"])
+    emlid(["Emlid Flow"])
     all["{job}_surveyed_6529.csv"]
-    filter(["filter manually"])
-    filtered["{job}_6529.csv"]
     sight(["sight.py"])
-    marks["marks_design.csv for Pix4D"]
+    other["{job}_other.csv"]
+    marks["marks_6529.csv for Pix4D"]
     targets["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
-    confirmed["{job}_confirmed.txt"]
-    prepare(["transform.py split"])
+    tagged["{job}_tagged.txt"]
+    split(["transform.py split"])
     control["gcp_list.txt"]
     check["chk_list.txt"]
-    gcp_design["gcp_list_design.txt"]
-    chk_design["chk_list_design.txt"]
+    tagged_design["{job}_tagged_design.txt"]
     s3(["s3 sync & terraform apply"])
     odm(["ODM on EC2"])
     rmse(["rmse_calc.py"])
@@ -47,32 +44,28 @@ flowchart TD
         cust_dc
         extract
         points_design
-        gcp_design
-        chk_design
-        marks
+        tagged_design
         delivered
         qgis_design
         customer
     end
 
-    subgraph "Surveyed eg EPSG:6529"
+    subgraph "Survey eg EPSG:6529"
         points_6529
         emlid
+        marks
         all
-        filter
-        filtered
     end
 
     subgraph "Cloud eg EPSG:32613"
-        points
         drone
         images
         targets
         sight
         transform_yaml
         gcpeditor
-        confirmed
-        prepare
+        tagged
+        split
         control
         check
         s3
@@ -82,46 +75,47 @@ flowchart TD
         rmse
         report
         packager
+        other
         qgis_cloud
     end
 
-    drone --> images
     cust_dc --> extract
     extract --> points_6529
-    extract --> points
-    extract --> points_design
     extract --> transform_yaml
+    extract --> points_design
     points_6529 --> emlid
-    emlid --> all --> filter --> filtered
-    filtered --> sight
-    transform_yaml --> sight
-    sight --> marks
-    sight --> targets
-    targets --> gcpeditor
-    gcpeditor --> confirmed
-    confirmed --> prepare
-    transform_yaml --> prepare
-    prepare --> control
-    prepare --> check
-    prepare --> gcp_design
-    prepare --> chk_design
-    images --> sight
+    drone --> images
     images --> s3
+    images --> sight
+    emlid --> all --> sight
+    sight --> targets
+    sight --> other
+    sight --> marks
+    other --> qgis_cloud
+    targets --> gcpeditor
+    gcpeditor --> tagged
+    tagged --> split
+    transform_yaml --> split
+    transform_yaml --> sight
+    split --> control
+    split --> check
+    split --> tagged_design
     control --> s3
     s3 --> odm --> deliverables
-    odm --> model --> rmse
+    odm --> model
     check --> rmse --> report
-    deliverables --> packager
+    model --> rmse
     transform_yaml --> packager
+    deliverables --> packager
+    qgis_cloud -.-> packager
     packager --> delivered
+    report -.-> deliverables
+    report --> customer
+    delivered --> customer
     delivered --> qgis_design
     points_design --> qgis_design
-    gcp_design --> qgis_design
-    chk_design --> qgis_design
-    delivered --> customer
-    report --> customer
+    tagged_design --> qgis_design
     deliverables --> qgis_cloud
-    points --> qgis_cloud
     control --> qgis_cloud
     check --> qgis_cloud
     qgis_design -.-> customer
@@ -153,15 +147,16 @@ You need control monument coordinates in EPSG:3618 before going to the field.
 
 **Customer/Trimble jobs**: Customer provides a `.dc` data collector file with design-grid
 coordinates. `transform.py dc` converts them to state plane and writes
-`{job}_points.csv` + `transform.yaml` (CRS and shift parameters for the job):
+`{job}_points_6529.csv`, `{job}_points_design.csv`, and `transform.yaml`:
 
 ```bash
 conda run -n geo python transform.py dc \
     ~/stratus/{job}/{customer}_{job}.dc \
     --shift-x <design_E - state_E>  --shift-y <design_N - state_N> \
     --out-dir ~/stratus/{job}/
-# → ~/stratus/{job}/{job}_points.csv   (state-plane, EPSG auto-detected from .dc)
-# → ~/stratus/{job}/transform.yaml     (CRS + shift params; used by transform.py split)
+# → ~/stratus/{job}/{job}_points_6529.csv    (state-plane EPSG:6529, for Emlid localization)
+# → ~/stratus/{job}/{job}_points_design.csv  (design-grid coords, for QGIS design review)
+# → ~/stratus/{job}/transform.yaml           (CRS + shift params; used downstream)
 ```
 
 The shift values are job-specific (derived once from a known monument).
@@ -174,14 +169,17 @@ Use `{job}_points.csv` for Emlid RS3 base/rover localization in the field.
 
 ```bash
 conda run -n geo python TargetSighter/sight.py \
-    ~/stratus/{job}/{job}.csv \
-    ~/stratus/{job}/images/
+    ~/stratus/{job}/{job}_surveyed_6529.csv \
+    ~/stratus/{job}/images/ \
+    --filter "2026-03-09"   # date string from the survey day; matches entire row
 # If transform.yaml is present in ~/stratus/{job}/, sight.py auto-loads it:
 #   field_crs → used as fallback CRS for the survey CSV
+#   odm_crs   → target CRS for {job}.txt (EPSG:32613)
 #   job name  → used as output filename ({job}.txt)
 # Without transform.yaml, pass explicitly: --crs EPSG:XXXX --out-name "{job}"
-# → ~/stratus/{job}/{job}.txt    (for input to GCPEditorPro)
-# → ~/stratus/{job}/marks.csv   (Pix4D parallel workflow — not used in ODM path)
+# → ~/stratus/{job}/{job}.txt         (filtered survey points, EPSG:32613, for GCPEditorPro)
+# → ~/stratus/{job}/{job}_other.csv   (non-matching rows, EPSG:32613; load in QGIS for review)
+# → ~/stratus/{job}/marks_design.csv  (Pix4D parallel workflow — not used in ODM path)
 ```
 
 ### 3. Tag and confirm in GCPEditorPro

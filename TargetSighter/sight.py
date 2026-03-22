@@ -832,6 +832,36 @@ def _sort_images_for_gcp(img_map: dict, exif_map: dict, z_critical: bool,
     return sorted(img_map.keys(), key=score)
 
 
+def _reproject_gcps_inplace(gcps: List[dict], src_crs: str, dst_crs: str) -> None:
+    """
+    Reproject easting/northing/elevation in each GCP dict from src_crs to dst_crs.
+
+    Updates: easting, northing (reprojected), elevation (converted to dst_crs Z units),
+             cs_name (set to dst_crs so _write_gcp_list emits the correct CRS header).
+
+    Assumes src_crs elevation is in CRS-native units (feet for EPSG:6529, metres for
+    EPSG:32613).  Converts Z via pyproj CRS linear unit factor.
+    """
+    from pyproj import Transformer, CRS
+    if src_crs.upper() == dst_crs.upper():
+        return
+    xfm = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    # Determine Z scale: src units → dst units
+    try:
+        src_unit = CRS.from_user_input(src_crs).axis_info[0].unit_conversion_factor  # m per src unit
+        dst_unit = CRS.from_user_input(dst_crs).axis_info[0].unit_conversion_factor  # m per dst unit
+        z_scale = src_unit / dst_unit  # multiply src Z to get dst Z
+    except Exception:
+        z_scale = 1.0
+    for g in gcps:
+        if g.get('easting') is None or g.get('northing') is None:
+            continue
+        g['easting'], g['northing'] = xfm.transform(g['easting'], g['northing'])
+        if g.get('elevation') is not None:
+            g['elevation'] = g['elevation'] * z_scale
+        g['cs_name'] = dst_crs
+
+
 # ---------------------------------------------------------------------------
 # Output writers
 # ---------------------------------------------------------------------------
@@ -1080,7 +1110,8 @@ def run_pipeline(images_dir: str,
                  refine_pixels: bool = True,
                  refine_limit: int = 0,
                  fallback_crs: Optional[str] = None,
-                 nadir_weight: float = 0.2) -> Tuple[str, dict]:
+                 nadir_weight: float = 0.2,
+                 reproject_to: Optional[str] = None) -> Tuple[str, dict]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -1107,6 +1138,17 @@ def run_pipeline(images_dir: str,
     print("Parsing Emlid CSV...")
     gcps = parse_survey_csv(survey_csv_path, fallback_crs=fallback_crs)
     print(f"  {len(gcps)} GCPs")
+
+    if reproject_to and gcps:
+        src = gcps[0].get('cs_name') or fallback_crs or ''
+        if src and src.upper() != reproject_to.upper():
+            from pyproj import CRS as _CRS
+            try:
+                _CRS.from_user_input(src)
+                _reproject_gcps_inplace(gcps, src, reproject_to)
+                print(f"  reprojected coordinates: {src} → {reproject_to}")
+            except Exception as _e:
+                print(f"  WARNING: could not reproject {src} → {reproject_to}: {_e}")
 
     print(f"Reading EXIF from {images_dir}...")
     exif_map = read_image_exif_batch(images_dir)
@@ -1294,6 +1336,10 @@ if __name__ == '__main__':
                         help='Path to transform.yaml written by transformer.py dc. '
                              'Auto-located in the survey CSV directory or cwd if omitted. '
                              'Provides field_crs (fallback for --crs) and job name (fallback for --out-name).')
+    parser.add_argument('--filter', default=None, metavar='STRING',
+                        help='Substring to match against raw CSV rows (e.g. a survey date '
+                             '"2026-03-09"). Matching rows → {job}.txt; non-matching rows → '
+                             '{job}_other.csv in odm_crs for QGIS review.')
     args = parser.parse_args()
 
     # --- transform.yaml integration ---
@@ -1334,8 +1380,10 @@ if __name__ == '__main__':
             print(f'WARNING: could not read transform.yaml ({_e}); ignoring')
             _transform = {}
 
-        _field_crs = _transform.get('field_crs')
-        _job_name  = _transform.get('job')
+        _field_crs   = _transform.get('field_crs')
+        _odm_crs     = _transform.get('odm_crs')
+        _job_name    = _transform.get('job')
+        _design_grid = _transform.get('design_grid') if isinstance(_transform.get('design_grid'), dict) else {}
 
         if _field_crs and not args.crs:
             args.crs = _field_crs
@@ -1343,6 +1391,12 @@ if __name__ == '__main__':
         if _job_name and args.out_name == 'gcp_list.txt':
             args.out_name = f'{_job_name}.txt'
             print(f'  job → --out-name {args.out_name}')
+        if _odm_crs:
+            print(f'  odm_crs → reproject output to {_odm_crs}')
+    else:
+        _odm_crs     = None
+        _design_grid = {}
+        _job_name    = None
 
     if args.match_only:
         print(f'Parsing {args.survey_csv}...')
@@ -1369,30 +1423,125 @@ if __name__ == '__main__':
         if args.marker_size is not None:
             _refine_module._MARKER_SIZE_M = args.marker_size
 
-        gcp_txt, estimates = run_pipeline(
-            images_dir=args.image_dir,
-            survey_csv_path=args.survey_csv,
-            reconstruction_path=args.reconstruction,
-            fallback_radius_m=args.radius,
-            threads=args.threads,
-            nadir_only=args.nadir_only,
-            sort_output=not args.no_sort,
-            z_threshold=args.z_threshold,
-            dup_tolerance_m=args.dup_tolerance,
-            omit_duplicates=args.omit_duplicates,
-            classify=args.classify,
-            n_control=args.n_control,
-            refine_pixels=args.refine_pixels,
-            refine_limit=args.refine_limit,
-            fallback_crs=args.crs,
-            nadir_weight=args.nadir_weight,
-        )
+        # --- CSV filtering ---
+        _survey_csv = args.survey_csv
+        _tmp_path = None
+        if args.filter:
+            import io as _io2, tempfile as _tmpmod, csv as _csv2
+            _raw_csv = open(args.survey_csv, encoding='utf-8-sig').read()
+            _csv_lines = _raw_csv.splitlines(keepends=True)
+            _header_line = _csv_lines[0] if _csv_lines else ''
+            _matching, _other_lines = [], []
+            for _ln in _csv_lines[1:]:
+                if args.filter in _ln:
+                    _matching.append(_ln)
+                else:
+                    _other_lines.append(_ln)
+            print(f'Filter "{args.filter}": {len(_matching)} matching rows, {len(_other_lines)} other rows')
+
+            # Write filtered CSV to temp file for parse_survey_csv
+            _tmp = _tmpmod.NamedTemporaryFile(mode='w', suffix='.csv', delete=False,
+                                              encoding='utf-8', newline='')
+            _tmp.write(_header_line)
+            _tmp.writelines(_matching)
+            _tmp.flush()
+            _tmp_path = _tmp.name
+            _tmp.close()
+            _survey_csv = _tmp_path
+
+            # Write {job}_other.csv (non-matching rows in odm_crs)
+            if _other_lines and _odm_crs:
+                try:
+                    from pyproj import Transformer as _XFM
+                    _src_crs = args.crs or ''
+                    # Detect src CRS from first other row's cs_name column
+                    _hdr_fields = [h.strip() for h in _header_line.rstrip('\n').split(',')]
+                    _hdr_lower = [h.lower() for h in _hdr_fields]
+                    def _col2(kws):
+                        for kw in kws:
+                            for i, h in enumerate(_hdr_lower):
+                                if kw in h:
+                                    return _hdr_fields[i]
+                        return None
+                    _cs_col   = _col2(['cs name', 'coordinate system'])
+                    _name_col = _col2(['name', 'point'])
+                    _east_col = _col2(['easting', ' east'])
+                    _nrth_col = _col2(['northing', ' north'])
+                    _elev_col = _col2(['elevation'])
+                    if not _src_crs and _cs_col:
+                        # Grab cs_name from first other row
+                        _first_other = next(
+                            (_csv2.DictReader([_header_line.rstrip('\n')] + [_other_lines[0]])
+                             .__iter__()), None)
+                        if _first_other:
+                            _cs_raw = (_first_other.get(_cs_col) or '').strip()
+                            _src_crs = _cs_name_to_epsg(_cs_raw) or _cs_raw
+                    if _src_crs:
+                        _xfm_other = _XFM.from_crs(_src_crs, _odm_crs, always_xy=True)
+                        from pyproj import CRS as _CRS2
+                        try:
+                            _src_unit = _CRS2.from_user_input(_src_crs).axis_info[0].unit_conversion_factor
+                            _dst_unit = _CRS2.from_user_input(_odm_crs).axis_info[0].unit_conversion_factor
+                            _z_scale  = _src_unit / _dst_unit
+                        except Exception:
+                            _z_scale = 1.0
+
+                        _other_rows_parsed = list(_csv2.DictReader(
+                            _io2.StringIO(_header_line + ''.join(_other_lines))))
+                        _stem = Path(args.out_dir) / (Path(args.out_name).stem + '_other.csv')
+                        with open(_stem, 'w', newline='', encoding='utf-8') as _of:
+                            _ow = _csv2.writer(_of)
+                            _ow.writerow(['Name', 'Easting', 'Northing', 'Elevation'])
+                            for _orow in _other_rows_parsed:
+                                try:
+                                    _ox = float(_orow.get(_east_col, '') or 0)
+                                    _oy = float(_orow.get(_nrth_col, '') or 0)
+                                    _oz = float(_orow.get(_elev_col, '') or 0)
+                                    _ox2, _oy2 = _xfm_other.transform(_ox, _oy)
+                                    _oz2 = _oz * _z_scale
+                                    _oname = (_orow.get(_name_col) or '').strip()
+                                    _ow.writerow([_oname, f'{_ox2:.4f}', f'{_oy2:.4f}', f'{_oz2:.4f}'])
+                                except (ValueError, TypeError):
+                                    continue
+                        print(f'Wrote {_stem}  ({len(_other_rows_parsed)} other rows, {_odm_crs})')
+                    else:
+                        print('WARNING: could not determine src CRS for {job}_other.csv — skipping')
+                except Exception as _fe:
+                    print(f'WARNING: could not write other CSV: {_fe}')
+
+        try:
+            gcp_txt, estimates = run_pipeline(
+                images_dir=args.image_dir,
+                survey_csv_path=_survey_csv,
+                reconstruction_path=args.reconstruction,
+                fallback_radius_m=args.radius,
+                threads=args.threads,
+                nadir_only=args.nadir_only,
+                sort_output=not args.no_sort,
+                z_threshold=args.z_threshold,
+                dup_tolerance_m=args.dup_tolerance,
+                omit_duplicates=args.omit_duplicates,
+                classify=args.classify,
+                n_control=args.n_control,
+                refine_pixels=args.refine_pixels,
+                refine_limit=args.refine_limit,
+                fallback_crs=args.crs,
+                nadir_weight=args.nadir_weight,
+                reproject_to=_odm_crs,
+            )
+        finally:
+            if _tmp_path:
+                import os as _os
+                try:
+                    _os.unlink(_tmp_path)
+                except OSError:
+                    pass
 
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         gcp_out   = out_dir / args.out_name
-        pix4d_out = out_dir / 'marks.csv'
+        pix4d_out = out_dir / 'marks_design.csv'
 
         gcp_out.write_text(gcp_txt)
         pix4d_out.write_text(_write_pix4d(estimates))
