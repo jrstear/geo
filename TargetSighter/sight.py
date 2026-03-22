@@ -419,7 +419,25 @@ def is_nadir(exif: dict) -> bool:
     return abs(pitch + 90.0) <= NADIR_TOL_DEG
 
 
-def project_pixel_mode_a(exif: dict, gcp: dict) -> Optional[Tuple[float, float]]:
+def _load_cameras(path: str) -> dict:
+    """
+    Load a cameras.json file (ODM format) and return {(width, height): model_params}
+    for Brown-model cameras only.  Key is the integer (w, h) tuple so callers can
+    look up by image dimensions from EXIF.
+    """
+    with open(path, encoding='utf-8') as f:
+        raw = json.load(f)
+    result = {}
+    for params in raw.values():
+        if params.get('projection_type') == 'brown':
+            w, h = params.get('width'), params.get('height')
+            if w and h:
+                result[(int(w), int(h))] = params
+    return result
+
+
+def project_pixel_mode_a(exif: dict, gcp: dict,
+                          camera_model: Optional[dict] = None) -> Optional[Tuple[float, float]]:
     """
     Project GCP world coordinates to pixel (px, py) using EXIF-only camera model.
 
@@ -454,19 +472,12 @@ def project_pixel_mode_a(exif: dict, gcp: dict) -> Optional[Tuple[float, float]]
     gcp_lon   = gcp['lon']
     gcp_alt   = gcp.get('ellip_alt_m')    # WGS84 ellipsoidal, metres
 
-    if any(v is None for v in [cam_alt, gcp_alt, yaw_deg, roll_deg,
-                                focal_mm, focal35, img_w, img_h]):
+    # Base requirements always needed
+    if any(v is None for v in [cam_alt, gcp_alt, yaw_deg, roll_deg, img_w, img_h]):
         return None
-
-    # --- Sensor geometry ---
-    scale = focal_mm / focal35
-    sensor_diag = FULL_FRAME_DIAG_MM * scale
-    aspect = img_w / img_h
-    sensor_h = sensor_diag / math.sqrt(1 + aspect**2)
-    sensor_w = sensor_h * aspect
-    fx = focal_mm * img_w / sensor_w
-    fy = focal_mm * img_h / sensor_h
-    cx, cy = img_w / 2.0, img_h / 2.0
+    # EXIF focal length only needed when no calibrated model is available
+    if camera_model is None and any(v is None for v in [focal_mm, focal35]):
+        return None
 
     # --- ENU displacement (camera → GCP) ---
     mid_lat = math.radians((cam_lat + gcp_lat) / 2)
@@ -498,9 +509,39 @@ def project_pixel_mode_a(exif: dict, gcp: dict) -> Optional[Tuple[float, float]]
     if cam_z <= 0:
         return None  # GCP behind or at camera plane
 
-    # --- Pinhole projection ---
-    px = fx * cam_x / cam_z + cx
-    py = fy * cam_y / cam_z + cy
+    # --- Projection ---
+    if camera_model is not None:
+        # Calibrated Brown model: focal/principal point from cameras.json, with distortion
+        w_max = max(img_w, img_h)
+        fx = camera_model['focal_x'] * w_max
+        fy = camera_model['focal_y'] * w_max
+        cx = img_w / 2.0 + camera_model.get('c_x', 0.0) * w_max
+        cy = img_h / 2.0 + camera_model.get('c_y', 0.0) * w_max
+        xn = cam_x / cam_z
+        yn = cam_y / cam_z
+        r2 = xn*xn + yn*yn
+        k1 = camera_model.get('k1', 0.0)
+        k2 = camera_model.get('k2', 0.0)
+        k3 = camera_model.get('k3', 0.0)
+        p1 = camera_model.get('p1', 0.0)
+        p2 = camera_model.get('p2', 0.0)
+        radial = 1.0 + k1*r2 + k2*r2*r2 + k3*r2*r2*r2
+        dx = 2.0*p1*xn*yn + p2*(r2 + 2.0*xn*xn)
+        dy = p1*(r2 + 2.0*yn*yn) + 2.0*p2*xn*yn
+        px = fx * (xn*radial + dx) + cx
+        py = fy * (yn*radial + dy) + cy
+    else:
+        # EXIF-based pinhole (no distortion correction)
+        scale = focal_mm / focal35
+        sensor_diag = FULL_FRAME_DIAG_MM * scale
+        aspect = img_w / img_h
+        sensor_h = sensor_diag / math.sqrt(1 + aspect**2)
+        sensor_w = sensor_h * aspect
+        fx = focal_mm * img_w / sensor_w
+        fy = focal_mm * img_h / sensor_h
+        cx, cy = img_w / 2.0, img_h / 2.0
+        px = fx * cam_x / cam_z + cx
+        py = fy * cam_y / cam_z + cy
 
     if 0 <= px < img_w and 0 <= py < img_h:
         return (px, py)
@@ -990,11 +1031,15 @@ def _compute_estimates_mode_a(
         image_to_gcps: Dict[str, List[str]],
         exif_map: Dict[str, dict],
         gcp_by_label: Dict[str, dict],
-        nadir_only: bool = False) -> Dict[str, Dict[str, dict]]:
+        nadir_only: bool = False,
+        cameras_by_wh: Optional[dict] = None) -> Dict[str, Dict[str, dict]]:
     """
     Compute pixel estimates for all (image, GCP) pairs using Mode A (EXIF).
 
     nadir_only: if True, skip images whose gimbal pitch is not near -90°.
+    cameras_by_wh: {(width, height): Brown model params} from _load_cameras(); when
+                   a matching entry exists the calibrated Brown model is used instead
+                   of the EXIF-derived pinhole.
 
     Returns {gcpLabel: {imgFilename: {px, py, mode}}}
     """
@@ -1007,11 +1052,14 @@ def _compute_estimates_mode_a(
         if nadir_only and not is_nadir(exif):
             skipped_oblique += 1
             continue
+        camera_model = None
+        if cameras_by_wh:
+            camera_model = cameras_by_wh.get((exif.get('img_w'), exif.get('img_h')))
         for label in gcp_labels:
             gcp = gcp_by_label.get(label)
             if gcp is None:
                 continue
-            result = project_pixel_mode_a(exif, gcp)
+            result = project_pixel_mode_a(exif, gcp, camera_model)
             if result is None:
                 continue
             px, py = result
@@ -1111,7 +1159,8 @@ def run_pipeline(images_dir: str,
                  refine_limit: int = 0,
                  fallback_crs: Optional[str] = None,
                  nadir_weight: float = 0.2,
-                 reproject_to: Optional[str] = None) -> Tuple[str, dict]:
+                 reproject_to: Optional[str] = None,
+                 cameras_by_wh: Optional[dict] = None) -> Tuple[str, dict]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -1140,11 +1189,10 @@ def run_pipeline(images_dir: str,
     print(f"  {len(gcps)} GCPs")
 
     if reproject_to and gcps:
-        src = gcps[0].get('cs_name') or fallback_crs or ''
+        _raw_cs = gcps[0].get('cs_name') or ''
+        src = _cs_name_to_epsg(_raw_cs) or fallback_crs or _raw_cs
         if src and src.upper() != reproject_to.upper():
-            from pyproj import CRS as _CRS
             try:
-                _CRS.from_user_input(src)
                 _reproject_gcps_inplace(gcps, src, reproject_to)
                 print(f"  reprojected coordinates: {src} → {reproject_to}")
             except Exception as _e:
@@ -1203,7 +1251,8 @@ def run_pipeline(images_dir: str,
                     result = project_pixel_mode_b(gcp, shot, cam, ref)
                     mode_used = 'reconstruction'
                 if result is None and exif:
-                    result = project_pixel_mode_a(exif, gcp)
+                    cam_model = cameras_by_wh.get((exif.get('img_w'), exif.get('img_h'))) if cameras_by_wh else None
+                    result = project_pixel_mode_a(exif, gcp, cam_model)
                     mode_used = 'exif'
                 if result is not None:
                     px, py = result
@@ -1214,7 +1263,8 @@ def run_pipeline(images_dir: str,
             print(f"  --nadir-only: skipped {skipped_oblique} oblique image(s)")
     else:
         estimates = _compute_estimates_mode_a(image_to_gcps, exif_map, gcp_by_label,
-                                              nadir_only=nadir_only)
+                                              nadir_only=nadir_only,
+                                              cameras_by_wh=cameras_by_wh)
 
     # Pre-sort: compute structural GCP order so that classification and
     # priority-aware refinement use the same ordering that _write_gcp_list
@@ -1336,6 +1386,11 @@ if __name__ == '__main__':
                         help='Path to transform.yaml written by transformer.py dc. '
                              'Auto-located in the survey CSV directory or cwd if omitted. '
                              'Provides field_crs (fallback for --crs) and job name (fallback for --out-name).')
+    parser.add_argument('--cameras', default=None, metavar='FILE',
+                        help='Path to cameras.json (ODM Brown model). When provided, '
+                             'replaces the EXIF-derived pinhole model with the calibrated '
+                             'focal length, principal point, and radial/tangential distortion '
+                             'coefficients for improved initial pixel projections.')
     parser.add_argument('--filter', default=None, metavar='STRING',
                         help='Substring to match against raw CSV rows (e.g. a survey date '
                              '"2026-03-09"). Matching rows → {job}.txt; non-matching rows → '
@@ -1422,6 +1477,19 @@ if __name__ == '__main__':
             _refine_module._SEED_DIST_PENALTY = args.seed_dist_penalty
         if args.marker_size is not None:
             _refine_module._MARKER_SIZE_M = args.marker_size
+
+        # --- Load cameras.json if provided ---
+        _cameras_by_wh = None
+        if args.cameras:
+            try:
+                _cameras_by_wh = _load_cameras(args.cameras)
+                sizes = [f"{w}×{h}" for w, h in _cameras_by_wh]
+                print(f"Loaded cameras.json: {len(_cameras_by_wh)} Brown model(s) — {', '.join(sizes)}")
+            except Exception as _ce:
+                print(f"WARNING: could not load cameras.json ({_ce}); using EXIF pinhole")
+
+        # Ensure output dir exists before writing any output files
+        Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
         # --- CSV filtering ---
         _survey_csv = args.survey_csv
@@ -1528,6 +1596,7 @@ if __name__ == '__main__':
                 fallback_crs=args.crs,
                 nadir_weight=args.nadir_weight,
                 reproject_to=_odm_crs,
+                cameras_by_wh=_cameras_by_wh,
             )
         finally:
             if _tmp_path:
