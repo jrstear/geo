@@ -3,10 +3,11 @@
 
 Subcommands
 -----------
-dc   Parse a Trimble .dc file → {job}_points.csv (state-plane) + transform.yaml
+dc   Parse a Trimble .dc file → {job}_points_6529.csv + {job}_points_design.csv + transform.yaml
      transform.yaml captures the job's CRS and design-grid shift for downstream use.
 
-split  Reproject + split GCPEditorPro {job}_confirmed.txt → gcp_list.txt + chk_list.txt (EPSG:32613)
+split  Split GCPEditorPro {job}_tagged.txt → gcp_list.txt + chk_list.txt (EPSG:32613)
+       + {job}_tagged_design.txt (design-grid ft, all tagged points).
        Reads transform.yaml (written by dc) to get field_crs and odm_crs automatically.
 
 Typical sequence
@@ -14,11 +15,11 @@ Typical sequence
   # 1. Before field survey — extract control monuments and record job CRS:
   python transform.py dc {customer}_{job}.dc --shift-x X --shift-y Y
 
-  # 2. After GCPEditorPro tagging — reproject for ODM:
-  python transform.py split {job}_confirmed.txt
+  # 2. After GCPEditorPro tagging — split for ODM:
+  python transform.py split {job}_tagged.txt
   #    transform.yaml is found automatically in the same directory
 
-transform.yaml — written by dc, read by split (and future sight.py and package.py --transform-yaml)
+transform.yaml — written by dc, read by split (and sight.py and package.py --transform-yaml)
 ---------------------------------------------------------------------------
 job: <job_name>
 field_crs: EPSG:XXXX      # Emlid RS3 output CRS; also the GCPEditorPro header CRS
@@ -356,8 +357,8 @@ def cmd_dc(args) -> int:
 
     rows = parse_dc(dc_path, shift_x, shift_y, delivery_crs)
 
-    # Write CSV
-    csv_path = out_dir / f"{job_name}_points.csv"
+    # Write state-plane CSV (EPSG:6529, ft) — for Emlid RS3 localization
+    csv_path = out_dir / f"{job_name}_points_6529.csv"
     fieldnames = ["point_id", "easting_ft", "northing_ft", "elevation_ft", "description", "point_type"]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -365,13 +366,28 @@ def cmd_dc(args) -> int:
         for r in rows:
             w.writerow({k: ("" if v is None else v) for k, v in r.items() if k in fieldnames})
 
+    # Write design-grid CSV (delivery_crs + shift, ft) — for QGIS design review
+    design_csv_path = out_dir / f"{job_name}_points_design.csv"
+    with open(design_csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in rows:
+            design_r = dict(r)
+            try:
+                design_r["easting_ft"]  = round(float(r["easting_ft"])  + shift_x, 3)
+                design_r["northing_ft"] = round(float(r["northing_ft"]) + shift_y, 3)
+            except (ValueError, TypeError):
+                pass
+            w.writerow({k: ("" if v is None else v) for k, v in design_r.items() if k in fieldnames})
+
     by_type: dict[str, int] = {}
     for r in rows:
         by_type[r["point_type"]] = by_type.get(r["point_type"], 0) + 1
-    print(f"\nWrote {len(rows)} points → {csv_path.name}")
+    print(f"\nWrote {len(rows)} points:")
     for t, n in sorted(by_type.items()):
         print(f"  {t}: {n}")
-    print(f"QGIS: Delimited Text, X=easting_ft, Y=northing_ft, CRS={delivery_crs}")
+    print(f"  → {csv_path.name}  (state-plane {delivery_crs}, ft; for Emlid localization)")
+    print(f"  → {design_csv_path.name}  (design-grid ft; for QGIS design review)")
 
     # Write transform.yaml
     transform = {
@@ -446,10 +462,10 @@ def cmd_split(args) -> int:
 
     file_crs_header = lines[0].strip()   # e.g. "EPSG:6529"
 
-    # Determine source CRS: prefer transform.yaml field_crs; fall back to file header
-    src_crs = transform.get("field_crs") or file_crs_header
-    if transform.get("field_crs") and transform["field_crs"].upper() != file_crs_header.upper():
-        print(f"INFO: field_crs in transform.yaml ({src_crs}) differs from file header ({file_crs_header}); using transform.yaml")
+    # Determine source CRS: file header is authoritative; fall back to transform.yaml field_crs
+    src_crs = file_crs_header or transform.get("field_crs")
+    if transform.get("field_crs") and file_crs_header and transform["field_crs"].upper() != file_crs_header.upper():
+        print(f"INFO: file header CRS ({file_crs_header}) differs from transform.yaml field_crs ({transform.get('field_crs')}); using file header")
 
     dst_crs = transform.get("odm_crs") or args.target_crs
     print(f"Input:  {in_path.name}  (CRS: {src_crs})")
@@ -529,6 +545,45 @@ def cmd_split(args) -> int:
     _write(out_dir / "gcp_list.txt", gcp_rows)
     _write(out_dir / "chk_list.txt", chk_rows)
 
+    # Write design-grid tagged file (all GCP+CHK rows, delivery_crs ft + shift)
+    job_name = transform.get("job")
+    delivery_crs = transform.get("delivery_crs")
+    dg = transform.get("design_grid") if isinstance(transform.get("design_grid"), dict) else {}
+    shift_x = dg.get("shift_x")
+    shift_y = dg.get("shift_y")
+
+    if job_name and delivery_crs and shift_x is not None and shift_y is not None:
+        try:
+            from pyproj import Transformer as _Transformer
+            xfm_back = _Transformer.from_crs(dst_crs, delivery_crs, always_xy=True)
+            design_rows = []
+            for fields in gcp_rows + chk_rows:
+                try:
+                    x_m, y_m, z_m = float(fields[0]), float(fields[1]), float(fields[2])
+                except ValueError:
+                    continue
+                x_sp, y_sp = xfm_back.transform(x_m, y_m)
+                z_ft = z_m / FT_TO_M
+                x_d = x_sp + float(shift_x)
+                y_d = y_sp + float(shift_y)
+                design_rows.append([f"{x_d:.3f}", f"{y_d:.3f}", f"{z_ft:.3f}"] + fields[3:])
+
+            design_path = out_dir / f"{job_name}_tagged_design.txt"
+            with open(design_path, "w", encoding="utf-8") as f:
+                f.write(delivery_crs + "\n")
+                for fields in design_rows:
+                    f.write("\t".join(fields[:7]) + "\n")
+            print(f"  wrote {design_path}  ({len(design_rows)} observations)")
+        except Exception as e:
+            print(f"WARNING: could not write tagged_design.txt: {e}", file=sys.stderr)
+    else:
+        missing = []
+        if not job_name:      missing.append("job")
+        if not delivery_crs:  missing.append("delivery_crs")
+        if shift_x is None:   missing.append("design_grid.shift_x")
+        if shift_y is None:   missing.append("design_grid.shift_y")
+        print(f"  skipped {'{job}_tagged_design.txt'} — transform.yaml missing: {missing}")
+
     gcp_path = out_dir / "gcp_list.txt"
     chk_path = out_dir / "chk_list.txt"
     print(f"\nDone.  Run ODM with:  --gcp {gcp_path}")
@@ -561,9 +616,9 @@ def main() -> int:
     dc.add_argument("--out-dir", default=None, help="Output directory (default: same as .dc file)")
 
     # --- split subcommand ---
-    gp = sub.add_parser("split", help="Reproject + split {job}_confirmed.txt → gcp_list.txt + chk_list.txt")
-    gp.add_argument("confirmed", metavar="{job}_confirmed.txt",
-                    help="GCPEditorPro confirmed file (tab-separated)")
+    gp = sub.add_parser("split", help="Split {job}_tagged.txt → gcp_list.txt + chk_list.txt + {job}_tagged_design.txt")
+    gp.add_argument("confirmed", metavar="{job}_tagged.txt",
+                    help="GCPEditorPro tagged file (tab-separated, EPSG:32613 after sight.py)")
     gp.add_argument("--transform-yaml", default=None, metavar="FILE",
                     help="Path to transform.yaml (auto-located in input dir or cwd if omitted)")
     gp.add_argument("--target-crs", default=ODM_CRS, metavar="EPSG:XXXX",
