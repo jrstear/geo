@@ -766,7 +766,7 @@ def cmd_split(args) -> int:
     print(f"Input:  {in_path.name}  (CRS: {src_crs})")
     print(f"Output: {dst_crs}")
 
-    # Parse rows (filter to 'confirmed' if column 8 present)
+    # Parse rows; optionally filter to rows where column 8 matches --filter value
     raw_rows = []
     for raw in lines[1:]:
         line = raw.rstrip("\n")
@@ -775,10 +775,11 @@ def cmd_split(args) -> int:
         fields = line.split("\t")
         if len(fields) < 7:
             continue
-        if len(fields) >= 8 and fields[7] != "confirmed":
+        if args.filter and (len(fields) < 8 or fields[7] != args.filter):
             continue
         raw_rows.append(fields)
-    print(f"Rows:   {len(raw_rows)} confirmed observations")
+    filter_desc = f" (--filter {args.filter})" if args.filter else ""
+    print(f"Rows:   {len(raw_rows)} observations{filter_desc}")
 
     # Coordinate conversion
     needs_xy = src_crs.upper() != dst_crs.upper()
@@ -920,6 +921,8 @@ def main() -> int:
                     help="GCPEditorPro tagged file (tab-separated, EPSG:32613 after sight.py)")
     gp.add_argument("--transform-yaml", default=None, metavar="FILE",
                     help="Path to transform.yaml (auto-located in input dir or cwd if omitted)")
+    gp.add_argument("--filter", default=None, metavar="VALUE",
+                    help="Only include rows where column 8 == VALUE (e.g. --filter confirmed)")
     gp.add_argument("--target-crs", default=ODM_CRS, metavar="EPSG:XXXX",
                     help=f"Output CRS (default: {ODM_CRS}); overridden by transform.yaml odm_crs")
     gp.add_argument("--out-dir", default=None, help="Output directory (default: same as input)")
