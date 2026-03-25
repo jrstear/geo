@@ -320,7 +320,7 @@ sub-image width of center, almost always visible within the crop.
 - Emlid CSV: `~/stratus/ghostrider/emlid.csv`
 - Manually-tagged reference: `~/stratus/ghostrider/gcpeditpro.txt`
   (8 entries for GCP "1" with hand-tagged pixel coordinates)
-- Test script: `~/git/geo/test_projection.py`
+- Test script: `~/git/geo/accuracy_study/test_projection.py`
 
 ## WebODM Plugin Development Note
 

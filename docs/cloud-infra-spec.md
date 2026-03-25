@@ -672,9 +672,9 @@ All of the following must pass before this spec is considered implemented:
   three switching boundaries and cost analysis.
 - **rmse_calc_batch.py**: Not yet written. It must read `reconstruction.json` +
   `chk_list.txt` (CHK-only, EPSG:32613 metres) from S3 and write `rmse_report.json`.
-  See `TargetSighter/rmse_calc.py` for the existing local RMSE logic to adapt; note that
+  See `accuracy_study/rmse_calc.py` for the existing local RMSE logic to adapt; note that
   `rmse_calc.py` takes only two arguments (reconstruction + check file) — no emlid CSV.
-- **experiment_gen.py**: Written — `TargetSighter/experiment_gen.py`. Generates
+- **experiment_gen.py**: Written — `accuracy_study/experiment_gen.py`. Generates
   `gcp_experiment.txt` variants for each ablation condition. Batch job submission not yet
   integrated (experiment driver, geo-dk5, is the next phase).
 - **Notifications**: No SNS/SQS wiring for job completion alerts. Add when moving to

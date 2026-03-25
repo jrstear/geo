@@ -155,7 +155,7 @@ ambiguity.
 
 The conversion from ODM local frame to EPSG:32613 is a direct addition:
 `UTM_E = ref_UTM_E + local_X`, **not** a flat-earth ENU formula.  See
-`TargetSighter/rmse_calc.py` for details and `stratus/aztec3/rmse_results.md`
+`accuracy_study/rmse_calc.py` for details and `stratus/aztec3/rmse_results.md`
 for the bug that was fixed when the flat-earth formula was used.
 
 ---
@@ -164,12 +164,12 @@ for the bug that was fixed when the flat-earth formula was used.
 
 | Item | CRS | Notes |
 |---|---|---|
-| `odm_orthophoto.original_3618.tif` | EPSG:3618 | Output of `reproject_deliverable.py`; for review only |
+| `odm_orthophoto.original_3618.tif` | EPSG:3618 | Output of `packager/reproject_deliverable.py`; for review only |
 | `odm_orthophoto.original_3618_cog.tif` | EPSG:3618 | COG version; fast QGIS loading |
 | `F100340_{job}_points.csv` | EPSG:3618 | DC control monuments — load X=easting_ft, Y=northing_ft |
 | Emlid `{job}.csv` | EPSG:6529 | Survey points — load X=Easting, Y=Northing |
 | Deliverable orthophoto (Customer) | Customer design grid | Apply +1 546 702.929 ft E / −3 567.471 ft N via `package.py --shift-x/y` |
-| Deliverable contours / TIN (Customer) | Customer design grid | Same shift, applied by `package.py` |
+| Deliverable contours / TIN (Customer) | Customer design grid | Same shift, applied by `packager/package.py` |
 
 **To load ortho in QGIS**: drag-and-drop or Layer → Add Raster.  CRS is embedded
 in the GeoTIFF header.  Set the **project** CRS to EPSG:3618 for all layers to
@@ -191,7 +191,7 @@ display without on-the-fly reprojection overhead.
 gcp_list.txt / chk_list.txt  (EPSG:32613 m, ellipsoidal Z m)
     ↓ ODM
 odm_orthophoto.original.tif  (EPSG:32613 m)
-    ↓ reproject_deliverable.py  [gdalwarp, pixel resample]
+    ↓ packager/reproject_deliverable.py  [gdalwarp, pixel resample]
 odm_orthophoto.original_3618.tif  (EPSG:3618 ft)  ← QGIS review
     ↓ package.py --shift-x +1546702.929 --shift-y -3567.471
 deliverable orthophoto  (Customer design grid ft)  ← customer delivery

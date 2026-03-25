@@ -260,7 +260,7 @@ aws s3 sync s3://stratus-jrstear/{PROJECT}/opensfm/ \
     --profile personal
 
 # Run RMSE analysis (use topocentric, NOT reconstruction.json — see rmse_calc.py docs)
-conda run -n geo python TargetSighter/rmse_calc.py \
+conda run -n geo python accuracy_study/rmse_calc.py \
     ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
     ~/stratus/{job}/chk_list.txt \
     --gcp ~/stratus/{job}/opensfm/gcp_list.txt
@@ -288,9 +288,9 @@ aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_report/ \
 
 # Package for customer delivery (reproject + shift to design grid + tile/COG)
 # transform.yaml is auto-loaded from the same directory as the input TIF
-python package.py \
+python packager/package.py \
     --tif-file ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original.tif \
     --transform-yaml ~/stratus/{job}/transform.yaml
-# Or use the GUI: python app.py → http://localhost:5001
+# Or use the GUI: python packager/app.py → http://localhost:5001
 ```
 

@@ -10,7 +10,7 @@
 - Do NOT commit until testing is confirmed.
 - Prefer agent-driven testing against ground truth data:
   - Ground truth: `~/stratus/ghostrider gulch/gcp_confirmed.txt`
-  - Test script: `compare_refinement.py <confirmed> <baseline> [variants...]`
+  - Test script: `accuracy_study/compare_refinement.py <confirmed> <baseline> [variants...]`
   - Run in conda geo env: `conda run -n geo python ...`
 - If no automated test is possible, ask the user to test and confirm first.
 - After confirmation, in this order:

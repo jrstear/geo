@@ -6,21 +6,21 @@ High-performance GDAL wrappers for fast and easy preparation of large-scale GeoT
 
 1.  **Environment**: Run `bash setup.sh` to create the `geo` environment.
 2.  **Activate**: Run `conda activate geo`.
-3.  **Launch GUI**: Run `./app.py` and open `http://127.0.0.1:5001` in your browser.
+3.  **Launch GUI**: Run `./packager/app.py` and open `http://127.0.0.1:5001` in your browser.
 
 ---
 
 ## 🚀 Components
 
-### 1. `app.py` (GUI Dashboard)
-A Flask-based graphical interface for `package.py` featuring real-time log streaming, logic grouping, and native macOS file/directory pickers.
+### 1. `packager/app.py` (GUI Dashboard)
+A Flask-based graphical interface for `packager/package.py` featuring real-time log streaming, logic grouping, and native macOS file/directory pickers.
 
 **Usage:**
 ```bash
-python app.py
+python packager/app.py
 ```
 
-### 2. `package.py` (The Engine)
+### 2. `packager/package.py` (The Engine)
 A parallelized pipeline for scaling, shifting, downsizing, tiling, and cleaning rasters.
 
 **Key Features:**
@@ -32,7 +32,7 @@ A parallelized pipeline for scaling, shifting, downsizing, tiling, and cleaning 
 
 **Usage:**
 ```bash
-python package.py <input.tiff> [options]
+python packager/package.py <input.tiff> [options]
 ```
 - `--output-dir`: Output directory (default: `<input_dir>/<name>_tiles`).
 - `--clobber`: Overwrites output directory if it exists.
@@ -59,7 +59,7 @@ Assuming the `geo` environment is active:
 
 ```bash
 # Package with 0.9996 scale and +100ft shift, downsizing to 25% resolution
-python package.py data.tif --scale 0.9996 --shift-x 100 --downsize-percent 25 --clobber
+python packager/package.py data.tif --scale 0.9996 --shift-x 100 --downsize-percent 25 --clobber
 
 # Verify the results against the original
 python compare.py data.tif data_tiles/

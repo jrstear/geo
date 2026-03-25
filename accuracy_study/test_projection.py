@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "TargetSighter"))
-from sight import parse_survey_csv, project_pixel_mode_a, project_pixel_mode_b
+from TargetSighter.sight import parse_survey_csv, project_pixel_mode_a, project_pixel_mode_b
 
 
 # ---------------------------------------------------------------------------

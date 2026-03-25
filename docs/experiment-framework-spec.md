@@ -220,7 +220,7 @@ for whichever option is implemented.
 
 ## Component 1: rmse_calc.py
 
-**Location:** `/Users/jrstear/git/geo/TargetSighter/rmse_calc.py`
+**Location:** `/Users/jrstear/git/geo/accuracy_study/rmse_calc.py`
 
 **Purpose:** Given a completed ODM reconstruction and a set of user-confirmed check
 points, triangulate each check point from its confirmed pixel observations, convert to
@@ -231,7 +231,7 @@ the survey CRS, and report RMSE statistics.
 ### CLI
 
 ```
-conda run -n geo python TargetSighter/rmse_calc.py \
+conda run -n geo python accuracy_study/rmse_calc.py \
     reconstruction.json \
     chk_confirmed.txt \
     emlid.csv \
@@ -461,7 +461,7 @@ Per-point:
    - Run `rmse_calc.py` and assert `RMS_3D < 0.001 m`.
    - Test command:
      ```
-     conda run -n geo python TargetSighter/rmse_calc.py \
+     conda run -n geo python accuracy_study/rmse_calc.py \
          /tmp/synthetic_recon.json \
          /tmp/synthetic_chk.txt \
          /tmp/synthetic_emlid.csv \
@@ -477,7 +477,7 @@ Per-point:
 
 ## Component 2: experiment_gen.py
 
-**Location:** `/Users/jrstear/git/geo/TargetSighter/experiment_gen.py`
+**Location:** `/Users/jrstear/git/geo/accuracy_study/experiment_gen.py`
 
 **Purpose:** Given a master tag file (all confirmed GCP-* and CHK-* rows in pipeline
 priority order) and an experiment config, produce a trimmed `gcp_experiment.txt`
@@ -486,7 +486,7 @@ suitable for submission to ODM as the GCP control file.
 ### CLI
 
 ```
-conda run -n geo python TargetSighter/experiment_gen.py \
+conda run -n geo python accuracy_study/experiment_gen.py \
     master_tags.txt \
     --config config.json \
     --out gcp_experiment.txt
