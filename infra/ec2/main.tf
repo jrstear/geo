@@ -12,9 +12,9 @@
 # STEP 1 — Upload data to S3:
 #   aws s3 sync /path/to/images/ s3://BUCKET/PROJECT/images/ \
 #     --exclude "*.MRK" --exclude "*.nav" --exclude "*.obs" --exclude "*.bin" \
-#     --profile personal --region us-west-2
+#     --region us-west-2
 #   aws s3 cp ~/stratus/{job}/gcp_list.txt s3://BUCKET/PROJECT/gcp_list.txt \
-#     --profile personal --region us-west-2
+#     --region us-west-2
 #
 # STEP 2 — Apply (creates spot instance; pipeline starts automatically):
 #   terraform apply \
@@ -32,7 +32,7 @@
 #   aws sns publish \
 #     --topic-arn $(terraform output -raw sns_topic_arn) \
 #     --subject "ODM test" --message "test — if you see this, notifications work." \
-#     --profile personal --region us-west-2
+#     --region us-west-2
 #
 # STEP 5 — Watch logs (optional):
 #   ssh -i ~/.ssh/geo-odm-ec2.pem ec2-user@$(terraform output -raw public_ip)
@@ -61,8 +61,7 @@ terraform {
 }
 
 provider "aws" {
-  region  = var.region
-  profile = "personal"
+  region = var.region
 }
 
 # ── Variables ──────────────────────────────────────────────────────────────────
@@ -115,6 +114,16 @@ variable "notify_phone" {
 variable "ssh_cidr" {
   description = "CIDR allowed to SSH in."
   default     = "0.0.0.0/0"
+}
+
+variable "odm_image" {
+  description = <<-EOD
+    ODM Docker image to pull and run.
+    Default: stock opendronemap/odm:3.3.0 (pinned — 'latest' has exifread bug).
+    Override with ECR image for custom builds, e.g.:
+      -var="odm_image=658302145097.dkr.ecr.us-west-2.amazonaws.com/odm:checkpoint_rmse"
+  EOD
+  default     = "opendronemap/odm:3.3.0"
 }
 
 # ── Locals ─────────────────────────────────────────────────────────────────────
@@ -206,6 +215,31 @@ resource "aws_iam_role_policy" "odm_ec2_spot" {
   name   = "geo-odm-ec2-spot"
   role   = aws_iam_role.odm.name
   policy = data.aws_iam_policy_document.ec2_spot.json
+}
+
+data "aws_iam_policy_document" "ecr_pull" {
+  # GetAuthorizationToken must be on "*"
+  statement {
+    effect    = "Allow"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+  # Image pull actions scoped to our ECR registry
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage",
+    ]
+    resources = ["arn:aws:ecr:${var.region}:*:repository/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "odm_ecr" {
+  name   = "geo-odm-ecr-pull"
+  role   = aws_iam_role.odm.name
+  policy = data.aws_iam_policy_document.ecr_pull.json
 }
 
 resource "aws_iam_instance_profile" "odm" {
@@ -405,9 +439,13 @@ resource "aws_instance" "odm" {
     systemctl enable --now crond
     usermod -aG docker ec2-user
 
-    # Pull ODM in background (~4 GB); odm-bootstrap.sh waits for it.
-    # Pin 3.3.0: 'latest' has exifread DJI MakerNote IndexError bug.
-    docker pull opendronemap/odm:3.3.0 &
+    # ECR login (no-op if using Docker Hub image; harmless either way).
+    aws ecr get-login-password --region "${var.region}" \
+      | docker login --username AWS --password-stdin \
+          "$(echo "${var.odm_image}" | cut -d/ -f1)" 2>/dev/null || true
+
+    # Pull ODM image in background (~4–6 GB); odm-bootstrap.sh waits for it.
+    docker pull "${var.odm_image}" &
 
     # Runtime config — written once; scripts source this on every run.
     cat > /etc/odm-env << 'ENVFILE'
@@ -416,6 +454,7 @@ resource "aws_instance" "odm" {
     export REGION="${var.region}"
     export SNS_TOPIC="${aws_sns_topic.odm_alerts.arn}"
     export ODM_FLAGS="${local.odm_flags}"
+    export ODM_IMAGE="${var.odm_image}"
     ENVFILE
 
     # Download scripts from S3 (uploaded by Terraform from infra/ec2/scripts/).
@@ -488,12 +527,12 @@ output "usage" {
     # Raw images (from drone SD card):
     aws s3 sync /path/to/images/ ${local.s3_images}/ \
       --exclude "*.MRK" --exclude "*.nav" --exclude "*.obs" --exclude "*.bin" \
-      --profile personal --region ${var.region}
+      --region ${var.region}
 
     # GCP file:
     aws s3 cp ~/stratus/${var.project}/gcp_list.txt \
       ${local.s3_gcp} \
-      --profile personal --region ${var.region}
+      --region ${var.region}
 
     ── STEP 2: APPLY ─────────────────────────────────────────────────────────────
 
@@ -529,7 +568,7 @@ output "usage" {
       --topic-arn $(terraform output -raw sns_topic_arn) \
       --subject "ODM test" \
       --message "SNS test from geo-odm — if you see this, notifications are working." \
-      --profile personal --region ${var.region}
+      --region ${var.region}
 
     ── WATCH LOGS (optional) ─────────────────────────────────────────────────────
 
@@ -574,12 +613,12 @@ output "instructions" {
     aws sns publish \
       --topic-arn ${aws_sns_topic.odm_alerts.arn} \
       --subject "ODM test" --message "test" \
-      --profile personal --region ${var.region}
+      --region ${var.region}
 
     ── MANUAL RESTART (after spot interruption) ──────────────────────────────────
 
     aws ec2 start-instances --instance-ids ${aws_instance.odm.id} \
-      --profile personal --region ${var.region}
+      --region ${var.region}
 
   EOT
 }

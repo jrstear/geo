@@ -62,7 +62,7 @@ until docker info &>/dev/null 2>&1; do
 done
 
 # Wait for ODM image (may still be pulling on first boot).
-until docker image inspect opendronemap/odm:3.3.0 &>/dev/null 2>&1; do
+until docker image inspect "${ODM_IMAGE:-opendronemap/odm:3.3.0}" &>/dev/null 2>&1; do
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Waiting for ODM image pull to complete..."
   sleep 10
 done
