@@ -94,6 +94,17 @@ if [ ! -f "${PROJECT_DIR}/gcp_list.txt" ]; then
     --region "${REGION}"
 fi
 
+# Seed BA with a prior camera calibration if available.
+# cameras.json is written by ODM after the dataset stage and synced back to S3,
+# so subsequent runs (same or new job with same drone) pick it up automatically.
+# Operator workflow for a new job: copy cameras.json from a prior job's S3 prefix
+# to the new project prefix before terraform apply.
+if [ -f "${PROJECT_DIR}/cameras.json" ] && ! grep -q "\-\-cameras" /etc/odm-env; then
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  cameras.json found — appending --cameras flag to ODM_FLAGS"
+  echo 'export ODM_FLAGS="${ODM_FLAGS} --cameras /datasets/project/cameras.json"' >> /etc/odm-env
+  source /etc/odm-env
+fi
+
 # Run the pipeline.
 if /usr/local/bin/odm-run.sh; then
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline complete — syncing outputs to s3://${BUCKET}/${PROJECT}/"
