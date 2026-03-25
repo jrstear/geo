@@ -259,10 +259,11 @@ aws s3 sync s3://stratus-jrstear/{PROJECT}/opensfm/ \
     ~/stratus/{job}/opensfm/ \
     --profile personal
 
-# Run RMSE analysis
+# Run RMSE analysis (use topocentric, NOT reconstruction.json — see rmse_calc.py docs)
 conda run -n geo python TargetSighter/rmse_calc.py \
-    ~/stratus/{job}/opensfm/reconstruction.json \
-    ~/stratus/{job}/chk_list.txt
+    ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
+    ~/stratus/{job}/chk_list.txt \
+    --gcp ~/stratus/{job}/opensfm/gcp_list.txt
 ```
 
 Expected accuracy (250 ft AGL, drone RTK active, 5 Customer monument GCPs):
