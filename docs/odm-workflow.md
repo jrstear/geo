@@ -15,7 +15,7 @@ flowchart TD
     points_design["{job}_design.csv"]
     transform_yaml["transform.yaml"]
     emlid(["Emlid Flow"])
-    all["{job}_surveyed_6529.csv"]
+    all["{job}_emlid_6529.csv"]
     cameras["cameras.json"]
     sight(["sight.py"])
     other["{job}_other.csv"]
@@ -25,7 +25,6 @@ flowchart TD
     tagged["{job}_tagged.txt"]
     split(["transform.py split"])
     control["gcp_list.txt"]
-    check["chk_list.txt"]
     tagged_design["{job}_tagged_design.txt"]
     s3(["s3 sync & terraform apply"])
     odm(["ODM on EC2"])
@@ -69,7 +68,6 @@ flowchart TD
         tagged
         split
         control
-        check
         s3
         odm
         deliverables
@@ -98,16 +96,17 @@ flowchart TD
     targets --> gcpeditor
     gcpeditor --> tagged
     tagged --> split
+    tagged --> gcpeditor
     transform_yaml --> split
     transform_yaml --> sight
     split --> control
-    split --> check
     split --> tagged_design
     control --> s3
     s3 --> odm --> deliverables
     odm --> model
-    check --> rmse --> report
+    control --> rmse
     model --> rmse
+    rmse --> report
     transform_yaml --> packager
     deliverables --> packager
     qgis_cloud -.-> packager
@@ -120,7 +119,6 @@ flowchart TD
     tagged_design --> qgis_design
     deliverables --> qgis_cloud
     control --> qgis_cloud
-    check --> qgis_cloud
     qgis_design -.-> customer
 
 ```
@@ -228,11 +226,12 @@ CHK- labels = independent check points (withheld from ODM; used for accuracy QC 
 
 ```bash
 conda run -n geo python transform.py split \
-    ~/stratus/{job}/{job}_confirmed.txt \
+    ~/stratus/{job}/{job}_tagged.txt \
+    --filter confirmed \
     --out-dir ~/stratus/{job}/
 # Reads ~/stratus/{job}/transform.yaml for field_crs automatically
-# → ~/stratus/{job}/gcp_list.txt   (GCP- only, EPSG:32613)
-# → ~/stratus/{job}/chk_list.txt   (CHK- only, EPSG:32613)
+# → ~/stratus/{job}/gcp_list.txt        (GCP- + CHK- combined, EPSG:32613; ODM uses GCP-/CHK- role prefixes)
+# → ~/stratus/{job}/{job}_tagged_design.txt  (design-grid coords, for QGIS review)
 ```
 
 ### 5. Launch ODM on EC2
@@ -289,8 +288,7 @@ aws s3 sync s3://stratus-jrstear/{PROJECT}/opensfm/ \
 # Run RMSE analysis (use topocentric, NOT reconstruction.json — see rmse_calc.py docs)
 conda run -n geo python accuracy_study/rmse_calc.py \
     ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
-    ~/stratus/{job}/chk_list.txt \
-    --gcp ~/stratus/{job}/opensfm/gcp_list.txt
+    ~/stratus/{job}/gcp_list.txt
 ```
 
 Expected accuracy (250 ft AGL, drone RTK active, 5 Customer monument GCPs):
