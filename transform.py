@@ -827,8 +827,8 @@ def cmd_split(args) -> int:
 
     unique_gcp = len({f[6] for f in gcp_rows})
     unique_chk = len({f[6] for f in chk_rows})
-    print(f"\n  GCP- points: {unique_gcp} unique, {len(gcp_rows)} observations")
-    print(f"  CHK- points: {unique_chk} unique, {len(chk_rows)} observations")
+    print(f"\n  GCP- points: {unique_gcp} unique, {len(gcp_rows)} observations  → gcp_list.txt (control)")
+    print(f"  CHK- points: {unique_chk} unique, {len(chk_rows)} observations  → gcp_list.txt (metrics-only) + chk_list.txt")
 
     def _write(path: Path, rows):
         with open(path, "w", encoding="utf-8") as f:
@@ -838,8 +838,8 @@ def cmd_split(args) -> int:
         print(f"  wrote {path}  ({len(rows)} observations)")
 
     print()
-    _write(out_dir / "gcp_list.txt", gcp_rows)
-    _write(out_dir / "chk_list.txt", chk_rows)
+    _write(out_dir / "gcp_list.txt", gcp_rows + chk_rows)  # combined: ODM sees GCP-/CHK- roles
+    _write(out_dir / "chk_list.txt", chk_rows)             # CHK- only: for rmse_calc.py
 
     # Write design-grid tagged file (all GCP+CHK rows, delivery_crs ft + shift)
     job_name = transform.get("job")
