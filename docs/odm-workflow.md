@@ -9,10 +9,10 @@ using Emlid GNSS survey data and GCPEditorPro pixel tagging.
 ```mermaid
 %%{init: {'theme': 'base', 'flowchart': {'nodeSpacing': 20}}}%%
 flowchart TD
-    cust_dc["{customer}_{job}.dc"]
+    cust_dc["{job}.dc"]
     extract(["transform.py dc"])
-    points_6529["{job}_points_6529.csv"]
-    points_design["{job}_points_design.csv"]
+    points_6529["{job}_6529.csv"]
+    points_design["{job}_design.csv"]
     transform_yaml["transform.yaml"]
     emlid(["Emlid Flow"])
     all["{job}_surveyed_6529.csv"]
@@ -150,19 +150,46 @@ You need control monument coordinates in EPSG:3618 before going to the field.
 
 **Customer/Trimble jobs**: Customer provides a `.dc` data collector file with design-grid
 coordinates. `transform.py dc` converts them to state plane and writes
-`{job}_points_6529.csv`, `{job}_points_design.csv`, and `transform.yaml`:
+`{job}_6529.csv`, `{job}_design.csv`, and `transform.yaml`:
 
 ```bash
+# Run without --anchor to see all control monuments in the .dc file, then pick one
+# whose state-plane coords you can look up from the NGS database or client datasheet:
+conda run -n geo python transform.py dc \
+    ~/stratus/{job}/{customer}_{job}.dc
+
+# Then re-run with the anchor:
 conda run -n geo python transform.py dc \
     ~/stratus/{job}/{customer}_{job}.dc \
-    --shift-x <design_E - state_E>  --shift-y <design_N - state_N> \
+    --anchor <monument_id> <state_E_ft> <state_N_ft> \
     --out-dir ~/stratus/{job}/
-# → ~/stratus/{job}/{job}_points_6529.csv    (state-plane EPSG:6529, for Emlid localization)
-# → ~/stratus/{job}/{job}_points_design.csv  (design-grid coords, for QGIS design review)
-# → ~/stratus/{job}/transform.yaml           (CRS + shift params; used downstream)
+# → ~/stratus/{job}/{job}_6529.csv    (state-plane EPSG:6529, for Emlid localization)
+# → ~/stratus/{job}/{job}_design.csv  (design-grid coords, for QGIS design review)
+# → ~/stratus/{job}/transform.yaml    (CRS + shift params; used downstream)
+
+# Aztec job example (NGS monument 14, 'NGS VCM 3D Y 430', from NGS datasheet):
+conda run -n geo python transform.py dc \
+    ~/stratus/aztec/"F100340 AZTEC.dc" \
+    --anchor 14 1147722.527 2144275.554 \
+    --out-dir ~/stratus/aztec/
 ```
 
-The shift values are job-specific (derived once from a known monument).
+**How to identify the anchor monument:**
+
+The customer provides a control sheet PDF alongside the `.dc` file.  The control sheet
+lists all monuments with their design-grid coordinates and descriptions.  Monuments
+labeled **"NGS"** (e.g. "NGS VCM 3D Y 430") are federally-published benchmarks with
+official state-plane coordinates in the NGS database — these are the anchor candidates.
+
+1. Run `transform.py dc <file.dc>` without `--anchor` to see the monument table.
+   NGS candidates are flagged with `← NGS anchor candidate`.
+2. Search the NGS datasheet database (https://www.ngs.noaa.gov/datasheets/) by monument
+   description or by lat/lon near the project site.
+3. Read the state-plane E/N in **US survey feet** from the datasheet.
+4. Re-run with `--anchor <id> <state_E_ft> <state_N_ft>`.
+
+The shift is saved in `transform.yaml` for all downstream steps.  It only needs to be
+computed once per job (same `.dc` file = same design grid = same shift).
 
 **Other jobs**: obtain monument coordinates in EPSG:3618 directly from the surveyor.
 

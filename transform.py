@@ -13,6 +13,9 @@ split  Split GCPEditorPro {job}_tagged.txt → gcp_list.txt + chk_list.txt (EPSG
 Typical sequence
 ----------------
   # 1. Before field survey — extract control monuments and record job CRS:
+  #    Preferred: provide one anchor monument whose state-plane coords are known
+  python transform.py dc {customer}_{job}.dc --anchor <id> <state_E_ft> <state_N_ft>
+  #    Alternative: provide shift directly if already known
   python transform.py dc {customer}_{job}.dc --shift-x X --shift-y Y
 
   # 2. After GCPEditorPro tagging — split for ODM:
@@ -31,22 +34,25 @@ design_grid:
   scale: 1.0              # Helmert scale (1.0 = pure translation)
   rotation_deg: 0.0       # Helmert rotation (0.0 = pure translation)
   helmert_residual_ft:    # max residual after fit (null until validated)
-  anchor_x: <float>       # state-plane E of control centroid
-  anchor_y: <float>       # state-plane N of control centroid
+  anchor_x: <float>       # state-plane E of anchor monument (null if --shift-x/y used directly)
+  anchor_y: <float>       # state-plane N of anchor monument (null if --shift-x/y used directly)
 
 Shift convention (consistent with package.py --shift-x/y):
   state_E = design_E - shift_x     (dc subcommand, parsing .dc records)
   design_E = state_E + shift_x     (package.py, delivery output)
 
-Example (Customer/Aztec job):
-  python transform.py dc "F100340 AZTEC.dc" --shift-x 1546702.929 --shift-y -3567.471
+Example (Customer/Aztec job — anchor on NGS monument 14, state-plane from NGS datasheet):
+  python transform.py dc "F100340 AZTEC.dc" --anchor 14 1147722.527 2144275.554
   python transform.py split ~/stratus/aztec3/aztec3_confirmed.txt
 """
 
 import argparse
 import csv
+import json
+import math
 import re
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -174,6 +180,205 @@ def extract_job_name(dc_path: Path) -> str:
                 if name:
                     return name.replace(" ", "_")
     return dc_path.stem.replace(" ", "_")
+
+
+def _read_raw_69ki(dc_path: Path) -> dict:
+    """Return {point_id: (raw_easting_ft, raw_northing_ft)} for all 69KI records.
+
+    Raw = design-grid coordinates as stored in the .dc file (northing first,
+    easting second).  No shift is applied.  Used to compute the shift when
+    --anchor is provided.
+    """
+    result: dict = {}
+    with open(dc_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.startswith("69KI"):
+                continue
+            content = line[4:].lstrip()
+            parts = content.split(None, 1)
+            if len(parts) < 2:
+                continue
+            pid, rest = parts[0], parts[1]
+            if len(rest) < 32:
+                continue
+            try:
+                raw_northing = float(rest[ 0:16].strip())
+                raw_easting  = float(rest[16:32].strip())
+            except ValueError:
+                continue
+            if pid not in result:
+                result[pid] = (raw_easting, raw_northing)
+    return result
+
+
+def _ngs_lookup(dc_path: Path, delivery_crs: str) -> list:
+    """Query the NGS NDE API to find state-plane coordinates for NGS monuments
+    listed in the dc file.
+
+    Strategy:
+    1. Extract base-station lat/lon from 66FD records → search center
+    2. Query NGS radial API within 10 miles
+    3. Match results to dc-file NGS monuments by designation tokens
+    4. Convert matched lat/lon → state-plane feet via pyproj
+
+    Returns list of dicts, one per matched dc monument:
+        dc_pid, dc_desc, ngs_pid, ngs_name, lat, lon, state_e_ft, state_n_ft
+    Empty list if API unavailable, no base-station coordinates, or no NGS monuments.
+    """
+    # --- Collect base-station lat/lon for search center ---
+    lats, lons = [], []
+    with open(dc_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not re.match(r"^66(FD|KI|SI)\s", line):
+                continue
+            m = re.search(r"(\d+\.\d+)(-\d+\.\d+)", line[6:].lstrip())
+            if m:
+                lats.append(float(m.group(1)))
+                lons.append(float(m.group(2)))
+    if not lats:
+        return []
+
+    center_lat = sum(lats) / len(lats)
+    center_lon = sum(lons) / len(lons)
+
+    # --- Collect NGS-labeled monuments from dc file ---
+    raw_pts = _read_raw_69ki(dc_path)
+    descs: dict = {}
+    with open(dc_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.startswith("69KI"):
+                continue
+            content = line[4:].lstrip()
+            parts = content.split(None, 1)
+            if len(parts) < 2:
+                continue
+            pid, rest = parts[0], parts[1]
+            desc = rest[48:].strip() if len(rest) >= 48 else ""
+            if pid not in descs:
+                descs[pid] = desc
+    ngs_monuments = {pid: descs[pid] for pid in raw_pts
+                     if "NGS" in descs.get(pid, "").upper()}
+    if not ngs_monuments:
+        return []
+
+    # --- Query NGS radial API ---
+    url = (f"https://geodesy.noaa.gov/api/nde/radial?"
+           f"lat={center_lat:.6f}&lon={center_lon:.6f}&radius=10&units=MILE")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "transform.py/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            ngs_results = json.loads(resp.read())
+    except Exception as e:
+        print(f"  WARNING: NGS API unavailable ({e})", file=sys.stderr)
+        return []
+
+    # Determine FIPS zone code and zone label for SPC lookup.
+    # Zone labels match NGS datasheet SPC lines, e.g. "SPC NM C", "SPC NM W".
+    _FIPS_TO_ZONE_LABEL: dict[int, str] = {
+        3001: "NM E", 3002: "NM C", 3003: "NM W",
+    }
+    fips_code: Optional[int] = None
+    zone_label: Optional[str] = None
+    for fips, epsg_map in FIPS_TO_EPSG.items():
+        if any(f"EPSG:{v}" == delivery_crs.upper() for v in epsg_map.values()):
+            fips_code = fips
+            zone_label = _FIPS_TO_ZONE_LABEL.get(fips)
+            break
+
+    def _spc_from_datasheet(pid: str) -> Optional[tuple]:
+        """Fetch NGS datasheet text and parse published SPC in US survey feet.
+        Returns (e_ft, n_ft) from the matching SPC line, or None if not found."""
+        if zone_label is None:
+            return None
+        ds_url = f"https://www.ngs.noaa.gov/cgi-bin/ds_mark.prl?PidBox={pid}"
+        try:
+            req_ds = urllib.request.Request(ds_url, headers={"User-Agent": "transform.py/1.0"})
+            with urllib.request.urlopen(req_ds, timeout=15) as resp_ds:
+                text = resp_ds.read().decode("utf-8", errors="replace")
+        except Exception:
+            return None
+        # Match lines like:  PID;SPC NM C     - 2,144,275.554  1,147,722.527   sFT
+        # North comes first in the datasheet, then East.
+        pattern = (r";SPC\s+" + re.escape(zone_label) +
+                   r"\s*-\s*([\d,]+\.\d+)\s+([\d,]+\.\d+)\s+sFT")
+        m = re.search(pattern, text)
+        if not m:
+            return None
+        n_ft = float(m.group(1).replace(",", ""))
+        e_ft = float(m.group(2).replace(",", ""))
+        return e_ft, n_ft
+
+    def _spc_from_ncat(lat: float, lon: float) -> Optional[tuple]:
+        """Call NCAT llh → SPC in US survey feet (fallback when datasheet lacks our zone).
+        Accuracy is limited by the NDE lat/lon precision (~20 ft typical)."""
+        if fips_code is None:
+            return None
+        ncat_url = (
+            f"https://geodesy.noaa.gov/api/ncat/llh?"
+            f"lat={lat:.10f}&lon={lon:.10f}&eht=0"
+            f"&inDatum=nad83%282011%29&outDatum=nad83%282011%29"
+            f"&spcZone={fips_code}&units=usft"
+        )
+        try:
+            req2 = urllib.request.Request(ncat_url, headers={"User-Agent": "transform.py/1.0"})
+            with urllib.request.urlopen(req2, timeout=10) as resp2:
+                ncat = json.loads(resp2.read())
+            e_ft = float(ncat["spcEasting_usft"].replace(",", ""))
+            n_ft = float(ncat["spcNorthing_usft"].replace(",", ""))
+            return e_ft, n_ft
+        except Exception:
+            return None
+
+    # --- Match dc NGS monuments to NGS API results ---
+    # Strip common non-identifying tokens; what remains is the designation (e.g. "Y 430")
+    _NOISE = {"NGS", "VCM", "3D", "ROD", "DISK", "CAP", "MARK", "BM", "RM", ""}
+    matches = []
+    for dc_pid, dc_desc in ngs_monuments.items():
+        dc_tokens = {t.strip("'\",.") for t in dc_desc.upper().split()} - _NOISE
+        best = None
+        best_score = 0
+        for rec in ngs_results:
+            ngs_name = rec.get("name", "")
+            ngs_tokens = {t.strip("'\",.") for t in ngs_name.upper().split()} - _NOISE
+            score = len(dc_tokens & ngs_tokens)
+            if score > best_score:
+                best_score = score
+                best = rec
+        if best and best_score > 0:
+            try:
+                lat = float(best["lat"])
+                lon = float(best["lon"])
+            except (KeyError, ValueError):
+                continue
+            pid_str = best.get("pid", "")
+            # Try exact SPC from datasheet first; fall back to NCAT, then pyproj
+            spc = _spc_from_datasheet(pid_str)
+            spc_source = "NGS datasheet (exact)"
+            if spc is None:
+                spc = _spc_from_ncat(lat, lon)
+                spc_source = "NCAT lat/lon (~20 ft)"
+            if spc is None:
+                try:
+                    from pyproj import Transformer
+                    geo_to_sp = Transformer.from_crs("EPSG:4326", delivery_crs, always_xy=True)
+                    spc = geo_to_sp.transform(lon, lat)
+                    spc_source = "pyproj lat/lon (~20 ft)"
+                except Exception:
+                    continue
+            sp_e, sp_n = spc
+            matches.append({
+                "dc_pid":      dc_pid,
+                "dc_desc":     dc_desc,
+                "ngs_pid":     pid_str,
+                "ngs_name":    best.get("name", ""),
+                "lat":         lat,
+                "lon":         lon,
+                "state_e_ft":  sp_e,
+                "state_n_ft":  sp_n,
+                "spc_source":  spc_source,
+            })
+
+    return matches
 
 
 # ---------------------------------------------------------------------------
@@ -332,33 +537,123 @@ def cmd_dc(args) -> int:
         else:
             print(f"CRS: {delivery_crs} (auto-detected from .dc)")
 
-    if args.shift_x is None or args.shift_y is None:
-        sys.exit(
-            "ERROR: --shift-x and --shift-y are required.\n"
-            "\n"
-            "These are the design-grid offsets (in state-plane ft) to ADD to\n"
-            "state-plane coordinates to produce design-grid coordinates:\n"
-            "  design_E = state_E + shift_x\n"
-            "  design_N = state_N + shift_y\n"
-            "\n"
-            "Derivation: survey at least one monument whose true state-plane\n"
-            "coordinates are known (e.g. from NGS datasheet), then:\n"
-            "  shift_x = design_E_from_dc - state_E_from_survey\n"
-            "  shift_y = design_N_from_dc - state_N_from_survey\n"
-            "\n"
-            "Customer/Aztec job: --shift-x 1546702.929 --shift-y -3567.471"
-        )
-    shift_x = args.shift_x
-    shift_y = args.shift_y
+    # --- Resolve design-grid shift ---
+    if args.shift_x is not None and args.shift_y is not None:
+        shift_x = args.shift_x
+        shift_y = args.shift_y
+        anchor_used = None
+    elif args.anchor:
+        anchor_id = args.anchor[0]
+        try:
+            anchor_state_e = float(args.anchor[1])
+            anchor_state_n = float(args.anchor[2])
+        except ValueError:
+            sys.exit(f"ERROR: --anchor STATE_E_FT and STATE_N_FT must be numbers, got: {args.anchor[1]!r} {args.anchor[2]!r}")
+        raw_pts = _read_raw_69ki(dc_path)
+        if anchor_id not in raw_pts:
+            ids_found = ", ".join(sorted(raw_pts.keys())) or "(none)"
+            sys.exit(
+                f"ERROR: anchor monument '{anchor_id}' not found in 69KI records.\n"
+                f"       Monument IDs in .dc file: {ids_found}"
+            )
+        raw_e, raw_n = raw_pts[anchor_id]
+        shift_x = raw_e - anchor_state_e
+        shift_y = raw_n - anchor_state_n
+        anchor_used = (anchor_id, anchor_state_e, anchor_state_n, raw_e, raw_n)
+    else:
+        # Neither shift nor anchor provided — try NGS API auto-lookup first.
+        print("No --anchor or --shift-x/y provided — querying NGS database...")
+        ngs_matches = _ngs_lookup(dc_path, delivery_crs)
+
+        if ngs_matches:
+            raw_pts = _read_raw_69ki(dc_path)
+            shifts = []
+            for m in ngs_matches:
+                raw_e, raw_n = raw_pts[m["dc_pid"]]
+                sx = raw_e - m["state_e_ft"]
+                sy = raw_n - m["state_n_ft"]
+                shifts.append((sx, sy, m))
+
+            shift_x, shift_y, primary = shifts[0]
+            anchor_used = (
+                primary["dc_pid"],
+                primary["state_e_ft"],
+                primary["state_n_ft"],
+                raw_pts[primary["dc_pid"]][0],
+                raw_pts[primary["dc_pid"]][1],
+            )
+            print(f"  Found {len(ngs_matches)} NGS monument(s) via API:")
+            for sx, sy, m in shifts:
+                print(f"    dc:{m['dc_pid']} ({m['dc_desc'].strip()}) "
+                      f"→ NGS {m['ngs_pid']} \"{m['ngs_name']}\"  "
+                      f"state-plane ({m['state_e_ft']:.3f}, {m['state_n_ft']:.3f}) ft"
+                      f"  [{m.get('spc_source', 'unknown')}]")
+            all_exact = all(m.get("spc_source", "").startswith("NGS datasheet") for m in ngs_matches)
+            if not all_exact:
+                print(f"  NOTE: Some coordinates derived from lat/lon conversion — typical accuracy "
+                      f"±20 ft. For survey-quality work, verify with --anchor <id> <exact_E> <exact_N>.")
+            if len(shifts) > 1:
+                max_dev = max(
+                    math.hypot(sx - shift_x, sy - shift_y)
+                    for sx, sy, _ in shifts[1:]
+                )
+                if max_dev > 1.0:
+                    print(f"  WARNING: shifts from multiple anchors disagree by up to "
+                          f"{max_dev:.2f} ft — using dc:{primary['dc_pid']} as primary.")
+                else:
+                    print(f"  Cross-check: {len(shifts)} anchors agree within {max_dev:.3f} ft ✓")
+        else:
+            # NGS lookup failed or no matches — print diagnostic table and exit.
+            raw_pts = _read_raw_69ki(dc_path)
+            if not raw_pts:
+                sys.exit(
+                    "ERROR: No 69KI control monuments found in .dc file.\n"
+                    "       Check that the file is a valid Trimble data-collector export."
+                )
+            descs: dict = {}
+            with open(dc_path, encoding="utf-8", errors="replace") as _f:
+                for _line in _f:
+                    if not _line.startswith("69KI"):
+                        continue
+                    _content = _line[4:].lstrip()
+                    _parts = _content.split(None, 1)
+                    if len(_parts) < 2:
+                        continue
+                    _pid, _rest = _parts[0], _parts[1]
+                    _desc = _rest[48:].strip() if len(_rest) >= 48 else ""
+                    if _pid not in descs:
+                        descs[_pid] = _desc
+            ngs_ids = [pid for pid in raw_pts
+                       if "NGS" in descs.get(pid, "").upper()]
+            lines_out = [
+                "ERROR: NGS API lookup returned no matches. Provide --anchor manually.",
+                "",
+                "  Control monuments (69KI) in this .dc file:",
+                "    {:>12}  {:>18}  {:>18}  {}".format(
+                    "id", "design_E_raw_ft", "design_N_raw_ft", "description"),
+            ]
+            for pid, (re_, rn) in sorted(raw_pts.items()):
+                marker = "  ← NGS" if pid in ngs_ids else ""
+                lines_out.append("    {:>12}  {:>18.3f}  {:>18.3f}  {}{}".format(
+                    pid, re_, rn, descs.get(pid, ""), marker))
+            lines_out += [
+                "",
+                "  Look up NGS state-plane coordinates at https://www.ngs.noaa.gov/datasheets/",
+                "  then: --anchor <monument_id> <state_E_ft> <state_N_ft>",
+            ]
+            sys.exit("\n".join(lines_out))
 
     job_name = args.job or extract_job_name(dc_path)
     print(f"Job:   {job_name}")
+    if anchor_used:
+        pid, sp_e, sp_n, raw_e, raw_n = anchor_used
+        print(f"Anchor: monument {pid}  state-plane ({sp_e:.3f}, {sp_n:.3f})  design-raw ({raw_e:.3f}, {raw_n:.3f})")
     print(f"Shift: design_E = state_E + {shift_x:+.3f} ft,  design_N = state_N + {shift_y:+.3f} ft")
 
     rows = parse_dc(dc_path, shift_x, shift_y, delivery_crs)
 
     # Write state-plane CSV (EPSG:6529, ft) — for Emlid RS3 localization
-    csv_path = out_dir / f"{job_name}_points_6529.csv"
+    csv_path = out_dir / f"{job_name}_6529.csv"
     fieldnames = ["point_id", "easting_ft", "northing_ft", "elevation_ft", "description", "point_type"]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -367,7 +662,7 @@ def cmd_dc(args) -> int:
             w.writerow({k: ("" if v is None else v) for k, v in r.items() if k in fieldnames})
 
     # Write design-grid CSV (delivery_crs + shift, ft) — for QGIS design review
-    design_csv_path = out_dir / f"{job_name}_points_design.csv"
+    design_csv_path = out_dir / f"{job_name}_design.csv"
     with open(design_csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -401,8 +696,8 @@ def cmd_dc(args) -> int:
             "scale":                1.0,
             "rotation_deg":         0.0,
             "helmert_residual_ft":  None,
-            "anchor_x":             None,
-            "anchor_y":             None,
+            "anchor_x":             anchor_used[1] if anchor_used else None,
+            "anchor_y":             anchor_used[2] if anchor_used else None,
         },
     }
     yaml_path = out_dir / "transform.yaml"
@@ -606,10 +901,14 @@ def main() -> int:
     dc = sub.add_parser("dc", help="Parse Trimble .dc → {job}_points.csv + transform.yaml")
     dc.add_argument("dc_file", metavar="{customer}_{job}.dc",
                     help="Input Trimble .dc data-collector file")
+    dc.add_argument("--anchor", nargs=3, metavar=("MONUMENT_ID", "STATE_E_FT", "STATE_N_FT"),
+                    type=lambda v: v,   # keep as strings; convert below
+                    help="Compute shift from one known monument: ID + published state-plane E/N (ft). "
+                         "Run without --anchor or --shift-x/y to see monuments in the .dc file.")
     dc.add_argument("--shift-x", type=float, default=None,
-                    help="Design-grid offset: state_E + shift_x = design_E (ft)")
+                    help="Design-grid offset: state_E + shift_x = design_E (ft) — use if shift already known")
     dc.add_argument("--shift-y", type=float, default=None,
-                    help="Design-grid offset: state_N + shift_y = design_N (ft)")
+                    help="Design-grid offset: state_N + shift_y = design_N (ft) — use if shift already known")
     dc.add_argument("--delivery-crs", default=None, metavar="EPSG:XXXX",
                     help="Override auto-detected state-plane CRS for deliverables")
     dc.add_argument("--job", default=None, help="Job name (default: from 10NM record or filename)")
