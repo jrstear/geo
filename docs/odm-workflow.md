@@ -16,6 +16,7 @@ flowchart TD
     transform_yaml["transform.yaml"]
     emlid(["Emlid Flow"])
     all["{job}_surveyed_6529.csv"]
+    cameras["cameras.json"]
     sight(["sight.py"])
     other["{job}_other.csv"]
     marks["marks_6529.csv for Pix4D"]
@@ -61,6 +62,7 @@ flowchart TD
         drone
         images
         targets
+	cameras
         sight
         transform_yaml
         gcpeditor
@@ -88,6 +90,7 @@ flowchart TD
     images --> s3
     images --> sight
     emlid --> all --> sight
+    cameras --> sight
     sight --> targets
     sight --> other
     sight --> marks

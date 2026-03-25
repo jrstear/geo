@@ -1,23 +1,35 @@
 #!/usr/bin/env python3
 """
-rmse_calc.py — 3D RMSE from WebODM reconstruction.json + tagged check pixels.
+rmse_calc.py — 3D RMSE from ODM reconstruction + tagged check pixels.
 
 Usage:
+    # Basic (pre-geotransform accuracy):
     conda run -n geo python TargetSighter/rmse_calc.py \\
-        reconstruction.json chk_confirmed.txt
+        reconstruction.topocentric.json chk_list.txt
 
+    # With georeferencing transform (deliverable accuracy, matches Pix4D):
+    conda run -n geo python TargetSighter/rmse_calc.py \\
+        reconstruction.topocentric.json chk_list.txt --gcp gcp_list.txt
+
+    # Synthetic self-test:
     conda run -n geo python TargetSighter/rmse_calc.py --test
 
-For each CHK-* label in chk_confirmed.txt:
+IMPORTANT: Use reconstruction.topocentric.json, NOT reconstruction.json.
+The .topocentric file stores camera poses in ODM's local ENU frame where
+ref_UTM + local_offset = exact UTM.  The plain reconstruction.json has a
+linearised projected-CRS rotation baked in by export_geocoords, and
+ref_UTM + those offsets gives ~1m/km error due to the linearisation.
+
+For each CHK-* label in chk_list.txt:
   1. Gathers tagged (image, px, py) pairs.
   2. Builds viewing rays through SfM-optimised camera poses (Rodrigues rotation).
   3. Triangulates 3D position via linear DLT (least-squares on projection-error system).
-  4. Converts ENU reconstruction coords → projected world CRS (pyproj).
-  5. Computes dX/dY/dZ vs surveyed position from chk_confirmed.txt cols 1-3.
-
-chk_confirmed.txt is produced by convert_coords.py and already contains the
-surveyed XYZ in the output CRS (e.g. EPSG:32613 metres). No external survey
-CSV is required.
+  4. Converts ENU reconstruction coords → projected world CRS (ref_UTM + local).
+  5. Optionally fits a 7-parameter similarity transform from GCP triangulated
+     positions → GCP ground truth (--gcp), then applies it to CHK positions.
+     This replicates ODM's odm_georeferencing stage and produces RMSE that
+     matches the delivered orthophoto accuracy.
+  6. Computes dX/dY/dZ vs surveyed position from chk_list.txt cols 1-3.
 
 Outputs per-point table + RMS_X/RMS_Y/RMS_Z/RMS_3D to stdout as JSON.
 Human-readable summary to stderr.
@@ -63,14 +75,16 @@ def enu_to_projected(
     epsg: str,
 ) -> Tuple[float, float, float]:
     """
-    Convert a point in ODM's local coordinate system to projected CRS coordinates.
+    Convert a point in ODM's topocentric local frame to projected CRS coordinates.
 
-    ODM (via OpenSfM) stores reconstruction.json positions in a UTM-grid-aligned
-    local frame: local_X = UTM_E - ref_UTM_E, local_Y = UTM_N - ref_UTM_N.
-    The correct conversion is therefore a direct offset addition (not a
-    flat-earth lat/lon approximation, which introduces ~90m error at sites
-    with significant UTM meridian convergence, e.g. ~1.75° at 3° from the
-    central meridian at 37° latitude).
+    IMPORTANT: This function assumes the input is from reconstruction.topocentric.json,
+    where coordinates are in a true ENU frame aligned with the UTM grid at the
+    reference point.  For this frame, ref_UTM + local = exact UTM.
+
+    Do NOT use with reconstruction.json (the geocoords version), which has a
+    linearised topocentric→projected rotation baked in.  Using ref_UTM + geocoords
+    gives ~1 m/km error due to the linearisation (e.g. ~88m at 3.4km from ref
+    for a site 3° from the UTM central meridian).
 
     Returns (x_proj, y_proj, z_ellip_m).
     """
@@ -137,7 +151,7 @@ def parse_chk_confirmed(
         line = raw_line.rstrip("\n")
         if not line:
             continue
-        fields = line.split("\t")
+        fields = line.split("\t") if "\t" in line else line.split()
         if len(fields) < 7:
             continue
         try:
@@ -263,6 +277,117 @@ def triangulate_dlt(rays: List[Tuple[np.ndarray, np.ndarray]]) -> Optional[np.nd
 
 
 # ---------------------------------------------------------------------------
+# Similarity transform (Umeyama algorithm)
+# ---------------------------------------------------------------------------
+
+
+def fit_similarity(
+    src: np.ndarray,
+    dst: np.ndarray,
+) -> Tuple[float, np.ndarray, np.ndarray]:
+    """
+    Fit a 7-parameter similarity transform: dst = scale * R @ src + t.
+
+    Uses the Umeyama algorithm (closed-form, handles reflection).
+
+    Parameters:
+        src : (N, 3) array of source points (triangulated GCP positions)
+        dst : (N, 3) array of target points (surveyed GCP positions)
+
+    Returns:
+        scale : float
+        R     : (3, 3) rotation matrix
+        t     : (3,)   translation vector
+    """
+    n = len(src)
+    mu_s = src.mean(axis=0)
+    mu_d = dst.mean(axis=0)
+    Sc = src - mu_s
+    Dc = dst - mu_d
+
+    H = Sc.T @ Dc / n
+    U, S, Vt = np.linalg.svd(H)
+    d = np.linalg.det(Vt.T @ U.T)
+    D = np.diag([1.0, 1.0, np.sign(d)])
+
+    R = Vt.T @ D @ U.T
+    sigma = np.sum(Sc ** 2) / n
+    scale = np.trace(D @ np.diag(S)) / sigma
+    t = mu_d - scale * R @ mu_s
+
+    return scale, R, t
+
+
+# ---------------------------------------------------------------------------
+# Triangulation helper (shared by compute_rmse)
+# ---------------------------------------------------------------------------
+
+
+def _triangulate_labels(
+    obs_by_label: Dict[str, List[Tuple[str, float, float]]],
+    coords_by_label: Dict[str, Tuple[float, float, float]],
+    shots: dict,
+    cameras: dict,
+    ref_lla: dict,
+    crs: str,
+    uses_feet: bool,
+) -> Tuple[List[dict], List[str]]:
+    """
+    Triangulate all labels and return (results, skipped_labels).
+
+    Each result dict has: label, tri_m (3-array in metres), survey_m (3-array in metres).
+    """
+    results = []
+    skipped: List[str] = []
+
+    for label, obs in sorted(obs_by_label.items()):
+        missing = [img for img, _, _ in obs if img not in shots]
+        for img in missing:
+            print(f"WARNING: shot {img!r} for {label!r} not in reconstruction — skipped",
+                  file=sys.stderr)
+
+        rays = build_rays(obs, shots, cameras)
+        if len(rays) < 2:
+            print(f"WARNING: {label!r} has {len(rays)} rays — skipped", file=sys.stderr)
+            skipped.append(label)
+            continue
+
+        X_enu = triangulate_dlt(rays)
+        if X_enu is None:
+            print(f"WARNING: {label!r} rank-deficient — skipped", file=sys.stderr)
+            skipped.append(label)
+            continue
+
+        x_p, y_p, z_m = enu_to_projected(
+            X_enu, ref_lla["latitude"], ref_lla["longitude"], ref_lla["altitude"], crs
+        )
+
+        coords = coords_by_label.get(label)
+        if coords is None:
+            print(f"WARNING: {label!r} not in coords — skipped", file=sys.stderr)
+            skipped.append(label)
+            continue
+
+        sx, sy, sz = coords
+
+        # Convert to metres for comparison
+        tri_m = np.array([
+            x_p * FT_TO_M if uses_feet else x_p,
+            y_p * FT_TO_M if uses_feet else y_p,
+            z_m,
+        ])
+        survey_m = np.array([
+            sx * FT_TO_M if uses_feet else sx,
+            sy * FT_TO_M if uses_feet else sy,
+            sz,
+        ])
+
+        results.append({"label": label, "tri_m": tri_m, "survey_m": survey_m})
+
+    return results, skipped
+
+
+# ---------------------------------------------------------------------------
 # Main RMSE computation
 # ---------------------------------------------------------------------------
 
@@ -271,96 +396,91 @@ def compute_rmse(
     recon_path: str,
     chk_path: str,
     crs_override: Optional[str] = None,
+    gcp_path: Optional[str] = None,
 ) -> dict:
     """
-    Full pipeline: parse inputs, triangulate, convert coords, compute RMSE.
+    Full pipeline: parse inputs, triangulate, optionally geotransform, compute RMSE.
 
-    Ground truth XYZ is read directly from chk_confirmed.txt cols 1-3 (already
-    in the output CRS, produced by convert_coords.py).
+    If gcp_path is provided, a 7-parameter similarity transform is fitted from
+    triangulated GCP positions → surveyed GCP positions and applied to the CHK
+    triangulated positions before computing residuals.  This replicates ODM's
+    odm_georeferencing stage and produces RMSE matching the delivered orthophoto.
 
     Returns a dict suitable for JSON output.
     """
-    # --- Step 1: parse reconstruction.json ---
+    # --- Step 1: parse reconstruction ---
     recon = parse_reconstruction(recon_path)
     cameras = recon["cameras"]
     shots = recon["shots"]
     ref_lla = recon["reference_lla"]
 
-    # --- Step 2: parse chk_confirmed.txt ---
-    crs_header, coords_by_label, obs_by_label = parse_chk_confirmed(chk_path)
+    # --- Step 2: parse check file ---
+    crs_header, chk_coords, chk_obs = parse_chk_confirmed(chk_path)
     crs = crs_override or crs_header
     if not crs:
-        raise ValueError("CRS not found in chk_confirmed.txt header and --crs not provided.")
+        raise ValueError("CRS not found in chk file header and --crs not provided.")
 
-    # Determine whether the output CRS uses feet (for x_proj/y_proj → metres conversion)
     unit = crs_axis_unit(crs)
     uses_feet = "foot" in unit.lower()
 
-    # --- Steps 3-4: triangulate + compare ---
-    points = []
-    skipped_labels: List[str] = []
+    # --- Step 3: triangulate CHK points ---
+    chk_results, chk_skipped = _triangulate_labels(
+        chk_obs, chk_coords, shots, cameras, ref_lla, crs, uses_feet
+    )
 
-    for label, obs in sorted(obs_by_label.items()):
-        # Check all shots exist; warn about missing ones
-        missing_shots = [img for img, _, _ in obs if img not in shots]
-        for img in missing_shots:
-            print(f"WARNING: shot {img!r} for label {label!r} not in reconstruction — skipped",
-                  file=sys.stderr)
+    # --- Step 4: optionally fit similarity from GCPs ---
+    sim_scale, sim_R, sim_t = None, None, None
+    gcp_pre_rms = None
+    gcp_post_rms = None
 
-        rays = build_rays(obs, shots, cameras)
-
-        if len(rays) < 2:
-            print(
-                f"WARNING: label {label!r} has fewer than 2 valid rays "
-                f"({len(rays)} found) — skipped",
-                file=sys.stderr,
-            )
-            skipped_labels.append(label)
-            continue
-
-        X_enu = triangulate_dlt(rays)
-        if X_enu is None:
-            print(
-                f"WARNING: triangulation for {label!r} produced rank-deficient system — skipped",
-                file=sys.stderr,
-            )
-            skipped_labels.append(label)
-            continue
-
-        # Convert ENU → projected CRS
-        x_proj, y_proj, z_ellip_m = enu_to_projected(
-            X_enu, ref_lla["latitude"], ref_lla["longitude"], ref_lla["altitude"], crs
+    if gcp_path:
+        _, gcp_coords, gcp_obs = parse_chk_confirmed(gcp_path)
+        gcp_results, _ = _triangulate_labels(
+            gcp_obs, gcp_coords, shots, cameras, ref_lla, crs, uses_feet
         )
 
-        # Survey ground truth — read directly from check file cols 1-3.
-        # coords are already in the output CRS (metres for EPSG:32613).
-        coords = coords_by_label.get(label)
-        if coords is None:
-            print(f"WARNING: label {label!r} not found in chk_confirmed coords — skipped",
+        if len(gcp_results) < 3:
+            print(f"WARNING: only {len(gcp_results)} GCPs triangulated, need ≥3 for similarity — "
+                  f"skipping geotransform", file=sys.stderr)
+        else:
+            src = np.array([r["tri_m"] for r in gcp_results])
+            dst = np.array([r["survey_m"] for r in gcp_results])
+
+            # Pre-transform GCP residuals
+            gcp_pre_diffs = src - dst
+            gcp_pre_rms = np.sqrt((gcp_pre_diffs ** 2).mean(axis=0)).tolist()
+
+            sim_scale, sim_R, sim_t = fit_similarity(src, dst)
+
+            # Post-transform GCP residuals (validation)
+            gcp_post = sim_scale * (sim_R @ src.T).T + sim_t - dst
+            gcp_post_rms = np.sqrt((gcp_post ** 2).mean(axis=0)).tolist()
+
+            print(f"\nSimilarity transform fitted from {len(gcp_results)} GCPs:", file=sys.stderr)
+            print(f"  scale = {sim_scale:.10f}", file=sys.stderr)
+            rot_deg = Rotation.from_matrix(sim_R).as_euler('xyz', degrees=True)
+            print(f"  rotation (deg) = X:{rot_deg[0]:.4f}  Y:{rot_deg[1]:.4f}  Z:{rot_deg[2]:.4f}",
                   file=sys.stderr)
-            skipped_labels.append(label)
-            continue
+            print(f"  GCP pre-transform  RMS: X={gcp_pre_rms[0]:.4f}  Y={gcp_pre_rms[1]:.4f}  "
+                  f"Z={gcp_pre_rms[2]:.4f}", file=sys.stderr)
+            print(f"  GCP post-transform RMS: X={gcp_post_rms[0]:.6f}  Y={gcp_post_rms[1]:.6f}  "
+                  f"Z={gcp_post_rms[2]:.6f}", file=sys.stderr)
 
-        survey_x, survey_y, survey_z = coords
+    # --- Step 5: compute residuals ---
+    points = []
+    for r in chk_results:
+        tri = r["tri_m"]
+        if sim_R is not None:
+            tri = sim_scale * sim_R @ tri + sim_t
+        surv = r["survey_m"]
 
-        # Convert both projected point and survey XY to metres if CRS uses feet.
-        x_proj_m = x_proj * FT_TO_M if uses_feet else x_proj
-        y_proj_m = y_proj * FT_TO_M if uses_feet else y_proj
-        survey_x_m = survey_x * FT_TO_M if uses_feet else survey_x
-        survey_y_m = survey_y * FT_TO_M if uses_feet else survey_y
-
-        # Z: z_ellip_m is ellipsoidal altitude in metres (from enu_to_projected).
-        # survey_z from convert_coords.py is the survey elevation in metres.
-        # Any systematic offset (e.g. geoid separation ~20-24 m) is expected and documented.
-        survey_z_m = survey_z
-
-        dX = x_proj_m - survey_x_m
-        dY = y_proj_m - survey_y_m
-        dZ = z_ellip_m - survey_z_m
+        dX = tri[0] - surv[0]
+        dY = tri[1] - surv[1]
+        dZ = tri[2] - surv[2]
         d3D = math.sqrt(dX ** 2 + dY ** 2 + dZ ** 2)
 
         points.append({
-            "label": label,
+            "label": r["label"],
             "dX": round(dX, 6),
             "dY": round(dY, 6),
             "dZ": round(dZ, 6),
@@ -373,6 +493,7 @@ def compute_rmse(
             "rms_x": None, "rms_y": None, "rms_z": None, "rms_3d": None,
             "mean_dz": None, "std_dz": None,
             "n": 0, "points": [],
+            "geotransform_applied": gcp_path is not None and sim_R is not None,
         }
     else:
         rms_x = math.sqrt(sum(p["dX"] ** 2 for p in points) / n)
@@ -391,7 +512,21 @@ def compute_rmse(
             "std_dz": round(std_dz, 6),
             "n": n,
             "points": points,
+            "geotransform_applied": gcp_path is not None and sim_R is not None,
         }
+
+        if gcp_pre_rms:
+            result["gcp_pre_transform_rms"] = {
+                "x": round(gcp_pre_rms[0], 6),
+                "y": round(gcp_pre_rms[1], 6),
+                "z": round(gcp_pre_rms[2], 6),
+            }
+        if gcp_post_rms:
+            result["gcp_post_transform_rms"] = {
+                "x": round(gcp_post_rms[0], 6),
+                "y": round(gcp_post_rms[1], 6),
+                "z": round(gcp_post_rms[2], 6),
+            }
 
     return result
 
@@ -581,15 +716,29 @@ def run_synthetic_test() -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compute 3D RMSE for CHK-* check points from ODM reconstruction.json."
+        description="Compute 3D RMSE for CHK-* check points from ODM reconstruction.",
     )
-    parser.add_argument("reconstruction", nargs="?", help="Path to reconstruction.json")
-    parser.add_argument("chk_confirmed", nargs="?",
-                        help="Path to chk_confirmed.txt (produced by convert_coords.py)")
+    parser.add_argument(
+        "reconstruction", nargs="?",
+        help="Path to reconstruction.topocentric.json (NOT reconstruction.json)",
+    )
+    parser.add_argument(
+        "chk_confirmed", nargs="?",
+        help="Path to chk_list.txt (tab-separated: geo_x geo_y geo_z px py image label)",
+    )
+    parser.add_argument(
+        "--gcp",
+        default=None,
+        metavar="GCP_FILE",
+        help="Path to gcp_list.txt. If provided, fits a 7-parameter similarity "
+             "transform from GCP triangulations → ground truth, then applies it "
+             "to CHK triangulations before computing RMSE.  This replicates ODM's "
+             "odm_georeferencing and gives deliverable-accurate numbers.",
+    )
     parser.add_argument(
         "--crs",
         default=None,
-        help="CRS override (e.g. EPSG:32613). Falls back to header in chk_confirmed.txt.",
+        help="CRS override (e.g. EPSG:32613). Falls back to header in chk file.",
     )
     parser.add_argument(
         "--test",
@@ -605,7 +754,7 @@ def main() -> None:
     if not args.reconstruction or not args.chk_confirmed:
         parser.error("reconstruction and chk_confirmed are required unless --test is used.")
 
-    result = compute_rmse(args.reconstruction, args.chk_confirmed, args.crs)
+    result = compute_rmse(args.reconstruction, args.chk_confirmed, args.crs, args.gcp)
     print_summary(result)
     json.dump(result, sys.stdout, indent=2)
     print()  # trailing newline
