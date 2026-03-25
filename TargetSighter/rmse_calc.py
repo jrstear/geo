@@ -7,9 +7,14 @@ Usage:
     conda run -n geo python TargetSighter/rmse_calc.py \\
         reconstruction.topocentric.json chk_list.txt
 
-    # With georeferencing transform (deliverable accuracy, matches Pix4D):
+    # With georeferencing transform (re-derive from GCPs):
     conda run -n geo python TargetSighter/rmse_calc.py \\
         reconstruction.topocentric.json chk_list.txt --gcp gcp_list.txt
+
+    # With saved ODM similarity transform (exact match to deliverables):
+    conda run -n geo python TargetSighter/rmse_calc.py \\
+        reconstruction.topocentric.json chk_list.txt \\
+        --transform-json opensfm/similarity_transform.json
 
     # Synthetic self-test:
     conda run -n geo python TargetSighter/rmse_calc.py --test
@@ -331,11 +336,16 @@ def _triangulate_labels(
     ref_lla: dict,
     crs: str,
     uses_feet: bool,
+    pre_project_sim: Optional[Tuple[float, np.ndarray, np.ndarray]] = None,
 ) -> Tuple[List[dict], List[str]]:
     """
     Triangulate all labels and return (results, skipped_labels).
 
     Each result dict has: label, tri_m (3-array in metres), survey_m (3-array in metres).
+
+    pre_project_sim : optional (scale, R, t) similarity to apply to ENU positions
+        before projecting to the output CRS.  Use when loading similarity_transform.json
+        from an ODM run rather than re-deriving from GCPs.
     """
     results = []
     skipped: List[str] = []
@@ -357,6 +367,10 @@ def _triangulate_labels(
             print(f"WARNING: {label!r} rank-deficient — skipped", file=sys.stderr)
             skipped.append(label)
             continue
+
+        if pre_project_sim is not None:
+            sim_s, sim_A, sim_b = pre_project_sim
+            X_enu = sim_s * sim_A @ X_enu + sim_b
 
         x_p, y_p, z_m = enu_to_projected(
             X_enu, ref_lla["latitude"], ref_lla["longitude"], ref_lla["altitude"], crs
@@ -388,6 +402,31 @@ def _triangulate_labels(
 
 
 # ---------------------------------------------------------------------------
+# Load saved similarity transform
+# ---------------------------------------------------------------------------
+
+
+def load_similarity_transform(
+    path: str,
+) -> Tuple[float, np.ndarray, np.ndarray]:
+    """
+    Load a similarity transform from JSON (as written by OpenSfM's
+    save_similarity_transform in align.py).
+
+    The file contains: scale (float), rotation (3x3 list), translation (3-list).
+    The transform operates in topocentric ENU space: y = scale * R @ x + t.
+
+    Returns (scale, R, t).
+    """
+    with open(path) as f:
+        data = json.load(f)
+    s = float(data["scale"])
+    R = np.array(data["rotation"], dtype=float)
+    t = np.array(data["translation"], dtype=float)
+    return s, R, t
+
+
+# ---------------------------------------------------------------------------
 # Main RMSE computation
 # ---------------------------------------------------------------------------
 
@@ -397,14 +436,22 @@ def compute_rmse(
     chk_path: str,
     crs_override: Optional[str] = None,
     gcp_path: Optional[str] = None,
+    transform_path: Optional[str] = None,
 ) -> dict:
     """
     Full pipeline: parse inputs, triangulate, optionally geotransform, compute RMSE.
 
-    If gcp_path is provided, a 7-parameter similarity transform is fitted from
-    triangulated GCP positions → surveyed GCP positions and applied to the CHK
-    triangulated positions before computing residuals.  This replicates ODM's
-    odm_georeferencing stage and produces RMSE matching the delivered orthophoto.
+    Two ways to apply the georeferencing similarity transform:
+
+    1. --gcp (gcp_path): Re-derive the 7-parameter similarity from GCP
+       triangulations → ground truth.  This is standalone and needs no ODM outputs.
+
+    2. --transform-json (transform_path): Load the exact similarity transform
+       that ODM computed during alignment (saved by OpenSfM's
+       save_similarity_transform).  This is more accurate since it uses the
+       same transform as the deliverables.  Applied in ENU space before projection.
+
+    If both are provided, transform_path takes precedence.
 
     Returns a dict suitable for JSON output.
     """
@@ -423,17 +470,30 @@ def compute_rmse(
     unit = crs_axis_unit(crs)
     uses_feet = "foot" in unit.lower()
 
-    # --- Step 3: triangulate CHK points ---
-    chk_results, chk_skipped = _triangulate_labels(
-        chk_obs, chk_coords, shots, cameras, ref_lla, crs, uses_feet
-    )
-
-    # --- Step 4: optionally fit similarity from GCPs ---
+    # --- Step 3: load or derive similarity transform ---
+    pre_project_sim = None
     sim_scale, sim_R, sim_t = None, None, None
     gcp_pre_rms = None
     gcp_post_rms = None
 
-    if gcp_path:
+    if transform_path:
+        # Load the exact similarity from ODM (operates in ENU space)
+        sim_scale, sim_R, sim_t = load_similarity_transform(transform_path)
+        pre_project_sim = (sim_scale, sim_R, sim_t)
+        rot_deg = Rotation.from_matrix(sim_R).as_euler('xyz', degrees=True)
+        print(f"\nLoaded similarity transform from {transform_path}:", file=sys.stderr)
+        print(f"  scale = {sim_scale:.10f}", file=sys.stderr)
+        print(f"  rotation (deg) = X:{rot_deg[0]:.4f}  Y:{rot_deg[1]:.4f}  Z:{rot_deg[2]:.4f}",
+              file=sys.stderr)
+
+    # --- Step 4: triangulate CHK points ---
+    chk_results, chk_skipped = _triangulate_labels(
+        chk_obs, chk_coords, shots, cameras, ref_lla, crs, uses_feet,
+        pre_project_sim=pre_project_sim,
+    )
+
+    # --- Step 5: optionally fit similarity from GCPs (if no --transform-json) ---
+    if gcp_path and not transform_path:
         _, gcp_coords, gcp_obs = parse_chk_confirmed(gcp_path)
         gcp_results, _ = _triangulate_labels(
             gcp_obs, gcp_coords, shots, cameras, ref_lla, crs, uses_feet
@@ -466,11 +526,15 @@ def compute_rmse(
             print(f"  GCP post-transform RMS: X={gcp_post_rms[0]:.6f}  Y={gcp_post_rms[1]:.6f}  "
                   f"Z={gcp_post_rms[2]:.6f}", file=sys.stderr)
 
-    # --- Step 5: compute residuals ---
+    # --- Step 6: compute residuals ---
+    # When --transform-json is used, the similarity was already applied in ENU
+    # space (inside _triangulate_labels).  When --gcp is used, it was fitted
+    # in projected-metres space and must be applied here.
+    apply_sim_here = sim_R is not None and not transform_path
     points = []
     for r in chk_results:
         tri = r["tri_m"]
-        if sim_R is not None:
+        if apply_sim_here:
             tri = sim_scale * sim_R @ tri + sim_t
         surv = r["survey_m"]
 
@@ -493,7 +557,7 @@ def compute_rmse(
             "rms_x": None, "rms_y": None, "rms_z": None, "rms_3d": None,
             "mean_dz": None, "std_dz": None,
             "n": 0, "points": [],
-            "geotransform_applied": gcp_path is not None and sim_R is not None,
+            "geotransform_applied": sim_R is not None,
         }
     else:
         rms_x = math.sqrt(sum(p["dX"] ** 2 for p in points) / n)
@@ -512,7 +576,7 @@ def compute_rmse(
             "std_dz": round(std_dz, 6),
             "n": n,
             "points": points,
-            "geotransform_applied": gcp_path is not None and sim_R is not None,
+            "geotransform_applied": sim_R is not None,
         }
 
         if gcp_pre_rms:
@@ -730,10 +794,17 @@ def main() -> None:
         "--gcp",
         default=None,
         metavar="GCP_FILE",
-        help="Path to gcp_list.txt. If provided, fits a 7-parameter similarity "
-             "transform from GCP triangulations → ground truth, then applies it "
-             "to CHK triangulations before computing RMSE.  This replicates ODM's "
-             "odm_georeferencing and gives deliverable-accurate numbers.",
+        help="Path to gcp_list.txt. Fits a 7-parameter similarity transform "
+             "from GCP triangulations → ground truth, then applies to CHK "
+             "triangulations.  Standalone — needs no ODM outputs.",
+    )
+    parser.add_argument(
+        "--transform-json",
+        default=None,
+        metavar="JSON_FILE",
+        help="Path to similarity_transform.json (saved by OpenSfM during "
+             "alignment).  Uses the exact ODM-computed transform instead of "
+             "re-deriving from GCPs.  Takes precedence over --gcp if both given.",
     )
     parser.add_argument(
         "--crs",
@@ -754,7 +825,10 @@ def main() -> None:
     if not args.reconstruction or not args.chk_confirmed:
         parser.error("reconstruction and chk_confirmed are required unless --test is used.")
 
-    result = compute_rmse(args.reconstruction, args.chk_confirmed, args.crs, args.gcp)
+    result = compute_rmse(
+        args.reconstruction, args.chk_confirmed, args.crs, args.gcp,
+        args.transform_json,
+    )
     print_summary(result)
     json.dump(result, sys.stdout, indent=2)
     print()  # trailing newline
