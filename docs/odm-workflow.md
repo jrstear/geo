@@ -36,6 +36,7 @@ flowchart TD
     delivered[["{orthophoto,contours,surface}_design"]]
     report["Accuracy report"]
     model["reconstruction.json"]
+    sim_transform["similarity_transform.json"]
     customer[\"Customer"/]
     qgis_cloud(["QGIS review"])
     qgis_design(["QGIS review"])
@@ -72,6 +73,7 @@ flowchart TD
         odm
         deliverables
         model
+        sim_transform
         rmse
         report
         packager
@@ -104,8 +106,10 @@ flowchart TD
     control --> s3
     s3 --> odm --> deliverables
     odm --> model
+    odm --> sim_transform
     control --> rmse
     model --> rmse
+    sim_transform --> rmse
     rmse --> report
     transform_yaml --> packager
     deliverables --> packager
