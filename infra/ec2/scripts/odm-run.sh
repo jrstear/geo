@@ -118,8 +118,10 @@ trap 'kill "${SPOT_POLLER_PID}" 2>/dev/null || true' EXIT
 # ── Run a single stage with CPU idle watchdog + absolute timeout backstop.
 # Container is named odm-<stage> so it can be killed by name from the watchdog.
 run_stage() {
-  local stage=$1 threads=$2
+  local stage=$1 threads=$2 force_rerun=${3:-true}
   local container="odm-${stage}"
+  local rerun_flag=""
+  [ "${force_rerun}" = "true" ] && rerun_flag="--rerun ${stage}"
 
   # Remove any stale container from a prior interrupted run (would cause exit 125).
   docker rm -f "${container}" 2>/dev/null || true
@@ -132,7 +134,7 @@ run_stage() {
       --project-path /datasets project \
       ${ODM_FLAGS} \
       --max-concurrency "${threads}" \
-      --rerun "${stage}" &
+      ${rerun_flag} &
   local run_pid=$!
 
   # Background CPU idle watchdog.
@@ -191,10 +193,24 @@ for stage in "${STAGES[@]}"; do
   fi
 
   THREADS=$(threads_for "${stage}")
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ▶ ${stage}  [threads=${THREADS}]"
-  annotate_grafana "▶ ${stage} [threads=${THREADS}]" "odm,stage_start,${stage}"
 
-  if run_stage "${stage}" "${THREADS}"; then
+  # opensfm: if reconstruction.json already exists (reconstruct substage complete)
+  # but undistorted images don't (undistort substage incomplete), run WITHOUT
+  # --rerun so ODM's internal substage cache skips reconstruct and resumes at
+  # undistort — preserving similarity_transform.json and hours of work.
+  FORCE_RERUN=true
+  if [ "${stage}" = "opensfm" ] && \
+     [ -f "${PROJECT_DIR}/opensfm/reconstruction.json" ] && \
+     ! ls "${PROJECT_DIR}"/opensfm/undistorted/images/*.* &>/dev/null 2>&1; then
+    FORCE_RERUN=false
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ▶ ${stage}  [threads=${THREADS}] (resuming from undistort — reconstruction cached)"
+    annotate_grafana "▶ ${stage} [threads=${THREADS}] (resuming from undistort)" "odm,stage_start,${stage}"
+  else
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ▶ ${stage}  [threads=${THREADS}]"
+    annotate_grafana "▶ ${stage} [threads=${THREADS}]" "odm,stage_start,${stage}"
+  fi
+
+  if run_stage "${stage}" "${THREADS}" "${FORCE_RERUN}"; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✓ ${stage} complete"
     annotate_grafana "✓ ${stage} complete" "odm,stage_complete,${stage}"
     notify "ODM ${PROJECT}" "Stage ${stage} complete on ${PROJECT}."
