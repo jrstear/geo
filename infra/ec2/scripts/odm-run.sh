@@ -189,6 +189,8 @@ STAGES=(dataset opensfm openmvs odm_filterpoints odm_meshing mvs_texturing
 for stage in "${STAGES[@]}"; do
   if is_done "${stage}"; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✓ ${stage} (complete, skipping)"
+    annotate_grafana "✓ ${stage} (cached — skipped)" "odm,stage_complete,${stage}"
+    notify "ODM ${PROJECT}" "Stage ${stage} already complete on ${PROJECT} — skipping (resume after interruption)."
     continue
   fi
 
