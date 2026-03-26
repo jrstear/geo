@@ -56,6 +56,25 @@ notify() {
     --region "${REGION}" || true
 }
 
+# Post a vertical marker annotation to Grafana Cloud at the current timestamp.
+# Silent no-op when GRAFANA_STACK_URL or GRAFANA_API_KEY are absent.
+# Runs fire-and-forget (&) so it can never block or fail the pipeline.
+# Tags are comma-separated: "odm,stage_start,opensfm"
+annotate_grafana() {
+  local text="$1" tags_csv="${2:-odm}"
+  [ -n "${GRAFANA_STACK_URL:-}" ] && [ -n "${GRAFANA_API_KEY:-}" ] || return 0
+  local ts_ms tags_json text_esc
+  ts_ms=$(date +%s%3N)
+  # "a,b,c" → ["a","b","c"]
+  tags_json='["'"$(echo "$tags_csv" | sed 's/,/","/g')"'"]'
+  text_esc="${text//\"/\\\"}"
+  curl -s -o /dev/null --max-time 5 \
+    -X POST "${GRAFANA_STACK_URL}/api/annotations" \
+    -H "Authorization: Bearer ${GRAFANA_API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "{\"time\":${ts_ms},\"text\":\"${text_esc}\",\"tags\":${tags_json}}" &
+}
+
 # Run a single stage with CPU idle watchdog + absolute timeout backstop.
 # Container is named odm-<stage> so it can be killed by name from the watchdog.
 run_stage() {
@@ -133,9 +152,11 @@ for stage in "${STAGES[@]}"; do
 
   THREADS=$(threads_for "${stage}")
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ▶ ${stage}  [threads=${THREADS}]"
+  annotate_grafana "▶ ${stage} [threads=${THREADS}]" "odm,stage_start,${stage}"
 
   if run_stage "${stage}" "${THREADS}"; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✓ ${stage} complete"
+    annotate_grafana "✓ ${stage} complete" "odm,stage_complete,${stage}"
     notify "ODM ${PROJECT}" "Stage ${stage} complete on ${PROJECT}."
     # Sync outputs to S3 so a terraform destroy+apply can resume from this point.
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Syncing to s3://${BUCKET}/${PROJECT}/ ..."
@@ -145,6 +166,7 @@ for stage in "${STAGES[@]}"; do
   else
     EXIT=$?
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✗ ${stage} FAILED (exit ${EXIT})"
+    annotate_grafana "✗ ${stage} FAILED (exit ${EXIT})" "odm,stage_failed,${stage}"
     # Check if failure was caused by a spot interruption.
     SPOT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
       "http://169.254.169.254/latest/meta-data/spot/termination-time" || echo 000)
@@ -160,3 +182,4 @@ for stage in "${STAGES[@]}"; do
 done
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ═══ All stages complete ═══"
+annotate_grafana "═══ ${PROJECT} pipeline complete ═══" "odm,pipeline_complete"

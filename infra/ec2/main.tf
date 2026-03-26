@@ -126,6 +126,39 @@ variable "odm_image" {
   default     = "opendronemap/odm:3.3.0"
 }
 
+# ── Grafana Cloud telemetry (all optional; monitoring is skipped when empty) ───
+
+variable "grafana_prom_url" {
+  description = "Grafana Cloud Prometheus remote_write URL (e.g. https://prometheus-prod-XX-XXX.grafana.net/api/prom/push)"
+  default     = ""
+}
+
+variable "grafana_prom_user" {
+  description = "Grafana Cloud Prometheus numeric stack ID (basic-auth username for remote_write)"
+  default     = ""
+}
+
+variable "grafana_loki_url" {
+  description = "Grafana Cloud Loki push URL (e.g. https://logs-prod-XXX.grafana.net/loki/api/v1/push)"
+  default     = ""
+}
+
+variable "grafana_loki_user" {
+  description = "Grafana Cloud Loki numeric user ID (basic-auth username for Loki push)"
+  default     = ""
+}
+
+variable "grafana_api_key" {
+  description = "Grafana Cloud API key / service account token (needs metrics:write, logs:write, annotations:write)"
+  default     = ""
+  sensitive   = true
+}
+
+variable "grafana_stack_url" {
+  description = "Grafana Cloud stack base URL for annotations API (e.g. https://yourorg.grafana.net)"
+  default     = ""
+}
+
 # ── Locals ─────────────────────────────────────────────────────────────────────
 
 locals {
@@ -400,6 +433,13 @@ resource "aws_s3_object" "spot_watcher" {
   etag   = filemd5("${path.module}/scripts/spot-watcher.sh")
 }
 
+resource "aws_s3_object" "odm_monitor" {
+  bucket = var.bucket_name
+  key    = "${local.scripts_s3_prefix}/odm-monitor.sh"
+  source = "${path.module}/scripts/odm-monitor.sh"
+  etag   = filemd5("${path.module}/scripts/odm-monitor.sh")
+}
+
 # ── EC2 Spot instance ──────────────────────────────────────────────────────────
 
 resource "aws_instance" "odm" {
@@ -455,17 +495,28 @@ resource "aws_instance" "odm" {
     export SNS_TOPIC="${aws_sns_topic.odm_alerts.arn}"
     export ODM_FLAGS="${local.odm_flags}"
     export ODM_IMAGE="${var.odm_image}"
+    export GRAFANA_PROM_URL="${var.grafana_prom_url}"
+    export GRAFANA_PROM_USER="${var.grafana_prom_user}"
+    export GRAFANA_LOKI_URL="${var.grafana_loki_url}"
+    export GRAFANA_LOKI_USER="${var.grafana_loki_user}"
+    export GRAFANA_API_KEY="${var.grafana_api_key}"
+    export GRAFANA_STACK_URL="${var.grafana_stack_url}"
     ENVFILE
 
     # Download scripts from S3 (uploaded by Terraform from infra/ec2/scripts/).
     # To update without terraform apply:
     #   aws s3 cp infra/ec2/scripts/odm-run.sh s3://${var.bucket_name}/${local.scripts_s3_prefix}/ --profile personal
     #   ssh ec2-user@IP 'sudo aws s3 cp s3://${var.bucket_name}/${local.scripts_s3_prefix}/odm-run.sh /usr/local/bin/ --region ${var.region}'
-    for script in odm-run.sh odm-bootstrap.sh spot-watcher.sh; do
+    for script in odm-run.sh odm-bootstrap.sh spot-watcher.sh odm-monitor.sh; do
       aws s3 cp "s3://${var.bucket_name}/${local.scripts_s3_prefix}/$script" \
         "/usr/local/bin/$script" --region "${var.region}"
     done
-    chmod +x /usr/local/bin/odm-run.sh /usr/local/bin/odm-bootstrap.sh /usr/local/bin/spot-watcher.sh
+    chmod +x /usr/local/bin/odm-run.sh /usr/local/bin/odm-bootstrap.sh \
+             /usr/local/bin/spot-watcher.sh /usr/local/bin/odm-monitor.sh
+
+    # Install telemetry stack (no-op if GRAFANA_API_KEY is empty).
+    # Runs synchronously so metrics are flowing before ODM starts.
+    /usr/local/bin/odm-monitor.sh >> /var/log/odm-monitor.log 2>&1 || true
 
     # @reboot cron fires odm-bootstrap.sh on every boot — enables spot resume.
     echo "@reboot root /usr/local/bin/odm-bootstrap.sh" > /etc/cron.d/odm-bootstrap
@@ -482,6 +533,7 @@ resource "aws_instance" "odm" {
     aws_s3_object.odm_run,
     aws_s3_object.odm_bootstrap,
     aws_s3_object.spot_watcher,
+    aws_s3_object.odm_monitor,
   ]
 
   tags = {
