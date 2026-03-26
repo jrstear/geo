@@ -31,18 +31,24 @@ if ! command -v node_exporter &>/dev/null; then
         "node_exporter-${NODE_EXP_VERSION}.linux-amd64/node_exporter"
 fi
 
-cat > /etc/systemd/system/node_exporter.service << 'EOF'
+TEXTFILE_DIR=/var/lib/node_exporter/textfile_collector
+mkdir -p "${TEXTFILE_DIR}"
+# node_exporter runs as nobody — ensure it can read the textfile dir
+chmod 755 "${TEXTFILE_DIR}"
+
+cat > /etc/systemd/system/node_exporter.service << EOF
 [Unit]
 Description=Prometheus Node Exporter
 After=network.target
 
 [Service]
 User=nobody
-ExecStart=/usr/local/bin/node_exporter \
-  --collector.systemd \
-  --collector.processes \
-  --collector.diskstats \
-  --collector.filesystem.mount-points-exclude="^/(dev|proc|sys|run)($|/)"
+ExecStart=/usr/local/bin/node_exporter \\
+  --collector.systemd \\
+  --collector.processes \\
+  --collector.diskstats \\
+  --collector.textfile.directory=${TEXTFILE_DIR} \\
+  --collector.filesystem.mount-points-exclude="^/(dev|proc|sys|run)(\$|/)"
 Restart=on-failure
 
 [Install]
@@ -173,4 +179,15 @@ EOF
 systemctl daemon-reload
 systemctl enable --now alloy
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  odm-monitor: Alloy started — pushing to Grafana Cloud"
+
+# ── ODM progress reporter (cron, every minute) ─────────────────────────────────
+aws s3 cp "s3://${BUCKET}/odm-scripts/odm-progress.sh" \
+  /usr/local/bin/odm-progress.sh --region "${REGION}" 2>/dev/null || true
+chmod +x /usr/local/bin/odm-progress.sh
+
+# Install cron entry for root (needs docker access)
+CRON_LINE="* * * * * /usr/local/bin/odm-progress.sh >> /var/log/odm-progress.log 2>&1"
+( crontab -l 2>/dev/null | grep -v odm-progress.sh; echo "${CRON_LINE}" ) | crontab -
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  odm-monitor: progress reporter cron installed (every 1min)"
+
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  odm-monitor: telemetry stack ready"
