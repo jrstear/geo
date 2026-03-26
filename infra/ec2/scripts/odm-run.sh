@@ -19,6 +19,9 @@ IDLE_CHECK_INTERVAL=300    # seconds between CPU checks (5 min)
 IDLE_KILL_CHECKS=9         # kill after this many consecutive idle checks (9×5min = 45min)
 STAGE_TIMEOUT=12h          # absolute backstop per stage
 
+SPOT_FLAG=/tmp/odm-spot-interrupted          # written by poller on 2-min warning
+INTERRUPTION_COUNT_FILE=/var/log/odm-interruption-count
+
 threads_for() {
   case "$1" in
     dataset|opensfm|odm_filterpoints|odm_georeferencing|odm_dem|odm_report) echo 16 ;;
@@ -75,7 +78,44 @@ annotate_grafana() {
     -d "{\"time\":${ts_ms},\"text\":\"${text_esc}\",\"tags\":${tags_json}}" &
 }
 
-# Run a single stage with CPU idle watchdog + absolute timeout backstop.
+# ── Spot interruption: resume detection ───────────────────────────────────────
+# On every boot, check whether we were stopped by a spot interruption.
+# The poller (below) writes SPOT_FLAG when it catches the 2-min warning.
+# EBS persists across stop/start so the flag survives.
+if [ -f "${SPOT_FLAG}" ]; then
+  INTERRUPTED_AT=$(cat "${SPOT_FLAG}")
+  INTERRUPTION_COUNT=$(( $(cat "${INTERRUPTION_COUNT_FILE}" 2>/dev/null || echo 0) + 1 ))
+  echo "${INTERRUPTION_COUNT}" > "${INTERRUPTION_COUNT_FILE}"
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ↩ resumed after spot interruption #${INTERRUPTION_COUNT} (stopped at ${INTERRUPTED_AT})"
+  annotate_grafana "↩ resumed after spot interruption #${INTERRUPTION_COUNT} (stopped at ${INTERRUPTED_AT})" "odm,spot,spot_resume"
+  notify "ODM ${PROJECT}" \
+    "Resumed after spot interruption #${INTERRUPTION_COUNT} on ${PROJECT} (stopped at ${INTERRUPTED_AT}). Continuing pipeline."
+  rm -f "${SPOT_FLAG}"
+fi
+
+# ── Spot interruption: background poller ──────────────────────────────────────
+# Polls EC2 metadata every 5s for the 2-min termination warning.
+# On warning: writes SPOT_FLAG, fires Grafana annotation, logs to stdout
+# (captured by odm-bootstrap.log → Loki).  Silent no-op on on-demand instances
+# (endpoint always 404s).
+(
+  while true; do
+    sleep 5
+    HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
+      "http://169.254.169.254/latest/meta-data/spot/termination-time" 2>/dev/null || echo 000)
+    if [ "${HTTP}" = "200" ]; then
+      TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      echo "${TS}" > "${SPOT_FLAG}"
+      echo "${TS}  ⚡ spot interruption warning — instance stopping in ~2min"
+      annotate_grafana "⚡ spot interruption warning — ${PROJECT}" "odm,spot,spot_warning"
+      break
+    fi
+  done
+) &
+SPOT_POLLER_PID=$!
+trap 'kill "${SPOT_POLLER_PID}" 2>/dev/null || true' EXIT
+
+# ── Run a single stage with CPU idle watchdog + absolute timeout backstop.
 # Container is named odm-<stage> so it can be killed by name from the watchdog.
 run_stage() {
   local stage=$1 threads=$2
@@ -168,11 +208,21 @@ for stage in "${STAGES[@]}"; do
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✗ ${stage} FAILED (exit ${EXIT})"
     annotate_grafana "✗ ${stage} FAILED (exit ${EXIT})" "odm,stage_failed,${stage}"
     # Check if failure was caused by a spot interruption.
-    SPOT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
-      "http://169.254.169.254/latest/meta-data/spot/termination-time" || echo 000)
-    if [ "${SPOT_HTTP}" = "200" ]; then
+    # Prefer the flag written by the background poller (caught 2-min warning);
+    # fall back to querying the metadata endpoint directly if the poller missed it.
+    SPOT_HTTP=000
+    if [ ! -f "${SPOT_FLAG}" ]; then
+      SPOT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
+        "http://169.254.169.254/latest/meta-data/spot/termination-time" 2>/dev/null || echo 000)
+      if [ "${SPOT_HTTP}" = "200" ]; then
+        # Poller didn't catch the warning (e.g. very short notice) — write flag now
+        date -u +%Y-%m-%dT%H:%M:%SZ > "${SPOT_FLAG}"
+        annotate_grafana "⚡ spot interruption (late detection) — ${PROJECT}" "odm,spot,spot_warning"
+      fi
+    fi
+    if [ -f "${SPOT_FLAG}" ] || [ "${SPOT_HTTP}" = "200" ]; then
       notify "ODM ${PROJECT}" \
-        "Stage ${stage} interrupted by spot termination on ${PROJECT}. EBS preserved — AWS will auto-restart and resume."
+        "Stage ${stage} interrupted by spot termination on ${PROJECT}. EBS preserved — will auto-restart and resume."
     else
       notify "ODM ${PROJECT}" \
         "Stage ${stage} failed on ${PROJECT} (exit ${EXIT}). SSH in to investigate."
@@ -180,6 +230,9 @@ for stage in "${STAGES[@]}"; do
     exit 1
   fi
 done
+
+kill "${SPOT_POLLER_PID}" 2>/dev/null || true
+wait "${SPOT_POLLER_PID}" 2>/dev/null || true
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ═══ All stages complete ═══"
 annotate_grafana "═══ ${PROJECT} pipeline complete ═══" "odm,pipeline_complete"
