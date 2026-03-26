@@ -67,7 +67,6 @@ if ! docker ps --format '{{.Names}}' | grep -q '^cadvisor$'; then
     --volume=/var/lib/docker:/var/lib/docker:ro \
     --detach-keys="" \
     gcr.io/cadvisor/cadvisor:"${CADVISOR_VERSION}" \
-    --disable_metrics=accelerator,cpu_topology,cpuset,hugetlb,memory_numa,referenced_memory,resctrl,sched,tcp,udp \
     2>&1 | tail -1
 fi
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  odm-monitor: cAdvisor started on :8080"
@@ -139,17 +138,6 @@ prometheus.remote_write "grafana_cloud" {
       username = env("GRAFANA_PROM_USER")
       password = env("GRAFANA_API_KEY")
     }
-  }
-  queue_config {
-    max_shards            = 4
-    max_samples_per_send  = 2000
-    batch_send_deadline   = "5s"
-  }
-  // Drop high-cardinality cAdvisor series we don't need
-  write_relabel_config {
-    source_labels = ["__name__"]
-    regex         = "container_(tasks_state|memory_failures_total|blkio.*)"
-    action        = "drop"
   }
 }
 
