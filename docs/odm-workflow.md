@@ -35,8 +35,7 @@ flowchart TD
     packager(["package.py"])
     delivered[["{orthophoto,contours,surface}_design"]]
     report["Accuracy report"]
-    model["reconstruction.json"]
-    sim_transform["similarity_transform.json"]
+    model["reconstruction.topocentric.json"]
     customer[\"Customer"/]
     qgis_cloud(["QGIS review"])
     qgis_design(["QGIS review"])
@@ -106,10 +105,8 @@ flowchart TD
     control --> s3
     s3 --> odm --> deliverables
     odm --> model
-    odm --> sim_transform
     control --> rmse
     model --> rmse
-    sim_transform --> rmse
     rmse --> report
     transform_yaml --> packager
     deliverables --> packager
@@ -289,11 +286,18 @@ aws s3 sync s3://stratus-jrstear/{PROJECT}/opensfm/ \
     ~/stratus/{job}/opensfm/ \
     --profile personal
 
-# Run RMSE analysis (use topocentric, NOT reconstruction.json — see rmse_calc.py docs)
 conda run -n geo python accuracy_study/rmse_calc.py \
     ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
     ~/stratus/{job}/gcp_list.txt
 ```
+
+**Why `reconstruction.topocentric.json` and not `reconstruction.json + similarity_transform.json`:**
+
+ODM's GCP bundle adjustment refines per-shot camera orientations (~2.7° correction vs GPS-only)
+and stores the result in `reconstruction.topocentric.json`.  `reconstruction.json` has the
+pre-GCP orientations; `similarity_transform.json` maps from the early BA frame to GPS-ENU
+(not GCP-ENU).  A global similarity transform cannot correct per-shot orientation errors, so
+using `reconstruction.json` produces ~20m+ triangulation errors regardless of the similarity.
 
 Expected accuracy (250 ft AGL, drone RTK active, 5 Customer monument GCPs):
 

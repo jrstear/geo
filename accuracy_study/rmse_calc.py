@@ -3,27 +3,30 @@
 rmse_calc.py — 3D RMSE from ODM reconstruction + combined gcp_list.txt.
 
 Usage:
-    # With saved ODM similarity transform (recommended — exact match to deliverables):
-    conda run -n geo python accuracy_study/rmse_calc.py \\
-        reconstruction.topocentric.json gcp_list.txt \\
-        --transform-json opensfm/similarity_transform.json
-
-    # Without transform (pre-geotransform accuracy, GCP similarity auto-fitted):
     conda run -n geo python accuracy_study/rmse_calc.py \\
         reconstruction.topocentric.json gcp_list.txt
 
     # Synthetic self-test:
     conda run -n geo python accuracy_study/rmse_calc.py --test
 
-IMPORTANT: Use reconstruction.topocentric.json, NOT reconstruction.json.
-The .topocentric file stores camera poses in ODM's local ENU frame where
-ref_UTM + local_offset = exact UTM.  The plain reconstruction.json has a
-linearised projected-CRS rotation baked in by export_geocoords, and
-ref_UTM + those offsets gives ~1m/km error due to the linearisation.
+REQUIRED: reconstruction.topocentric.json, NOT reconstruction.json.
+
+ODM's GCP bundle adjustment refines per-shot camera orientations and stores
+the result in reconstruction.topocentric.json.  reconstruction.json holds the
+pre-GCP-alignment poses; similarity_transform.json maps from that early frame
+to GPS-ENU (not GCP-ENU).  Using reconstruction.json + similarity_transform.json
+produces ~20m+ errors because:
+  1. The per-shot rotations in reconstruction.json are GPS-aligned (~2.7° off from
+     the GCP-refined orientations stored in reconstruction.topocentric.json).
+  2. A global similarity transform cannot correct per-shot orientation errors.
+
+The GCP-to-GCP similarity is auto-fitted from the GCP-* triangulation results,
+capturing both the GPS translation offset (~25m typical) and UTM grid convergence
+(~1.75° for NM UTM Zone 13).
 
 gcp_list.txt is the combined file produced by transform.py split — it
 contains both GCP-* (control) and CHK-* (check) rows.  This script:
-  - Uses GCP-* rows to fit or validate the georeferencing similarity transform
+  - Uses GCP-* rows to auto-fit the georeferencing similarity transform
   - Uses CHK-* rows as the independent accuracy assessment (RMSE report)
 
 For each point group:
@@ -31,7 +34,7 @@ For each point group:
   2. Builds viewing rays through SfM-optimised camera poses (Rodrigues rotation).
   3. Triangulates 3D position via linear DLT (least-squares on projection-error system).
   4. Converts ENU reconstruction coords → projected world CRS (ref_UTM + local).
-  5. Applies similarity transform (from --transform-json or fitted from GCPs).
+  5. Auto-fits similarity from GCP triangulations → surveyed GCP positions.
   6. Computes dX/dY/dZ vs surveyed positions; reports RMS_H and RMS_Z in m and ft.
 """
 
@@ -349,16 +352,11 @@ def _triangulate_labels(
     ref_lla: dict,
     crs: str,
     uses_feet: bool,
-    pre_project_sim: Optional[Tuple[float, np.ndarray, np.ndarray]] = None,
 ) -> Tuple[List[dict], List[str]]:
     """
     Triangulate all labels and return (results, skipped_labels).
 
     Each result dict has: label, tri_m (3-array in metres), survey_m (3-array in metres).
-
-    pre_project_sim : optional (scale, R, t) similarity to apply to ENU positions
-        before projecting to the output CRS.  Use when loading similarity_transform.json
-        from an ODM run rather than re-deriving from GCPs.
     """
     results = []
     skipped: List[str] = []
@@ -380,10 +378,6 @@ def _triangulate_labels(
             print(f"WARNING: {label!r} rank-deficient — skipped", file=sys.stderr)
             skipped.append(label)
             continue
-
-        if pre_project_sim is not None:
-            sim_s, sim_A, sim_b = pre_project_sim
-            X_enu = sim_s * sim_A @ X_enu + sim_b
 
         x_p, y_p, z_m = enu_to_projected(
             X_enu, ref_lla["latitude"], ref_lla["longitude"], ref_lla["altitude"], crs
@@ -412,31 +406,6 @@ def _triangulate_labels(
         results.append({"label": label, "tri_m": tri_m, "survey_m": survey_m})
 
     return results, skipped
-
-
-# ---------------------------------------------------------------------------
-# Load saved similarity transform
-# ---------------------------------------------------------------------------
-
-
-def load_similarity_transform(
-    path: str,
-) -> Tuple[float, np.ndarray, np.ndarray]:
-    """
-    Load a similarity transform from JSON (as written by OpenSfM's
-    save_similarity_transform in align.py).
-
-    The file contains: scale (float), rotation (3x3 list), translation (3-list).
-    The transform operates in topocentric ENU space: y = scale * R @ x + t.
-
-    Returns (scale, R, t).
-    """
-    with open(path) as f:
-        data = json.load(f)
-    s = float(data["scale"])
-    R = np.array(data["rotation"], dtype=float)
-    t = np.array(data["translation"], dtype=float)
-    return s, R, t
 
 
 # ---------------------------------------------------------------------------
@@ -510,23 +479,17 @@ def compute_rmse(
     recon_path: str,
     gcp_list_path: str,
     crs_override: Optional[str] = None,
-    transform_path: Optional[str] = None,
 ) -> dict:
     """
     Full pipeline: parse inputs, triangulate both GCP and CHK groups,
     apply georeferencing similarity, compute and return RMSE for both.
 
+    recon_path    : path to reconstruction.topocentric.json (NOT reconstruction.json)
     gcp_list_path : combined file with GCP-* and CHK-* rows (from transform.py split).
 
-    Two ways to apply the georeferencing similarity transform:
-
-    1. transform_path (--transform-json): Load the exact similarity transform
-       that ODM computed during alignment.  Most accurate — same transform as
-       the deliverables.  Applied in ENU space before projection.
-
-    2. Auto-fitted from GCPs: If transform_path is None and GCP- rows are
-       present, fit a 7-parameter similarity from GCP triangulations → ground
-       truth.  Standalone — needs no ODM outputs beyond the reconstruction.
+    The georeferencing similarity is auto-fitted from GCP-* triangulation results
+    → surveyed GCP positions.  This captures the GPS translation offset and UTM
+    grid convergence angle.
 
     Returns a dict with 'gcp' and 'chk' sub-dicts, each with rms_h, rms_z, etc.
     """
@@ -545,29 +508,15 @@ def compute_rmse(
     unit = crs_axis_unit(crs)
     uses_feet = "foot" in unit.lower()
 
-    # --- Step 3: load or derive similarity transform ---
-    pre_project_sim = None
     sim_scale, sim_R, sim_t = None, None, None
-    geotransform_source = "none"
 
-    if transform_path:
-        sim_scale, sim_R, sim_t = load_similarity_transform(transform_path)
-        pre_project_sim = (sim_scale, sim_R, sim_t)
-        geotransform_source = "similarity_transform.json"
-        rot_deg = Rotation.from_matrix(sim_R).as_euler('xyz', degrees=True)
-        print(f"\nLoaded similarity transform from {transform_path}:", file=sys.stderr)
-        print(f"  scale = {sim_scale:.10f}", file=sys.stderr)
-        print(f"  rotation (deg) = X:{rot_deg[0]:.4f}  Y:{rot_deg[1]:.4f}  Z:{rot_deg[2]:.4f}",
-              file=sys.stderr)
-
-    # --- Step 4: triangulate GCP points ---
+    # --- Step 3: triangulate GCP points ---
     gcp_results, gcp_skipped = _triangulate_labels(
         gcp_obs, gcp_coords, shots, cameras, ref_lla, crs, uses_feet,
-        pre_project_sim=pre_project_sim,
     )
 
-    # --- Step 5: auto-fit similarity from GCPs when no --transform-json ---
-    if not transform_path and gcp_results:
+    # --- Step 4: auto-fit similarity from GCP triangulations → surveyed positions ---
+    if gcp_results:
         if len(gcp_results) < 3:
             print(f"WARNING: only {len(gcp_results)} GCPs triangulated, need ≥3 for "
                   f"similarity — skipping geotransform", file=sys.stderr)
@@ -575,7 +524,6 @@ def compute_rmse(
             src = np.array([r["tri_m"] for r in gcp_results])
             dst = np.array([r["survey_m"] for r in gcp_results])
             sim_scale, sim_R, sim_t = fit_similarity(src, dst)
-            geotransform_source = "fitted from GCPs"
             rot_deg = Rotation.from_matrix(sim_R).as_euler('xyz', degrees=True)
             print(f"\nSimilarity transform fitted from {len(gcp_results)} GCPs:",
                   file=sys.stderr)
@@ -583,26 +531,23 @@ def compute_rmse(
             print(f"  rotation (deg) = X:{rot_deg[0]:.4f}  Y:{rot_deg[1]:.4f}  "
                   f"Z:{rot_deg[2]:.4f}", file=sys.stderr)
 
-    # --- Step 6: triangulate CHK points ---
+    # --- Step 5: triangulate CHK points ---
     chk_results, chk_skipped = _triangulate_labels(
         chk_obs, chk_coords, shots, cameras, ref_lla, crs, uses_feet,
-        pre_project_sim=pre_project_sim,
     )
 
-    # --- Step 7: compute residuals ---
-    # When --transform-json: similarity already applied in ENU (pre_project_sim).
-    # When auto-fitted:      similarity fitted in projected-metres space, apply here.
-    apply_sim_post = sim_R is not None and not transform_path
+    # --- Step 6: compute residuals (apply auto-fitted similarity) ---
+    apply_sim = sim_R is not None
 
     gcp_points = _compute_residuals(gcp_results, sim_scale, sim_R, sim_t,
-                                    apply_sim=apply_sim_post)
+                                    apply_sim=apply_sim)
     chk_points = _compute_residuals(chk_results, sim_scale, sim_R, sim_t,
-                                    apply_sim=apply_sim_post)
+                                    apply_sim=apply_sim)
 
     return {
         "gcp": _group_stats(gcp_points),
         "chk": _group_stats(chk_points),
-        "geotransform_source": geotransform_source,
+        "geotransform_source": "fitted from GCPs",
         "similarity_scale": round(sim_scale, 10) if sim_scale is not None else None,
     }
 
@@ -804,19 +749,13 @@ def main() -> None:
     )
     parser.add_argument(
         "reconstruction", nargs="?",
+        metavar="reconstruction.topocentric.json",
         help="Path to reconstruction.topocentric.json (NOT reconstruction.json)",
     )
     parser.add_argument(
         "gcp_list", nargs="?",
+        metavar="gcp_list.txt",
         help="Path to gcp_list.txt (combined GCP-* + CHK-* rows from transform.py split)",
-    )
-    parser.add_argument(
-        "--transform-json",
-        default=None,
-        metavar="JSON_FILE",
-        help="Path to similarity_transform.json (saved by OpenSfM during alignment). "
-             "Uses the exact ODM-computed transform. If omitted, similarity is "
-             "auto-fitted from the GCP-* rows in gcp_list.txt.",
     )
     parser.add_argument(
         "--crs",
@@ -838,7 +777,7 @@ def main() -> None:
         parser.error("reconstruction and gcp_list are required unless --test is used.")
 
     result = compute_rmse(
-        args.reconstruction, args.gcp_list, args.crs, args.transform_json,
+        args.reconstruction, args.gcp_list, args.crs,
     )
     print_summary(result)
     json.dump(result, sys.stdout, indent=2)
