@@ -249,8 +249,12 @@ for stage in "${STAGES[@]}"; do
   fi
 done
 
-kill "${SPOT_POLLER_PID}" 2>/dev/null || true
-wait "${SPOT_POLLER_PID}" 2>/dev/null || true
+# Disable strict mode for cleanup — any error here must not poison the exit code
+# and prevent bootstrap from triggering the shutdown path.
+set +euo pipefail
+
+kill "${SPOT_POLLER_PID:-}" 2>/dev/null || true
+wait "${SPOT_POLLER_PID:-}" 2>/dev/null || true
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ═══ All stages complete ═══"
 annotate_grafana "═══ ${PROJECT} pipeline complete ═══" "odm,pipeline_complete"
