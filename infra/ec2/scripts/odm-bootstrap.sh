@@ -4,11 +4,16 @@
 #
 # New instance  — images/ empty: syncs project from S3, runs pipeline, uploads outputs.
 # Spot resume   — images/ present: skips sync, resumes pipeline from last complete stage.
-# Already done  — .odm-complete marker: waits 5min then shuts down (inspection window).
+# Already done  — .odm-complete marker: 5-min window then shuts down.
+# Failed        — .odm-failed marker: 15-min window then shuts down (logs synced to S3).
+#                 On subsequent reboots: 5-min window then shuts down again.
 #
-# Cancelling auto-shutdown:
-#   touch /data/project/.no-autoshutdown    # before or during the 5-min countdown
+# Cancelling auto-shutdown (any path):
+#   touch /data/project/.no-autoshutdown    # before or during countdown
 #   (delete it when done to re-enable auto-shutdown on next boot)
+#
+# Re-running after failure:
+#   rm /data/project/.odm-failed            # clears the failure marker; pipeline re-runs on next boot
 #
 # To iterate: scp this file to /usr/local/bin/odm-bootstrap.sh and re-run directly.
 exec >> /var/log/odm-bootstrap.log 2>&1
@@ -17,6 +22,8 @@ source /etc/odm-env
 
 PROJECT_DIR=/data/project
 DONE_MARKER="${PROJECT_DIR}/.odm-complete"
+FAILED_MARKER="${PROJECT_DIR}/.odm-failed"
+NO_SHUTDOWN_FLAG="${PROJECT_DIR}/.no-autoshutdown"
 
 notify() {
   aws sns publish \
@@ -28,11 +35,10 @@ notify() {
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  odm-bootstrap starting (project: ${PROJECT})"
 
-# Pipeline already complete — shut down again.
+# ── Pipeline already complete ──────────────────────────────────────────────────
 # Persistent spot will keep restarting the instance after shutdown; we shut down
 # each time until the user runs 'terraform destroy' to cancel the spot request.
 if [ -f "${DONE_MARKER}" ]; then
-  NO_SHUTDOWN_FLAG="${PROJECT_DIR}/.no-autoshutdown"
   if [ -f "${NO_SHUTDOWN_FLAG}" ]; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline already complete — auto-shutdown DISABLED (.no-autoshutdown present). Instance will remain up."
     notify "ODM idle restart: ${PROJECT}" \
@@ -51,6 +57,32 @@ if [ -f "${DONE_MARKER}" ]; then
     fi
   done
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Shutting down now. Run 'terraform destroy' to fully clean up."
+  /sbin/shutdown -h +1
+  exit 0
+fi
+
+# ── Pipeline previously failed ─────────────────────────────────────────────────
+# On any reboot after a failure shutdown, don't re-run the pipeline.
+# Give the same 5-minute inspection window then shut down again.
+if [ -f "${FAILED_MARKER}" ]; then
+  if [ -f "${NO_SHUTDOWN_FLAG}" ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline previously failed — auto-shutdown DISABLED (.no-autoshutdown present). Instance will remain up."
+    notify "ODM failed restart: ${PROJECT}" \
+      "Instance restarted after failed pipeline. Auto-shutdown disabled by .no-autoshutdown — instance will remain up for investigation."
+    exit 0
+  fi
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline previously failed — shutting down in 5 minutes. SSH in and touch /data/project/.no-autoshutdown to cancel."
+  notify "ODM failed restart: ${PROJECT}" \
+    "Instance restarted after previous failure. Shutting down in 5 minutes. Touch /data/project/.no-autoshutdown to cancel and investigate. Delete .odm-failed to re-run the pipeline."
+  for i in $(seq 1 30); do   # 30 × 10s = 5 min
+    sleep 10
+    if [ -f "${NO_SHUTDOWN_FLAG}" ]; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Auto-shutdown cancelled (.no-autoshutdown detected). Instance will remain up."
+      notify "ODM failed restart: ${PROJECT}" "Auto-shutdown cancelled. Instance will remain up for investigation."
+      exit 0
+    fi
+  done
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Shutting down now."
   /sbin/shutdown -h +1
   exit 0
 fi
@@ -127,6 +159,28 @@ if /usr/local/bin/odm-run.sh; then
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Done. Shutting down in 2 minutes."
   /sbin/shutdown -h +2
 else
-  # odm-run.sh already sent the failure SNS; leave instance up for debugging.
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline failed — instance remains up. SSH in to investigate."
+  touch "${FAILED_MARKER}"
+  # Sync whatever outputs and logs exist so they're accessible without the instance.
+  aws s3 sync "${PROJECT_DIR}/" "s3://${BUCKET}/${PROJECT}/" \
+    --exclude "images/*" \
+    --region "${REGION}" || true
+  aws s3 cp /var/log/odm-bootstrap.log \
+    "s3://${BUCKET}/${PROJECT}/logs/odm-bootstrap.log" \
+    --region "${REGION}" || true
+
+  notify "ODM FAILED: ${PROJECT}" \
+    "Pipeline failed. Logs synced to s3://${BUCKET}/${PROJECT}/logs/. Instance shutting down in 15 minutes — SSH in to investigate, or touch /data/project/.no-autoshutdown to cancel shutdown. Delete /data/project/.odm-failed to re-run pipeline on next boot."
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline failed — shutting down in 15 minutes. SSH in to investigate or touch /data/project/.no-autoshutdown to cancel."
+
+  for i in $(seq 1 90); do   # 90 × 10s = 15 min
+    sleep 10
+    if [ -f "${NO_SHUTDOWN_FLAG}" ]; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Auto-shutdown cancelled (.no-autoshutdown detected). Instance will remain up."
+      notify "ODM FAILED: ${PROJECT}" "Shutdown cancelled. Instance will remain up for investigation. Delete .odm-failed to re-run pipeline."
+      exit 0
+    fi
+  done
+
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Shutting down now."
+  /sbin/shutdown -h +1
 fi
