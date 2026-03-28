@@ -101,6 +101,11 @@ variable "spot_max_price" {
   default     = ""
 }
 
+variable "ebs_size_gb" {
+  description = "EBS root volume size in GB. Aztec scale: 400 sufficient; Red Rocks: 600+."
+  default     = 500
+}
+
 variable "notify_email" {
   description = "Email for per-stage completion alerts. Empty = no email subscription."
   default     = ""
@@ -485,7 +490,7 @@ resource "aws_instance" "odm" {
   }
 
   root_block_device {
-    volume_size           = 500   # GB — 300 caused disk-full at medium quality
+    volume_size           = var.ebs_size_gb  # 300 caused disk-full at medium quality; default 500
     volume_type           = "gp3"
     throughput            = 250
     iops                  = 3000
