@@ -18,14 +18,15 @@ flowchart TD
     all["{job}_emlid_6529.csv"]
     cameras["cameras.json"]
     sight(["sight.py"])
-    other["{job}_other.csv"]
     marks["marks_6529.csv for Pix4D"]
     targets["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
     tagged["{job}_tagged.txt"]
     split(["transform.py split"])
-    control["gcp_list.txt"]
-    tagged_design["{job}_tagged_design.txt"]
+    gcp_list["gcp_list.txt"]
+    chk_list["chk_list.txt"]
+    targets_csv["{job}_targets.csv"]
+    targets_design["{job}_targets_design.csv"]
     s3(["s3 sync & terraform apply"])
     odm(["ODM on EC2"])
     rmse(["rmse_calc.py"])
@@ -44,7 +45,7 @@ flowchart TD
         cust_dc
         extract
         points_design
-        tagged_design
+        targets_design
         delivered
         qgis_design
         customer
@@ -61,22 +62,22 @@ flowchart TD
         drone
         images
         targets
-	cameras
+        cameras
         sight
         transform_yaml
         gcpeditor
         tagged
         split
-        control
+        gcp_list
+        chk_list
+        targets_csv
         s3
         odm
         deliverables
         model
-        sim_transform
         rmse
         report
         packager
-        other
         qgis_cloud
     end
 
@@ -91,21 +92,22 @@ flowchart TD
     emlid --> all --> sight
     cameras --> sight
     sight --> targets
-    sight --> other
     sight --> marks
-    other --> qgis_cloud
     targets --> gcpeditor
     gcpeditor --> tagged
     tagged --> split
     tagged --> gcpeditor
     transform_yaml --> split
     transform_yaml --> sight
-    split --> control
-    split --> tagged_design
-    control --> s3
+    split --> gcp_list
+    split --> chk_list
+    split --> targets_csv
+    split --> targets_design
+    gcp_list --> s3
     s3 --> odm --> deliverables
     odm --> model
-    control --> rmse
+    gcp_list --> rmse
+    chk_list --> rmse
     model --> rmse
     rmse --> report
     transform_yaml --> packager
@@ -117,9 +119,9 @@ flowchart TD
     delivered --> customer
     delivered --> qgis_design
     points_design --> qgis_design
-    tagged_design --> qgis_design
+    targets_design --> qgis_design
     deliverables --> qgis_cloud
-    control --> qgis_cloud
+    targets_csv --> qgis_cloud
     qgis_design -.-> customer
 
 ```
@@ -196,57 +198,66 @@ Use `{job}_points.csv` for Emlid RS3 base/rover localization in the field.
 
 ### 2. Build tagging file
 
+Pre-filter the Emlid CSV to include only the relevant survey session before running
+sight.py (e.g. remove rows from base-setup days or prior visits).
+
 ```bash
 conda run -n geo python TargetSighter/sight.py \
     ~/stratus/{job}/{job}_surveyed_6529.csv \
-    ~/stratus/{job}/images/ \
-    --filter "2026-03-09"   # date string from the survey day; matches entire row
+    ~/stratus/{job}/images/
 # If transform.yaml is present in ~/stratus/{job}/, sight.py auto-loads it:
 #   field_crs → used as fallback CRS for the survey CSV
 #   odm_crs   → target CRS for {job}.txt (EPSG:32613)
 #   job name  → used as output filename ({job}.txt)
 # Without transform.yaml, pass explicitly: --crs EPSG:XXXX --out-name "{job}"
-# → ~/stratus/{job}/{job}.txt         (filtered survey points, EPSG:32613, for GCPEditorPro)
-# → ~/stratus/{job}/{job}_other.csv   (non-matching rows, EPSG:32613; load in QGIS for review)
+# → ~/stratus/{job}/{job}.txt         (all survey points, EPSG:32613, for GCPEditorPro)
 # → ~/stratus/{job}/marks_design.csv  (Pix4D parallel workflow — not used in ODM path)
 ```
 
-### 3. Tag and confirm in GCPEditorPro
+sight.py assigns GCP-/CHK- label prefixes as **recommendations** based on the survey
+CSV labels.  The user has final say on role assignment in GCPEditorPro (step 3).
+
+### 3. Tag in GCPEditorPro
 
 1. Open GCPEditorPro
 2. Load **`{job}.txt`** and the images directory
-3. Review each GCP- and CHK- point; confirm observations
-4. Export → save as **`~/stratus/{job}/{job}_confirmed.txt`**
-
-GCP- labels = ground control (given to ODM to georeference the reconstruction)
-CHK- labels = independent check points (withheld from ODM; used for accuracy QC only)
+3. Review each GCP- and CHK- point; tag pixel observations
+   - GCP- labels = ground control (given to ODM to georeference the reconstruction)
+   - CHK- labels = independent check points (withheld from ODM; used for accuracy QC only)
+   - You may reassign labels between GCP- and CHK- roles as needed
+4. Export → single "Download tagged file" button → saves as **`{job}_tagged.txt`**
+   - All rows are exported (tagged and untagged)
+   - Tagged observations have `tagged` in column 8; untagged have empty column 8
 
 > `marks.csv` supports the parallel Pix4D workflow and is not used here.
 
-### 4. Split into control + check files
+### 4. Split into deliverable files
 
 ```bash
 conda run -n geo python transform.py split \
     ~/stratus/{job}/{job}_tagged.txt \
-    --filter confirmed \
     --out-dir ~/stratus/{job}/
-# Reads ~/stratus/{job}/transform.yaml for field_crs automatically
-# → ~/stratus/{job}/gcp_list.txt        (GCP- + CHK- combined, EPSG:32613; ODM uses GCP-/CHK- role prefixes)
-# → ~/stratus/{job}/{job}_tagged_design.txt  (design-grid coords, for QGIS review)
+# Reads ~/stratus/{job}/transform.yaml automatically
+# → ~/stratus/{job}/gcp_list.txt            (GCP- tagged tuples, EPSG:32613; for ODM)
+# → ~/stratus/{job}/chk_list.txt            (CHK- tagged tuples, EPSG:32613; for rmse_calc.py)
+# → ~/stratus/{job}/{job}_targets.csv       (one row/target, EPSG:32613; for QGIS review)
+# → ~/stratus/{job}/{job}_targets_design.csv (one row/target, design-grid; for customer QGIS)
 ```
+
+**`{job}_targets.csv`** is the primary QGIS QC layer: one row per surveyed target,
+tagged targets labeled `GCP-NNN` or `CHK-NNN`, untagged targets labeled with bare
+monument ID.  Load as a point layer over the orthophoto to verify target placement.
 
 ### 5. Launch ODM on EC2
 
 ```bash
 # Upload images (one-time; skip if already in S3)
 aws s3 sync ~/stratus/{job}/images/ \
-    s3://stratus-jrstear/{PROJECT}/images/ \
-    --profile personal
+    s3://stratus-jrstear/{PROJECT}/images/
 
 # Upload control file
 aws s3 cp ~/stratus/{job}/gcp_list.txt \
-    s3://stratus-jrstear/{PROJECT}/gcp_list.txt \
-    --profile personal
+    s3://stratus-jrstear/{PROJECT}/gcp_list.txt
 
 # Launch EC2 instance — pipeline starts automatically on boot
 cd ~/git/geo/infra/ec2
@@ -283,13 +294,26 @@ After the pipeline completes, sync the reconstruction down and run the check:
 ```bash
 # Sync opensfm outputs from S3
 aws s3 sync s3://stratus-jrstear/{PROJECT}/opensfm/ \
-    ~/stratus/{job}/opensfm/ \
-    --profile personal
+    ~/stratus/{job}/opensfm/
 
-conda run -n geo python accuracy_study/rmse_calc.py \
+conda run -n geo python rmse.py \
     ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
-    ~/stratus/{job}/gcp_list.txt
+    ~/stratus/{job}/gcp_list.txt \
+    ~/stratus/{job}/chk_list.txt
 ```
+
+**Why two input files:**
+
+`gcp_list.txt` is used to fit a 7-parameter (Umeyama) similarity transform from
+triangulated GCP positions to surveyed GCP positions.  This corrects a real ~25m
+GPS translation offset and ~1.75° UTM grid convergence between
+`reconstruction.topocentric.json`'s topocentric ENU frame and the surveyed CRS.
+Without this correction, horizontal errors are ~58m RMS regardless of reconstruction
+quality.
+
+`chk_list.txt` contains CHK- points that were withheld from ODM's bundle adjustment.
+After the GCP similarity is applied, CHK triangulations give a truly independent
+accuracy assessment.
 
 **Why `reconstruction.topocentric.json` and not `reconstruction.json + similarity_transform.json`:**
 
@@ -306,18 +330,17 @@ Expected accuracy (250 ft AGL, drone RTK active, 5 Customer monument GCPs):
 | Horizontal RMS | 0.08–0.12 ft (0.024–0.037 m) |
 | Vertical RMS | 0.12–0.18 ft (0.037–0.055 m) |
 
-RMS_Z mean offset is typically near zero — the check file Z is in ellipsoidal metres
-(written by `convert_coords.py`), consistent with ODM's internal reference. The std_dZ
-is the true vertical accuracy metric.
+GCP residuals should closely match the ODM report.  CHK residuals are the
+independent accuracy metric — std_dZ is the true vertical accuracy figure.
 
 ### 7. Deliver
 
 ```bash
 # Sync deliverables from S3
 aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_orthophoto/ \
-    ~/stratus/{job}/odm_orthophoto/ --profile personal
+    ~/stratus/{job}/odm_orthophoto/
 aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_report/ \
-    ~/stratus/{job}/odm_report/ --profile personal
+    ~/stratus/{job}/odm_report/
 
 # Package for customer delivery (reproject + shift to design grid + tile/COG)
 # transform.yaml is auto-loaded from the same directory as the input TIF
@@ -326,4 +349,3 @@ python packager/package.py \
     --transform-yaml ~/stratus/{job}/transform.yaml
 # Or use the GUI: python packager/app.py → http://localhost:5001
 ```
-

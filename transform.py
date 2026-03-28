@@ -922,7 +922,7 @@ def cmd_split(args) -> int:
     gcp_path = out_dir / "gcp_list.txt"
     chk_path = out_dir / "chk_list.txt"
     print(f"\nDone.  Run ODM with:  --gcp {gcp_path}")
-    print(f"       Run RMSE with: accuracy_study/rmse_calc.py <reconstruction.topocentric.json> "
+    print(f"       Run RMSE with: rmse.py <reconstruction.topocentric.json> "
           f"{gcp_path} {chk_path}")
     return 0
 

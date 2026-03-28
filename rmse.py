@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-rmse_calc.py — 3D RMSE from ODM reconstruction + GCP/CHK point files.
+rmse.py — 3D RMSE from ODM reconstruction + GCP/CHK point files.
 
 Usage:
-    conda run -n geo python accuracy_study/rmse_calc.py \\
+    conda run -n geo python rmse.py \\
         reconstruction.topocentric.json gcp_list.txt chk_list.txt
 
     # Synthetic self-test:
-    conda run -n geo python accuracy_study/rmse_calc.py --test
+    conda run -n geo python rmse.py --test
 
 REQUIRED: reconstruction.topocentric.json, NOT reconstruction.json.
 
