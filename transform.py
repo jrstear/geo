@@ -6,8 +6,10 @@ Subcommands
 dc   Parse a Trimble .dc file → {job}_points_6529.csv + {job}_points_design.csv + transform.yaml
      transform.yaml captures the job's CRS and design-grid shift for downstream use.
 
-split  Split GCPEditorPro {job}_tagged.txt → gcp_list.txt + chk_list.txt (EPSG:32613)
-       + {job}_tagged_design.txt (design-grid ft, all tagged points).
+split  Split GCPEditorPro {job}_tagged.txt → gcp_list.txt (GCP- tagged, for ODM)
+       + chk_list.txt (CHK- tagged, for rmse_calc.py)
+       + {job}_targets.csv (one row/target, EPSG:32613, tagged=GCP-/CHK- prefix, untagged=bare label)
+       + {job}_targets_design.csv (same, design-grid ft, if transform.yaml present).
        Reads transform.yaml (written by dc) to get field_crs and odm_crs automatically.
 
 Typical sequence
@@ -736,9 +738,10 @@ def _crs_is_feet(epsg_str: str) -> bool:
 
 
 def cmd_split(args) -> int:
+    import csv as _csv
     in_path = Path(args.confirmed)
     if not in_path.exists():
-        sys.exit(f"ERROR: confirmed file not found: {in_path}")
+        sys.exit(f"ERROR: file not found: {in_path}")
 
     out_dir = Path(args.out_dir) if args.out_dir else in_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -749,7 +752,7 @@ def cmd_split(args) -> int:
     if yaml_path:
         print(f"Loaded: {yaml_path}")
 
-    # Parse confirmed file
+    # Parse tagged file
     with open(in_path, encoding="utf-8") as f:
         lines = f.readlines()
     if not lines:
@@ -760,13 +763,14 @@ def cmd_split(args) -> int:
     # Determine source CRS: file header is authoritative; fall back to transform.yaml field_crs
     src_crs = file_crs_header or transform.get("field_crs")
     if transform.get("field_crs") and file_crs_header and transform["field_crs"].upper() != file_crs_header.upper():
-        print(f"INFO: file header CRS ({file_crs_header}) differs from transform.yaml field_crs ({transform.get('field_crs')}); using file header")
+        print(f"INFO: file header CRS ({file_crs_header}) differs from transform.yaml field_crs "
+              f"({transform.get('field_crs')}); using file header")
 
     dst_crs = transform.get("odm_crs") or args.target_crs
     print(f"Input:  {in_path.name}  (CRS: {src_crs})")
     print(f"Output: {dst_crs}")
 
-    # Parse rows; optionally filter to rows where column 8 matches --filter value
+    # Parse all rows; track tagged status (col 8 == "tagged")
     raw_rows = []
     for raw in lines[1:]:
         line = raw.rstrip("\n")
@@ -775,11 +779,8 @@ def cmd_split(args) -> int:
         fields = line.split("\t")
         if len(fields) < 7:
             continue
-        if args.filter and (len(fields) < 8 or fields[7] != args.filter):
-            continue
         raw_rows.append(fields)
-    filter_desc = f" (--filter {args.filter})" if args.filter else ""
-    print(f"Rows:   {len(raw_rows)} observations{filter_desc}")
+    print(f"Rows:   {len(raw_rows)} observations total")
 
     # Coordinate conversion
     needs_xy = src_crs.upper() != dst_crs.upper()
@@ -808,10 +809,25 @@ def cmd_split(args) -> int:
             z *= FT_TO_M
         converted.append([f"{x:.4f}", f"{y:.4f}", f"{z:.4f}"] + fields[3:])
 
-    # Split by label prefix
+    # Split by label prefix and tagged status
+    # all_targets: label → (fields, is_tagged) — first occurrence wins for XYZ;
+    #              upgraded to tagged=True if any tagged observation found later.
     gcp_rows, chk_rows, skipped = [], [], 0
+    all_targets: dict = {}
+
     for fields in converted:
         label = fields[6] if len(fields) > 6 else ""
+        is_tagged = len(fields) > 7 and fields[7] == "tagged"
+
+        # Track one entry per target for targets CSV (first occurrence for XYZ)
+        if label not in all_targets:
+            all_targets[label] = (fields, is_tagged)
+        elif is_tagged and not all_targets[label][1]:
+            all_targets[label] = (fields, True)
+
+        if not is_tagged:
+            continue
+
         if label.startswith("GCP-"):
             gcp_rows.append(fields)
         elif label.startswith("CHK-"):
@@ -820,17 +836,21 @@ def cmd_split(args) -> int:
             skipped += 1
 
     if skipped:
-        bad_labels = sorted({f[6] for f in converted if len(f) > 6
-                             and not f[6].startswith("GCP-") and not f[6].startswith("CHK-")})
-        print(f"WARNING: skipped {skipped} observations with unrecognised label prefix: {bad_labels}",
+        bad = sorted({f[6] for f in converted
+                      if len(f) > 7 and f[7] == "tagged"
+                      and len(f) > 6
+                      and not f[6].startswith("GCP-") and not f[6].startswith("CHK-")})
+        print(f"WARNING: skipped {skipped} tagged observations with unrecognised label prefix: {bad}",
               file=sys.stderr)
 
-    unique_gcp = len({f[6] for f in gcp_rows})
-    unique_chk = len({f[6] for f in chk_rows})
-    print(f"\n  GCP- points: {unique_gcp} unique, {len(gcp_rows)} observations  → gcp_list.txt (control)")
-    print(f"  CHK- points: {unique_chk} unique, {len(chk_rows)} observations  → gcp_list.txt (metrics-only) + chk_list.txt")
+    unique_gcp  = len({f[6] for f in gcp_rows})
+    unique_chk  = len({f[6] for f in chk_rows})
+    untagged_ct = sum(1 for _, (_, tagged) in all_targets.items() if not tagged)
+    print(f"\n  GCP- points: {unique_gcp} unique, {len(gcp_rows)} observations  → gcp_list.txt")
+    print(f"  CHK- points: {unique_chk} unique, {len(chk_rows)} observations  → chk_list.txt")
+    print(f"  Untagged:    {untagged_ct} targets (prefix stripped in targets CSV)")
 
-    def _write(path: Path, rows):
+    def _write_odm(path: Path, rows):
         with open(path, "w", encoding="utf-8") as f:
             f.write(dst_crs + "\n")
             for fields in rows:
@@ -838,52 +858,72 @@ def cmd_split(args) -> int:
         print(f"  wrote {path}  ({len(rows)} observations)")
 
     print()
-    _write(out_dir / "gcp_list.txt", gcp_rows + chk_rows)  # combined: ODM sees GCP-/CHK- roles
-    _write(out_dir / "chk_list.txt", chk_rows)             # CHK- only: for rmse_calc.py
+    _write_odm(out_dir / "gcp_list.txt", gcp_rows)
+    _write_odm(out_dir / "chk_list.txt", chk_rows)
 
-    # Write design-grid tagged file (all GCP+CHK rows, delivery_crs ft + shift)
-    job_name = transform.get("job")
+    # Derive job name: from transform.yaml, or strip "_tagged" suffix from input stem
+    stem = in_path.stem
+    job_name = transform.get("job") or (stem[:-7] if stem.endswith("_tagged") else stem)
+
+    def _display_label(label: str, is_tagged: bool) -> str:
+        """Keep GCP-/CHK- prefix for tagged targets; strip it for untagged."""
+        if is_tagged:
+            return label
+        if label.startswith("GCP-") or label.startswith("CHK-"):
+            return label[4:]
+        return label
+
+    # Write {job}_targets.csv — one row per distinct target, EPSG:32613
+    targets_path = out_dir / f"{job_name}_targets.csv"
+    with open(targets_path, "w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["label", "X", "Y", "Z"])
+        for label in sorted(all_targets):
+            fields, is_tagged = all_targets[label]
+            w.writerow([_display_label(label, is_tagged), fields[0], fields[1], fields[2]])
+    print(f"  wrote {targets_path}  ({len(all_targets)} targets)")
+
+    # Write {job}_targets_design.csv — same but in design-grid coordinates
     delivery_crs = transform.get("delivery_crs")
     dg = transform.get("design_grid") if isinstance(transform.get("design_grid"), dict) else {}
     shift_x = dg.get("shift_x")
     shift_y = dg.get("shift_y")
 
-    if job_name and delivery_crs and shift_x is not None and shift_y is not None:
+    if delivery_crs and shift_x is not None and shift_y is not None:
         try:
             from pyproj import Transformer as _Transformer
             xfm_back = _Transformer.from_crs(dst_crs, delivery_crs, always_xy=True)
-            design_rows = []
-            for fields in gcp_rows + chk_rows:
-                try:
-                    x_m, y_m, z_m = float(fields[0]), float(fields[1]), float(fields[2])
-                except ValueError:
-                    continue
-                x_sp, y_sp = xfm_back.transform(x_m, y_m)
-                z_ft = z_m / FT_TO_M
-                x_d = x_sp + float(shift_x)
-                y_d = y_sp + float(shift_y)
-                design_rows.append([f"{x_d:.3f}", f"{y_d:.3f}", f"{z_ft:.3f}"] + fields[3:])
-
-            design_path = out_dir / f"{job_name}_tagged_design.txt"
-            with open(design_path, "w", encoding="utf-8") as f:
-                f.write(delivery_crs + "\n")
-                for fields in design_rows:
-                    f.write("\t".join(fields[:7]) + "\n")
-            print(f"  wrote {design_path}  ({len(design_rows)} observations)")
+            design_path = out_dir / f"{job_name}_targets_design.csv"
+            with open(design_path, "w", encoding="utf-8", newline="") as f:
+                w = _csv.writer(f)
+                w.writerow(["label", "X", "Y", "Z"])
+                for label in sorted(all_targets):
+                    fields, is_tagged = all_targets[label]
+                    try:
+                        x_m, y_m, z_m = float(fields[0]), float(fields[1]), float(fields[2])
+                    except ValueError:
+                        continue
+                    x_sp, y_sp = xfm_back.transform(x_m, y_m)
+                    z_ft = z_m / FT_TO_M
+                    x_d = x_sp + float(shift_x)
+                    y_d = y_sp + float(shift_y)
+                    w.writerow([_display_label(label, is_tagged),
+                                f"{x_d:.3f}", f"{y_d:.3f}", f"{z_ft:.3f}"])
+            print(f"  wrote {design_path}  ({len(all_targets)} targets, design-grid)")
         except Exception as e:
-            print(f"WARNING: could not write tagged_design.txt: {e}", file=sys.stderr)
+            print(f"WARNING: could not write targets_design.csv: {e}", file=sys.stderr)
     else:
         missing = []
-        if not job_name:      missing.append("job")
         if not delivery_crs:  missing.append("delivery_crs")
         if shift_x is None:   missing.append("design_grid.shift_x")
         if shift_y is None:   missing.append("design_grid.shift_y")
-        print(f"  skipped {'{job}_tagged_design.txt'} — transform.yaml missing: {missing}")
+        print(f"  skipped targets_design.csv — transform.yaml missing: {missing}")
 
     gcp_path = out_dir / "gcp_list.txt"
     chk_path = out_dir / "chk_list.txt"
     print(f"\nDone.  Run ODM with:  --gcp {gcp_path}")
-    print(f"       Run RMSE with: {chk_path}")
+    print(f"       Run RMSE with: accuracy_study/rmse_calc.py <reconstruction.topocentric.json> "
+          f"{gcp_path} {chk_path}")
     return 0
 
 
@@ -916,13 +956,14 @@ def main() -> int:
     dc.add_argument("--out-dir", default=None, help="Output directory (default: same as .dc file)")
 
     # --- split subcommand ---
-    gp = sub.add_parser("split", help="Split {job}_tagged.txt → gcp_list.txt + chk_list.txt + {job}_tagged_design.txt")
+    gp = sub.add_parser("split",
+                        help="Split {job}_tagged.txt → gcp_list.txt + chk_list.txt + "
+                             "{job}_targets.csv + {job}_targets_design.csv")
     gp.add_argument("confirmed", metavar="{job}_tagged.txt",
-                    help="GCPEditorPro tagged file (tab-separated, EPSG:32613 after sight.py)")
+                    help="GCPEditorPro tagged file (tab-separated; col 8 == 'tagged' "
+                         "for tagged rows, empty for untagged)")
     gp.add_argument("--transform-yaml", default=None, metavar="FILE",
                     help="Path to transform.yaml (auto-located in input dir or cwd if omitted)")
-    gp.add_argument("--filter", default=None, metavar="VALUE",
-                    help="Only include rows where column 8 == VALUE (e.g. --filter confirmed)")
     gp.add_argument("--target-crs", default=ODM_CRS, metavar="EPSG:XXXX",
                     help=f"Output CRS (default: {ODM_CRS}); overridden by transform.yaml odm_crs")
     gp.add_argument("--out-dir", default=None, help="Output directory (default: same as input)")

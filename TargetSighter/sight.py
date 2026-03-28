@@ -1391,10 +1391,6 @@ if __name__ == '__main__':
                              'replaces the EXIF-derived pinhole model with the calibrated '
                              'focal length, principal point, and radial/tangential distortion '
                              'coefficients for improved initial pixel projections.')
-    parser.add_argument('--filter', default=None, metavar='STRING',
-                        help='Substring to match against raw CSV rows (e.g. a survey date '
-                             '"2026-03-09"). Matching rows → {job}.txt; non-matching rows → '
-                             '{job}_other.csv in odm_crs for QGIS review.')
     args = parser.parse_args()
 
     # --- transform.yaml integration ---
@@ -1491,96 +1487,9 @@ if __name__ == '__main__':
         # Ensure output dir exists before writing any output files
         Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
-        # --- CSV filtering ---
-        _survey_csv = args.survey_csv
-        _tmp_path = None
-        if args.filter:
-            import io as _io2, tempfile as _tmpmod, csv as _csv2
-            _raw_csv = open(args.survey_csv, encoding='utf-8-sig').read()
-            _csv_lines = _raw_csv.splitlines(keepends=True)
-            _header_line = _csv_lines[0] if _csv_lines else ''
-            _matching, _other_lines = [], []
-            for _ln in _csv_lines[1:]:
-                if args.filter in _ln:
-                    _matching.append(_ln)
-                else:
-                    _other_lines.append(_ln)
-            print(f'Filter "{args.filter}": {len(_matching)} matching rows, {len(_other_lines)} other rows')
-
-            # Write filtered CSV to temp file for parse_survey_csv
-            _tmp = _tmpmod.NamedTemporaryFile(mode='w', suffix='.csv', delete=False,
-                                              encoding='utf-8', newline='')
-            _tmp.write(_header_line)
-            _tmp.writelines(_matching)
-            _tmp.flush()
-            _tmp_path = _tmp.name
-            _tmp.close()
-            _survey_csv = _tmp_path
-
-            # Write {job}_other.csv (non-matching rows in odm_crs)
-            if _other_lines and _odm_crs:
-                try:
-                    from pyproj import Transformer as _XFM
-                    _src_crs = args.crs or ''
-                    # Detect src CRS from first other row's cs_name column
-                    _hdr_fields = [h.strip() for h in _header_line.rstrip('\n').split(',')]
-                    _hdr_lower = [h.lower() for h in _hdr_fields]
-                    def _col2(kws):
-                        for kw in kws:
-                            for i, h in enumerate(_hdr_lower):
-                                if kw in h:
-                                    return _hdr_fields[i]
-                        return None
-                    _cs_col   = _col2(['cs name', 'coordinate system'])
-                    _name_col = _col2(['name', 'point'])
-                    _east_col = _col2(['easting', ' east'])
-                    _nrth_col = _col2(['northing', ' north'])
-                    _elev_col = _col2(['elevation'])
-                    if not _src_crs and _cs_col:
-                        # Grab cs_name from first other row
-                        _first_other = next(
-                            (_csv2.DictReader([_header_line.rstrip('\n')] + [_other_lines[0]])
-                             .__iter__()), None)
-                        if _first_other:
-                            _cs_raw = (_first_other.get(_cs_col) or '').strip()
-                            _src_crs = _cs_name_to_epsg(_cs_raw) or _cs_raw
-                    if _src_crs:
-                        _xfm_other = _XFM.from_crs(_src_crs, _odm_crs, always_xy=True)
-                        from pyproj import CRS as _CRS2
-                        try:
-                            _src_unit = _CRS2.from_user_input(_src_crs).axis_info[0].unit_conversion_factor
-                            _dst_unit = _CRS2.from_user_input(_odm_crs).axis_info[0].unit_conversion_factor
-                            _z_scale  = _src_unit / _dst_unit
-                        except Exception:
-                            _z_scale = 1.0
-
-                        _other_rows_parsed = list(_csv2.DictReader(
-                            _io2.StringIO(_header_line + ''.join(_other_lines))))
-                        _stem = Path(args.out_dir) / (Path(args.out_name).stem + '_other.csv')
-                        with open(_stem, 'w', newline='', encoding='utf-8') as _of:
-                            _ow = _csv2.writer(_of)
-                            _ow.writerow(['Name', 'Easting', 'Northing', 'Elevation'])
-                            for _orow in _other_rows_parsed:
-                                try:
-                                    _ox = float(_orow.get(_east_col, '') or 0)
-                                    _oy = float(_orow.get(_nrth_col, '') or 0)
-                                    _oz = float(_orow.get(_elev_col, '') or 0)
-                                    _ox2, _oy2 = _xfm_other.transform(_ox, _oy)
-                                    _oz2 = _oz * _z_scale
-                                    _oname = (_orow.get(_name_col) or '').strip()
-                                    _ow.writerow([_oname, f'{_ox2:.4f}', f'{_oy2:.4f}', f'{_oz2:.4f}'])
-                                except (ValueError, TypeError):
-                                    continue
-                        print(f'Wrote {_stem}  ({len(_other_rows_parsed)} other rows, {_odm_crs})')
-                    else:
-                        print('WARNING: could not determine src CRS for {job}_other.csv — skipping')
-                except Exception as _fe:
-                    print(f'WARNING: could not write other CSV: {_fe}')
-
-        try:
-            gcp_txt, estimates = run_pipeline(
+        gcp_txt, estimates = run_pipeline(
                 images_dir=args.image_dir,
-                survey_csv_path=_survey_csv,
+                survey_csv_path=args.survey_csv,
                 reconstruction_path=args.reconstruction,
                 fallback_radius_m=args.radius,
                 threads=args.threads,
@@ -1598,13 +1507,6 @@ if __name__ == '__main__':
                 reproject_to=_odm_crs,
                 cameras_by_wh=_cameras_by_wh,
             )
-        finally:
-            if _tmp_path:
-                import os as _os
-                try:
-                    _os.unlink(_tmp_path)
-                except OSError:
-                    pass
 
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
