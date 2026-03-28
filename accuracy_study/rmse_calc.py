@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-rmse_calc.py — 3D RMSE from ODM reconstruction + combined gcp_list.txt.
+rmse_calc.py — 3D RMSE from ODM reconstruction + GCP/CHK point files.
 
 Usage:
     conda run -n geo python accuracy_study/rmse_calc.py \\
-        reconstruction.topocentric.json gcp_list.txt
+        reconstruction.topocentric.json gcp_list.txt chk_list.txt
 
     # Synthetic self-test:
     conda run -n geo python accuracy_study/rmse_calc.py --test
@@ -20,14 +20,17 @@ produces ~20m+ errors because:
      the GCP-refined orientations stored in reconstruction.topocentric.json).
   2. A global similarity transform cannot correct per-shot orientation errors.
 
-The GCP-to-GCP similarity is auto-fitted from the GCP-* triangulation results,
-capturing both the GPS translation offset (~25m typical) and UTM grid convergence
-(~1.75° for NM UTM Zone 13).
+A Umeyama similarity transform is auto-fitted from the GCP triangulation
+results, correcting the ~25m GPS translation offset and ~1.75° UTM grid
+convergence between the reconstruction's topocentric ENU frame and the
+surveyed CRS.  Without this correction horizontal errors are ~58m RMS.
+Both GCP residuals and CHK residuals are reported after applying this
+correction, so gcp_list.txt is always required.
 
-gcp_list.txt is the combined file produced by transform.py split — it
-contains both GCP-* (control) and CHK-* (check) rows.  This script:
-  - Uses GCP-* rows to auto-fit the georeferencing similarity transform
-  - Uses CHK-* rows as the independent accuracy assessment (RMSE report)
+gcp_list.txt — GCP-* rows only (transform.py split output); used to fit
+               the georeferencing similarity and to report control residuals.
+chk_list.txt — CHK-* rows only (transform.py split output); assessed
+               independently (withheld from ODM BA) for accuracy QC.
 
 For each point group:
   1. Gathers tagged (image, px, py) observations.
@@ -124,42 +127,35 @@ def parse_reconstruction(recon_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Combined gcp_list.txt parsing
+# ODM point file parsing
 # ---------------------------------------------------------------------------
 
 
-def parse_combined(
+def parse_points(
     path: str,
 ) -> Tuple[str,
            Dict[str, Tuple[float, float, float]],
-           Dict[str, List[Tuple[str, float, float]]],
-           Dict[str, Tuple[float, float, float]],
            Dict[str, List[Tuple[str, float, float]]]]:
     """
-    Parse combined gcp_list.txt (tab-separated ODM GCP format).
+    Parse an ODM-format point file (tab-separated, CRS header on line 1).
 
-    Rows with labels prefixed 'GCP-' go into the gcp_* dicts.
-    Rows with labels prefixed 'CHK-' go into the chk_* dicts.
-    Other labels are warned and skipped.
+    Works for gcp_list.txt (GCP-* labels) or chk_list.txt (CHK-* labels);
+    no label-prefix filtering is applied.
 
     Returns:
-        crs_header   : str
-        gcp_coords   : dict — label → (geo_x, geo_y, geo_z)
-        gcp_obs      : dict — label → [(image_name, px, py), ...]
-        chk_coords   : dict — label → (geo_x, geo_y, geo_z)
-        chk_obs      : dict — label → [(image_name, px, py), ...]
+        crs_header : str
+        coords     : dict — label → (geo_x, geo_y, geo_z)
+        obs        : dict — label → [(image_name, px, py), ...]
     """
     with open(path) as f:
         lines = f.readlines()
 
     if not lines:
-        raise ValueError(f"gcp_list.txt is empty: {path}")
+        raise ValueError(f"file is empty: {path}")
 
     crs_header = lines[0].rstrip("\n").strip()
-    gcp_coords: Dict[str, Tuple[float, float, float]] = {}
-    gcp_obs: Dict[str, List[Tuple[str, float, float]]] = {}
-    chk_coords: Dict[str, Tuple[float, float, float]] = {}
-    chk_obs: Dict[str, List[Tuple[str, float, float]]] = {}
+    coords: Dict[str, Tuple[float, float, float]] = {}
+    obs: Dict[str, List[Tuple[str, float, float]]] = {}
 
     for raw_line in lines[1:]:
         line = raw_line.rstrip("\n")
@@ -172,25 +168,18 @@ def parse_combined(
             geo_x = float(fields[0])
             geo_y = float(fields[1])
             geo_z = float(fields[2])
-            px = float(fields[3])
-            py = float(fields[4])
+            px    = float(fields[3])
+            py    = float(fields[4])
         except ValueError:
             continue
         image_name = fields[5]
-        label = fields[6]
+        label      = fields[6]
 
-        if label.startswith("GCP-"):
-            if label not in gcp_coords:
-                gcp_coords[label] = (geo_x, geo_y, geo_z)
-            gcp_obs.setdefault(label, []).append((image_name, px, py))
-        elif label.startswith("CHK-"):
-            if label not in chk_coords:
-                chk_coords[label] = (geo_x, geo_y, geo_z)
-            chk_obs.setdefault(label, []).append((image_name, px, py))
-        else:
-            print(f"WARNING: unrecognised label prefix '{label}' — skipped", file=sys.stderr)
+        if label not in coords:
+            coords[label] = (geo_x, geo_y, geo_z)
+        obs.setdefault(label, []).append((image_name, px, py))
 
-    return crs_header, gcp_coords, gcp_obs, chk_coords, chk_obs
+    return crs_header, coords, obs
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +467,7 @@ def _group_stats(points: List[dict]) -> dict:
 def compute_rmse(
     recon_path: str,
     gcp_list_path: str,
+    chk_list_path: str,
     crs_override: Optional[str] = None,
 ) -> dict:
     """
@@ -485,11 +475,14 @@ def compute_rmse(
     apply georeferencing similarity, compute and return RMSE for both.
 
     recon_path    : path to reconstruction.topocentric.json (NOT reconstruction.json)
-    gcp_list_path : combined file with GCP-* and CHK-* rows (from transform.py split).
+    gcp_list_path : GCP-* rows only (from transform.py split); used to fit the
+                    georeferencing similarity and report control residuals.
+    chk_list_path : CHK-* rows only (from transform.py split); independent
+                    accuracy assessment (withheld from ODM BA).
 
-    The georeferencing similarity is auto-fitted from GCP-* triangulation results
-    → surveyed GCP positions.  This captures the GPS translation offset and UTM
-    grid convergence angle.
+    The georeferencing similarity is auto-fitted from GCP triangulation results
+    → surveyed GCP positions, correcting the ~25m GPS translation offset and
+    ~1.75° UTM grid convergence inherent in reconstruction.topocentric.json.
 
     Returns a dict with 'gcp' and 'chk' sub-dicts, each with rms_h, rms_z, etc.
     """
@@ -499,8 +492,9 @@ def compute_rmse(
     shots = recon["shots"]
     ref_lla = recon["reference_lla"]
 
-    # --- Step 2: parse combined gcp_list.txt ---
-    crs_header, gcp_coords, gcp_obs, chk_coords, chk_obs = parse_combined(gcp_list_path)
+    # --- Step 2: parse gcp_list.txt and chk_list.txt ---
+    crs_header, gcp_coords, gcp_obs = parse_points(gcp_list_path)
+    _, chk_coords, chk_obs = parse_points(chk_list_path)
     crs = crs_override or crs_header
     if not crs:
         raise ValueError("CRS not found in gcp_list header and --crs not provided.")
@@ -691,35 +685,40 @@ def run_synthetic_test() -> bool:
         return None
 
     crs_header = "EPSG:32613"
-    gcp_lines = [crs_header]
-    all_points = {**gcp_points_enu, **chk_points_enu}
 
-    for label, P_enu in all_points.items():
-        x_p, y_p, z_e = enu_to_projected(P_enu, ref_lat, ref_lon, ref_alt, crs_header)
-        for i, C in enumerate(camera_centres):
-            R = make_R(C)
-            t = -R @ C
-            img_name = f"IMG_{i:04d}.JPG"
-            proj = project_point(P_enu, R, t)
-            if proj is None:
-                continue
-            px, py = proj
-            gcp_lines.append(
-                f"{x_p:.3f}\t{y_p:.3f}\t{z_e:.3f}\t{px:.3f}\t{py:.3f}\t{img_name}\t{label}"
-            )
+    def _make_lines(points_enu):
+        lines = [crs_header]
+        for label, P_enu in points_enu.items():
+            x_p, y_p, z_e = enu_to_projected(P_enu, ref_lat, ref_lon, ref_alt, crs_header)
+            for i, C in enumerate(camera_centres):
+                R = make_R(C)
+                t = -R @ C
+                img_name = f"IMG_{i:04d}.JPG"
+                proj = project_point(P_enu, R, t)
+                if proj is None:
+                    continue
+                px, py = proj
+                lines.append(
+                    f"{x_p:.3f}\t{y_p:.3f}\t{z_e:.3f}\t{px:.3f}\t{py:.3f}\t{img_name}\t{label}"
+                )
+        return "\n".join(lines) + "\n"
 
-    gcp_content = "\n".join(gcp_lines) + "\n"
+    gcp_content = _make_lines(gcp_points_enu)
+    chk_content = _make_lines(chk_points_enu)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         recon_path = os.path.join(tmpdir, "synthetic_recon.json")
-        gcp_path = os.path.join(tmpdir, "gcp_list.txt")
+        gcp_path   = os.path.join(tmpdir, "gcp_list.txt")
+        chk_path   = os.path.join(tmpdir, "chk_list.txt")
 
         with open(recon_path, "w") as f:
             json.dump(reconstruction_data, f)
         with open(gcp_path, "w") as f:
             f.write(gcp_content)
+        with open(chk_path, "w") as f:
+            f.write(chk_content)
 
-        result = compute_rmse(recon_path, gcp_path)
+        result = compute_rmse(recon_path, gcp_path, chk_path)
 
     print_summary(result)
 
@@ -755,7 +754,12 @@ def main() -> None:
     parser.add_argument(
         "gcp_list", nargs="?",
         metavar="gcp_list.txt",
-        help="Path to gcp_list.txt (combined GCP-* + CHK-* rows from transform.py split)",
+        help="GCP-* rows (from transform.py split); used to fit georeferencing similarity",
+    )
+    parser.add_argument(
+        "chk_list", nargs="?",
+        metavar="chk_list.txt",
+        help="CHK-* rows (from transform.py split); independent accuracy assessment",
     )
     parser.add_argument(
         "--crs",
@@ -773,11 +777,11 @@ def main() -> None:
         ok = run_synthetic_test()
         sys.exit(0 if ok else 1)
 
-    if not args.reconstruction or not args.gcp_list:
-        parser.error("reconstruction and gcp_list are required unless --test is used.")
+    if not args.reconstruction or not args.gcp_list or not args.chk_list:
+        parser.error("reconstruction, gcp_list, and chk_list are required unless --test is used.")
 
     result = compute_rmse(
-        args.reconstruction, args.gcp_list, args.crs,
+        args.reconstruction, args.gcp_list, args.chk_list, args.crs,
     )
     print_summary(result)
     json.dump(result, sys.stdout, indent=2)
