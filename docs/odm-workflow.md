@@ -196,10 +196,14 @@ computed once per job (same `.dc` file = same design grid = same shift).
 
 Use `{job}_points.csv` for Emlid RS3 base/rover localization in the field.
 
-### 2. Build tagging file
+> **Before proceeding:** manually prune `{job}_6529.csv` (or the Emlid survey CSV)
+> to remove any rows you do not want flowing through the pipeline — e.g. base-setup
+> shots, observations from prior site visits, monuments not relevant to this job, or
+> duplicate entries.  Every row that remains will become a candidate target in
+> GCPEditorPro.  It is easiest to prune here, in a familiar spreadsheet format,
+> before the data is transformed and projected.
 
-Pre-filter the Emlid CSV to include only the relevant survey session before running
-sight.py (e.g. remove rows from base-setup days or prior visits).
+### 2. Build tagging file
 
 ```bash
 conda run -n geo python TargetSighter/sight.py \
