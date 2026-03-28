@@ -163,4 +163,13 @@ odm_progress_total{${LABELS}} ${TOTAL}
 odm_elapsed_seconds{${LABELS}} ${ELAPSED_SECONDS}
 PROM
 
+if [ -n "${INSTANCE_COST_PER_HOUR:-}" ]; then
+  cat >> "${OUTFILE}.tmp" << PROM
+
+# HELP odm_instance_cost_per_hour On-demand or spot price for this instance (USD/hour)
+# TYPE odm_instance_cost_per_hour gauge
+odm_instance_cost_per_hour{project="${PROJECT_LABEL}"} ${INSTANCE_COST_PER_HOUR}
+PROM
+fi
+
 mv "${OUTFILE}.tmp" "${OUTFILE}"

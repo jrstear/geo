@@ -87,6 +87,98 @@ if [ -f "${FAILED_MARKER}" ]; then
   exit 0
 fi
 
+# ── Live instance pricing ──────────────────────────────────────────────────────
+# Queries IMDS for instance type + lifecycle, then:
+#   spot       → describe-spot-instance-requests for actual bid price
+#   on-demand  → AWS Pricing API (us-east-1 endpoint) for list price
+# Writes INSTANCE_COST_PER_HOUR to /etc/odm-env for downstream scripts.
+lookup_instance_cost() {
+  local token instance_id instance_type lifecycle region cost
+
+  token=$(curl -sf -X PUT \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+    http://169.254.169.254/latest/api/token 2>/dev/null || true)
+
+  _imds() { curl -sf -H "X-aws-ec2-metadata-token: ${token}" \
+    "http://169.254.169.254/latest/meta-data/$1" 2>/dev/null || true; }
+
+  instance_id=$(_imds instance-id)
+  instance_type=$(_imds instance-type)
+  lifecycle=$(_imds instance-life-cycle)   # "spot" or "on-demand"
+  region=$(_imds placement/region)
+  region=${region:-${REGION}}
+
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pricing lookup: ${instance_type}, lifecycle=${lifecycle}, region=${region}"
+
+  if [ "${lifecycle}" = "spot" ] && [ -n "${instance_id}" ]; then
+    cost=$(aws ec2 describe-spot-instance-requests \
+      --filters "Name=instance-id,Values=${instance_id}" \
+      --query 'SpotInstanceRequests[0].SpotPrice' \
+      --output text --region "${region}" 2>/dev/null || true)
+    [ "${cost}" = "None" ] && cost=""
+    [ -n "${cost}" ] && echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Spot price: \$${cost}/hr"
+  fi
+
+  if [ -z "${cost}" ] && [ -n "${instance_type}" ]; then
+    # Pricing API is only available in us-east-1 / ap-south-1
+    local location
+    case "${region}" in
+      us-east-1)      location="US East (N. Virginia)" ;;
+      us-east-2)      location="US East (Ohio)" ;;
+      us-west-1)      location="US West (N. California)" ;;
+      us-west-2)      location="US West (Oregon)" ;;
+      eu-west-1)      location="Europe (Ireland)" ;;
+      eu-west-2)      location="Europe (London)" ;;
+      eu-central-1)   location="Europe (Frankfurt)" ;;
+      ap-northeast-1) location="Asia Pacific (Tokyo)" ;;
+      ap-southeast-1) location="Asia Pacific (Singapore)" ;;
+      ap-southeast-2) location="Asia Pacific (Sydney)" ;;
+      ap-south-1)     location="Asia Pacific (Mumbai)" ;;
+      sa-east-1)      location="South America (Sao Paulo)" ;;
+      *)              location="" ;;
+    esac
+
+    if [ -n "${location}" ]; then
+      cost=$(aws pricing get-products \
+        --service-code AmazonEC2 \
+        --region us-east-1 \
+        --filters \
+          "Type=TERM_MATCH,Field=instanceType,Value=${instance_type}" \
+          "Type=TERM_MATCH,Field=operatingSystem,Value=Linux" \
+          "Type=TERM_MATCH,Field=preInstalledSw,Value=NA" \
+          "Type=TERM_MATCH,Field=location,Value=${location}" \
+          "Type=TERM_MATCH,Field=tenancy,Value=Shared" \
+          "Type=TERM_MATCH,Field=capacitystatus,Value=Used" \
+        --query 'PriceList[0]' \
+        --output text 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.loads(sys.stdin.read())
+    terms = data.get('terms', {}).get('OnDemand', {})
+    for sku_term in terms.values():
+        for dim in sku_term.get('priceDimensions', {}).values():
+            price = dim.get('pricePerUnit', {}).get('USD', '')
+            if price and float(price) > 0:
+                print(price)
+                break
+        break
+except Exception:
+    pass
+" 2>/dev/null || true)
+      [ -n "${cost}" ] && echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  On-demand price: \$${cost}/hr (${instance_type}, ${location})"
+    fi
+  fi
+
+  if [ -n "${cost}" ] && python3 -c "v=float('${cost}'); assert v > 0" 2>/dev/null; then
+    printf 'export INSTANCE_COST_PER_HOUR="%s"\n' "${cost}" >> /etc/odm-env
+    source /etc/odm-env
+  else
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  WARNING: could not determine instance cost per hour"
+  fi
+}
+
+lookup_instance_cost
+
 # Wait for Docker to be ready (critical on reboot before dockerd is fully up).
 until docker info &>/dev/null 2>&1; do
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Waiting for Docker..."

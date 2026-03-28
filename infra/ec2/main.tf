@@ -238,8 +238,11 @@ resource "aws_iam_role_policy" "odm_sns" {
 
 data "aws_iam_policy_document" "ec2_spot" {
   statement {
-    effect    = "Allow"
-    actions   = ["ec2:CancelSpotInstanceRequests"]
+    effect = "Allow"
+    actions = [
+      "ec2:CancelSpotInstanceRequests",
+      "ec2:DescribeSpotInstanceRequests",
+    ]
     resources = ["*"]
   }
 }
@@ -248,6 +251,20 @@ resource "aws_iam_role_policy" "odm_ec2_spot" {
   name   = "geo-odm-ec2-spot"
   role   = aws_iam_role.odm.name
   policy = data.aws_iam_policy_document.ec2_spot.json
+}
+
+data "aws_iam_policy_document" "pricing" {
+  statement {
+    effect    = "Allow"
+    actions   = ["pricing:GetProducts"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "odm_pricing" {
+  name   = "geo-odm-pricing"
+  role   = aws_iam_role.odm.name
+  policy = data.aws_iam_policy_document.pricing.json
 }
 
 data "aws_iam_policy_document" "ecr_pull" {
