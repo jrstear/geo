@@ -3,7 +3,7 @@
 
 Subcommands
 -----------
-dc   Parse a Trimble .dc file → {job}_points_6529.csv + {job}_points_design.csv + transform.yaml
+dc   Parse a Trimble .dc file → {job}_{epsg}.csv + {job}_design.csv + transform.yaml
      transform.yaml captures the job's CRS and design-grid shift for downstream use.
 
 split  Split GCPEditorPro {job}_tagged.txt → gcp_list.txt (GCP- tagged, for ODM)
@@ -645,7 +645,7 @@ def cmd_dc(args) -> int:
             ]
             sys.exit("\n".join(lines_out))
 
-    job_name = args.job or extract_job_name(dc_path)
+    job_name = args.job or dc_path.stem.replace(" ", "_")
     print(f"Job:   {job_name}")
     if anchor_used:
         pid, sp_e, sp_n, raw_e, raw_n = anchor_used
@@ -654,8 +654,9 @@ def cmd_dc(args) -> int:
 
     rows = parse_dc(dc_path, shift_x, shift_y, delivery_crs)
 
-    # Write state-plane CSV (EPSG:6529, ft) — for Emlid RS3 localization
-    csv_path = out_dir / f"{job_name}_6529.csv"
+    # Write state-plane CSV (delivery CRS, ft) — for Emlid RS3 localization
+    epsg_suffix = delivery_crs.split(":")[-1]
+    csv_path = out_dir / f"{job_name}_{epsg_suffix}.csv"
     fieldnames = ["point_id", "easting_ft", "northing_ft", "elevation_ft", "description", "point_type"]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
