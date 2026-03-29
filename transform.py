@@ -867,12 +867,10 @@ def cmd_split(args) -> int:
     job_name = transform.get("job") or (stem[:-7] if stem.endswith("_tagged") else stem)
 
     def _display_label(label: str, is_tagged: bool) -> str:
-        """Keep GCP-/CHK- prefix for tagged targets; strip it for untagged."""
+        """Keep prefix for tagged targets; strip any XXX- prefix for untagged."""
         if is_tagged:
             return label
-        if label.startswith("GCP-") or label.startswith("CHK-"):
-            return label[4:]
-        return label
+        return re.sub(r'^[A-Z]+-', '', label)
 
     # Write {job}_targets.csv — one row per distinct target, EPSG:32613
     targets_path = out_dir / f"{job_name}_targets.csv"
