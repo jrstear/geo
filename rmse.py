@@ -574,6 +574,29 @@ def _fmt_group(label: str, g: dict) -> None:
             file=sys.stderr,
         )
 
+    # Outlier detection: flag points whose dH is suspiciously large relative
+    # to the group median.  A 5× multiplier catches gross mis-tags (e.g. tagging
+    # the base-station pole instead of the target) while ignoring normal spread.
+    # The 0.5 ft absolute floor prevents false positives in very accurate sets.
+    dh_vals = sorted(p["dH"] for p in g["points"])
+    mid = len(dh_vals) // 2
+    median_dh = (dh_vals[mid] if len(dh_vals) % 2 else
+                 (dh_vals[mid - 1] + dh_vals[mid]) / 2)
+    OUTLIER_RATIO = 5.0
+    OUTLIER_FLOOR_M = 0.5 * FT_TO_M  # 0.5 ft minimum to trigger
+    suspects = [
+        p for p in g["points"]
+        if p["dH"] > max(OUTLIER_RATIO * median_dh, OUTLIER_FLOOR_M)
+    ]
+    if suspects:
+        print("\n  ⚠  SUSPECT TAGGING — verify pixel placement for:", file=sys.stderr)
+        for p in suspects:
+            print(
+                f"    {p['label']:<12}  dH={p['dH'] * M_TO_FT:.2f} ft"
+                f"  ({p['dH'] / median_dh:.0f}× median)",
+                file=sys.stderr,
+            )
+
 
 def print_summary(result: dict) -> None:
     """Print human-readable summary to stderr."""
