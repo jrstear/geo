@@ -130,7 +130,7 @@ run_stage() {
   timeout "${STAGE_TIMEOUT}" \
     docker run --rm --name "${container}" \
       -v "${PROJECT_DIR}":/datasets/project \
-      "${ODM_IMAGE:-opendronemap/odm:3.3.0}" \
+      "${ODM_IMAGE:-opendronemap/odm:3.6.0}" \
       --project-path /datasets project \
       ${ODM_FLAGS} \
       --max-concurrency "${threads}" \

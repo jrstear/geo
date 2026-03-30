@@ -186,10 +186,27 @@ until docker info &>/dev/null 2>&1; do
 done
 
 # Wait for ODM image (may still be pulling on first boot).
-until docker image inspect "${ODM_IMAGE:-opendronemap/odm:3.3.0}" &>/dev/null 2>&1; do
+until docker image inspect "${ODM_IMAGE:-opendronemap/odm:3.6.0}" &>/dev/null 2>&1; do
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Waiting for ODM image pull to complete..."
   sleep 10
 done
+
+# Patch exifread 3.x IndexError on empty DJI MakerNote tag values.
+# exifread's _get_printable_for_field does str(values[0]) without guarding
+# for an empty list, crashing on some DJI images.  Unfixed as of ExifRead 3.5.1.
+# Creates a locally-tagged patched image so odm-run.sh containers use the fix.
+ODM_BASE="${ODM_IMAGE:-opendronemap/odm:3.6.0}"
+ODM_PATCHED="${ODM_BASE}-patched"
+if ! docker image inspect "${ODM_PATCHED}" &>/dev/null 2>&1; then
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Patching exifread DJI MakerNote bug..."
+  docker run --name odm-patch --entrypoint bash "${ODM_BASE}" -c \
+    "sed -i \"s/printable = str(values\[0\])/printable = str(values[0]) if values else \\\"\\\"/\" \
+     /code/venv/lib/python*/site-packages/exifread/core/exif_header.py"
+  docker commit odm-patch "${ODM_PATCHED}"
+  docker rm odm-patch
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Created patched image: ${ODM_PATCHED}"
+fi
+export ODM_IMAGE="${ODM_PATCHED}"
 
 mkdir -p "${PROJECT_DIR}/images"
 

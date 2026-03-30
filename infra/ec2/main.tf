@@ -124,11 +124,11 @@ variable "ssh_cidr" {
 variable "odm_image" {
   description = <<-EOD
     ODM Docker image to pull and run.
-    Default: stock opendronemap/odm:3.3.0 (pinned — 'latest' has exifread bug).
-    Override with ECR image for custom builds, e.g.:
-      -var="odm_image=658302145097.dkr.ecr.us-west-2.amazonaws.com/odm:checkpoint_rmse"
+    Default: stock opendronemap/odm:3.6.0.
+    The exifread DJI MakerNote bug is patched at boot by odm-bootstrap.sh
+    (no custom image build needed).
   EOD
-  default     = "opendronemap/odm:3.3.0"
+  default     = "opendronemap/odm:3.6.0"
 }
 
 # ── Grafana Cloud telemetry (all optional; monitoring is skipped when empty) ───
