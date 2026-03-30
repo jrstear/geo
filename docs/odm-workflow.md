@@ -29,7 +29,7 @@ flowchart TD
     targets_design["{job}_targets_design.csv"]
     s3(["s3 sync & terraform apply"])
     odm(["ODM on EC2"])
-    rmse(["rmse_calc.py"])
+    rmse(["rmse.py"])
     drone[/"Drone"\]
     images[["images/*.JPG"]]
     deliverables[["orthophoto,contours,surface"]]
@@ -243,7 +243,7 @@ conda run -n geo python transform.py split \
     --out-dir ~/stratus/{job}/
 # Reads ~/stratus/{job}/transform.yaml automatically
 # → ~/stratus/{job}/gcp_list.txt            (GCP- tagged tuples, EPSG:32613; for ODM)
-# → ~/stratus/{job}/chk_list.txt            (CHK- tagged tuples, EPSG:32613; for rmse_calc.py)
+# → ~/stratus/{job}/chk_list.txt            (CHK- tagged tuples, EPSG:32613; for rmse.py)
 # → ~/stratus/{job}/{job}_targets.csv       (one row/target, EPSG:32613; for QGIS review)
 # → ~/stratus/{job}/{job}_targets_design.csv (one row/target, design-grid; for customer QGIS)
 ```
@@ -291,7 +291,7 @@ terraform apply --var="project={PROJECT}" --var="notify_email=your@email.com"
 # new instance syncs from S3 and resumes from the next incomplete stage
 ```
 
-### 6. Verify accuracy with rmse_calc.py
+### 6. Verify accuracy with rmse.py
 
 After the pipeline completes, sync the reconstruction down and run the check:
 
@@ -306,36 +306,53 @@ conda run -n geo python rmse.py \
     ~/stratus/{job}/chk_list.txt
 ```
 
-**Why two input files:**
+rmse.py triangulates each GCP/CHK target from camera rays in the reconstruction,
+converts the topocentric position to the survey CRS via proper geodetic conversion
+(ENU → ECEF → lat/lon → projected CRS, matching OpenSFM's `TopocentricConverter`),
+and compares to the survey coordinates.  No similarity transform is fitted — the
+proper geodetic conversion handles UTM grid convergence and scale factor correctly.
 
-`gcp_list.txt` is used to fit a 7-parameter (Umeyama) similarity transform from
-triangulated GCP positions to surveyed GCP positions.  This corrects a real ~25m
-GPS translation offset and ~1.75° UTM grid convergence between
-`reconstruction.topocentric.json`'s topocentric ENU frame and the surveyed CRS.
-Without this correction, horizontal errors are ~58m RMS regardless of reconstruction
-quality.
+**Why `reconstruction.topocentric.json`:**
 
-`chk_list.txt` contains CHK- points that were withheld from ODM's bundle adjustment.
-After the GCP similarity is applied, CHK triangulations give a truly independent
-accuracy assessment.
+This file contains the GCP-constrained bundle adjustment result — camera orientations
+refined to fit the survey control.  This is the "original" reconstruction before ODM's
+`export_geocoords` converts it to projected coordinates.  Despite the name,
+`reconstruction.json` is actually the *geocoords* version (post-export), not the raw
+reconstruction.  rmse.py needs the topocentric version because it performs its own
+geodetic conversion for accuracy assessment.
 
-**Why `reconstruction.topocentric.json` and not `reconstruction.json + similarity_transform.json`:**
+**Two types of accuracy:**
 
-ODM's GCP bundle adjustment refines per-shot camera orientations (~2.7° correction vs GPS-only)
-and stores the result in `reconstruction.topocentric.json`.  `reconstruction.json` has the
-pre-GCP orientations; `similarity_transform.json` maps from the early BA frame to GPS-ENU
-(not GCP-ENU).  A global similarity transform cannot correct per-shot orientation errors, so
-using `reconstruction.json` produces ~20m+ triangulation errors regardless of the similarity.
+rmse.py reports **reconstruction accuracy** — how well the 3D reconstruction places
+targets relative to their survey coordinates.  This is the accuracy of the camera
+geometry and GCP constraints.
 
-Expected accuracy (250 ft AGL, drone RTK active, 5 Customer monument GCPs):
+The **orthophoto accuracy** (where features appear in the deliverable) includes
+additional error from DSM-based orthorectification.  Vegetation, DSM interpolation,
+and off-nadir camera angles can shift features in the ortho by more than the
+reconstruction accuracy would suggest.  Use `rmse_visual_report.py` to visually
+assess ortho-level accuracy:
+
+```bash
+conda run -n geo python accuracy_study/rmse_visual_report.py \
+    ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
+    ~/stratus/{job}/gcp_list.txt \
+    ~/stratus/{job}/chk_list.txt \
+    ~/stratus/{job}/{job}_targets.csv \
+    ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original_cog.tif \
+    -o ~/stratus/{job}/rmse_report.html
+```
+
+Expected reconstruction accuracy (250 ft AGL, GCPs well-distributed):
 
 | Component | Expected |
 |-----------|----------|
-| Horizontal RMS | 0.08–0.12 ft (0.024–0.037 m) |
-| Vertical RMS | 0.12–0.18 ft (0.037–0.055 m) |
+| GCP RMS_H | 0.02–0.05 ft (control fit) |
+| CHK RMS_H | 0.08–0.15 ft (independent) |
+| CHK RMS_Z | 0.3–0.7 ft |
 
-GCP residuals should closely match the ODM report.  CHK residuals are the
-independent accuracy metric — std_dZ is the true vertical accuracy figure.
+CHK residuals are the independent accuracy metric.  Orthophoto accuracy may be
+0.3–1.0 ft larger depending on vegetation and camera angles at each target.
 
 ### 7. Deliver
 
