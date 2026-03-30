@@ -82,25 +82,84 @@ def enu_to_projected(
     epsg: str,
 ) -> Tuple[float, float, float]:
     """
-    Convert a point in ODM's topocentric local frame to projected CRS coordinates.
+    Convert a point in ODM's topocentric ENU frame to projected CRS coordinates.
 
-    IMPORTANT: This function assumes the input is from reconstruction.topocentric.json,
-    where coordinates are in a true ENU frame aligned with the UTM grid at the
-    reference point.  For this frame, ref_UTM + local = exact UTM.
+    Uses the proper geodetic conversion chain: ENU → ECEF → lat/lon → projected,
+    matching OpenSFM's TopocentricConverter.to_lla() + pyproj projection.
 
-    Do NOT use with reconstruction.json (the geocoords version), which has a
-    linearised topocentric→projected rotation baked in.  Using ref_UTM + geocoords
-    gives ~1 m/km error due to the linearisation (e.g. ~88m at 3.4km from ref
-    for a site 3° from the UTM central meridian).
+    The topocentric frame has X=east, Y=north, Z=up at the reference point.
+    This is NOT aligned with the projected (e.g. UTM) grid — the UTM grid
+    convergence angle and scale factor vary with position.  A simple
+    ref_UTM + offset approach gives ~20 m/km error at sites far from the
+    UTM central meridian.
 
     Returns (x_proj, y_proj, z_ellip_m).
     """
+    lat, lon, alt = _enu_to_lla(
+        p_enu[0], p_enu[1], p_enu[2],
+        ref_lat_deg, ref_lon_deg, ref_alt_m,
+    )
     xfm = Transformer.from_crs("EPSG:4326", epsg, always_xy=True)
-    ref_x, ref_y = xfm.transform(ref_lon_deg, ref_lat_deg)
-    x = ref_x + p_enu[0]
-    y = ref_y + p_enu[1]
-    z = ref_alt_m + p_enu[2]
-    return x, y, z
+    x, y = xfm.transform(lon, lat)
+    return x, y, alt
+
+
+# WGS84 ellipsoid (matching OpenSFM opensfm/geo.py)
+_WGS84_a = 6378137.0
+_WGS84_b = 6356752.314245
+
+
+def _ecef_from_lla(lat_deg: float, lon_deg: float, alt: float) -> Tuple[float, float, float]:
+    """WGS84 geodetic to ECEF (matches OpenSFM geo.ecef_from_lla)."""
+    a2 = _WGS84_a ** 2
+    b2 = _WGS84_b ** 2
+    lat = np.radians(lat_deg)
+    lon = np.radians(lon_deg)
+    L = 1.0 / np.sqrt(a2 * np.cos(lat) ** 2 + b2 * np.sin(lat) ** 2)
+    return (
+        (a2 * L + alt) * np.cos(lat) * np.cos(lon),
+        (a2 * L + alt) * np.cos(lat) * np.sin(lon),
+        (b2 * L + alt) * np.sin(lat),
+    )
+
+
+def _enu_to_lla(
+    x: float, y: float, z: float,
+    ref_lat: float, ref_lon: float, ref_alt: float,
+) -> Tuple[float, float, float]:
+    """
+    Convert topocentric ENU to geodetic lat/lon/alt.
+
+    Matches OpenSFM geo.lla_from_topocentric: builds the 4×4
+    ecef_from_topocentric_transform and applies it, then converts ECEF → LLA.
+    """
+    rx, ry, rz = _ecef_from_lla(ref_lat, ref_lon, ref_alt)
+    sa = np.sin(np.radians(ref_lat))
+    ca = np.cos(np.radians(ref_lat))
+    so = np.sin(np.radians(ref_lon))
+    co = np.cos(np.radians(ref_lon))
+
+    # ENU → ECEF rotation (OpenSFM ecef_from_topocentric_transform columns 0-2)
+    ex = -so * x + (-sa * co) * y + (ca * co) * z + rx
+    ey =  co * x + (-sa * so) * y + (ca * so) * z + ry
+    ez =             ca       * y +  sa       * z + rz
+
+    # ECEF → LLA (OpenSFM geo.lla_from_ecef)
+    a = _WGS84_a
+    b = _WGS84_b
+    ea2 = (a ** 2 - b ** 2) / a ** 2
+    eb2 = (a ** 2 - b ** 2) / b ** 2
+    p = np.sqrt(ex ** 2 + ey ** 2)
+    theta = np.arctan2(ez * a, p * b)
+    lon = np.arctan2(ey, ex)
+    lat = np.arctan2(
+        ez + eb2 * b * np.sin(theta) ** 3,
+        p - ea2 * a * np.cos(theta) ** 3,
+    )
+    N = a / np.sqrt(1 - ea2 * np.sin(lat) ** 2)
+    alt = p / np.cos(lat) - N
+
+    return float(np.degrees(lat)), float(np.degrees(lon)), float(alt)
 
 
 def crs_axis_unit(epsg: str) -> str:
@@ -472,17 +531,17 @@ def compute_rmse(
 ) -> dict:
     """
     Full pipeline: parse inputs, triangulate both GCP and CHK groups,
-    apply georeferencing similarity, compute and return RMSE for both.
+    convert to survey CRS via proper geodetic conversion, compute RMSE.
 
     recon_path    : path to reconstruction.topocentric.json (NOT reconstruction.json)
-    gcp_list_path : GCP-* rows only (from transform.py split); used to fit the
-                    georeferencing similarity and report control residuals.
+    gcp_list_path : GCP-* rows only (from transform.py split); control residuals.
     chk_list_path : CHK-* rows only (from transform.py split); independent
                     accuracy assessment (withheld from ODM BA).
 
-    The georeferencing similarity is auto-fitted from GCP triangulation results
-    → surveyed GCP positions, correcting the ~25m GPS translation offset and
-    ~1.75° UTM grid convergence inherent in reconstruction.topocentric.json.
+    Coordinate conversion uses the proper geodetic chain (ENU → ECEF → lat/lon
+    → projected CRS) matching OpenSFM's TopocentricConverter.  No similarity
+    transform is fitted — the topocentric frame from reconstruction.topocentric.json
+    already incorporates ODM's GCP-constrained bundle adjustment.
 
     Returns a dict with 'gcp' and 'chk' sub-dicts, each with rms_h, rms_z, etc.
     """
@@ -502,47 +561,28 @@ def compute_rmse(
     unit = crs_axis_unit(crs)
     uses_feet = "foot" in unit.lower()
 
-    sim_scale, sim_R, sim_t = None, None, None
-
     # --- Step 3: triangulate GCP points ---
     gcp_results, gcp_skipped = _triangulate_labels(
         gcp_obs, gcp_coords, shots, cameras, ref_lla, crs, uses_feet,
     )
 
-    # --- Step 4: auto-fit similarity from GCP triangulations → surveyed positions ---
-    if gcp_results:
-        if len(gcp_results) < 3:
-            print(f"WARNING: only {len(gcp_results)} GCPs triangulated, need ≥3 for "
-                  f"similarity — skipping geotransform", file=sys.stderr)
-        else:
-            src = np.array([r["tri_m"] for r in gcp_results])
-            dst = np.array([r["survey_m"] for r in gcp_results])
-            sim_scale, sim_R, sim_t = fit_similarity(src, dst)
-            rot_deg = Rotation.from_matrix(sim_R).as_euler('xyz', degrees=True)
-            print(f"\nSimilarity transform fitted from {len(gcp_results)} GCPs:",
-                  file=sys.stderr)
-            print(f"  scale = {sim_scale:.10f}", file=sys.stderr)
-            print(f"  rotation (deg) = X:{rot_deg[0]:.4f}  Y:{rot_deg[1]:.4f}  "
-                  f"Z:{rot_deg[2]:.4f}", file=sys.stderr)
+    print(f"\nGeodetic conversion: ENU → ECEF → lat/lon → {crs}", file=sys.stderr)
+    print(f"  reference: lat={ref_lla['latitude']:.10f}  lon={ref_lla['longitude']:.10f}  "
+          f"alt={ref_lla['altitude']}", file=sys.stderr)
 
-    # --- Step 5: triangulate CHK points ---
+    # --- Step 4: triangulate CHK points ---
     chk_results, chk_skipped = _triangulate_labels(
         chk_obs, chk_coords, shots, cameras, ref_lla, crs, uses_feet,
     )
 
-    # --- Step 6: compute residuals (apply auto-fitted similarity) ---
-    apply_sim = sim_R is not None
-
-    gcp_points = _compute_residuals(gcp_results, sim_scale, sim_R, sim_t,
-                                    apply_sim=apply_sim)
-    chk_points = _compute_residuals(chk_results, sim_scale, sim_R, sim_t,
-                                    apply_sim=apply_sim)
+    # --- Step 5: compute residuals (no similarity transform) ---
+    gcp_points = _compute_residuals(gcp_results, None, None, None, apply_sim=False)
+    chk_points = _compute_residuals(chk_results, None, None, None, apply_sim=False)
 
     return {
         "gcp": _group_stats(gcp_points),
         "chk": _group_stats(chk_points),
-        "geotransform_source": "fitted from GCPs",
-        "similarity_scale": round(sim_scale, 10) if sim_scale is not None else None,
+        "geotransform_source": "geodetic (ENU→ECEF→LLA→proj)",
     }
 
 
