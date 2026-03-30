@@ -174,7 +174,7 @@ locals {
   # --optimize-disk-space intentionally excluded: it deletes undistorted images
   # after openmvs/texturing, preventing resume from orthophoto after interruption.
   # --max-concurrency is set per-stage by odm-run.sh.
-  odm_flags = "--pc-quality medium --feature-quality high --orthophoto-resolution 5"
+  odm_flags = "--pc-quality medium --feature-quality high --orthophoto-resolution 5 --dtm --dem-resolution 5 --texturing-nadir-weight 28"
 
   scripts_s3_prefix = "odm-scripts"
 }
