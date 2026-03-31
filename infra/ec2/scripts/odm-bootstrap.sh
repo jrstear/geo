@@ -269,6 +269,16 @@ if /usr/local/bin/odm-run.sh; then
   /sbin/shutdown -h +2
 else
   touch "${FAILED_MARKER}"
+
+  # Cancel the spot request so AWS doesn't relaunch after shutdown (same as success path).
+  SPOT_REQUEST_ID=$(curl -s http://169.254.169.254/latest/meta-data/spot/spot-instance-request-id 2>/dev/null || true)
+  if [ -n "${SPOT_REQUEST_ID}" ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Cancelling spot request ${SPOT_REQUEST_ID}"
+    aws ec2 cancel-spot-instance-requests \
+      --spot-instance-request-ids "${SPOT_REQUEST_ID}" \
+      --region "${REGION}" || true
+  fi
+
   # Sync whatever outputs and logs exist so they're accessible without the instance.
   aws s3 sync "${PROJECT_DIR}/" "s3://${BUCKET}/${PROJECT}/" \
     --exclude "images/*" \
