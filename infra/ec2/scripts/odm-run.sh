@@ -269,6 +269,11 @@ else
   NCPU=$(nproc)
   WORKERS=$(( NCPU > 2 ? NCPU - 2 : 1 ))
 
+  DSM_FLAG=""
+  if [ -f "${PROJECT_DIR}/odm_dem/dsm.tif" ]; then
+    DSM_FLAG="--dsm /data/odm_dem/dsm.tif"
+  fi
+
   docker run --rm --name odm-true-ortho \
     -v "${PROJECT_DIR}":/data \
     -v /usr/local/bin/true_ortho.py:/scripts/true_ortho.py \
@@ -279,6 +284,7 @@ else
     /data/odm_orthophoto/odm_orthophoto.original.tif \
     /data/images/ \
     --dtm /data/odm_dem/dtm.tif \
+    ${DSM_FLAG} \
     --workers "${WORKERS}" \
     -o /data/odm_orthophoto/true_orthophoto.tif
 

@@ -278,6 +278,66 @@ class DTMSampler:
         return result
 
 
+    def sample_points(self, x_utm: np.ndarray, y_utm: np.ndarray) -> np.ndarray:
+        """Sample DTM/DSM Z at arbitrary (x, y) UTM points. Returns NaN for no-data."""
+        cols = ((x_utm - self._gt[0]) / self._gt[1]).astype(int)
+        rows = ((y_utm - self._gt[3]) / self._gt[5]).astype(int)
+        result = np.full(len(x_utm), np.nan)
+        in_bounds = (cols >= 0) & (cols < self._w) & (rows >= 0) & (rows < self._h)
+        if not np.any(in_bounds):
+            return result
+        # Read individual pixels (slower than row-based but works for scattered points)
+        for i in np.where(in_bounds)[0]:
+            val = self._band.ReadAsArray(int(cols[i]), int(rows[i]), 1, 1)
+            if val is not None:
+                v = float(val[0, 0])
+                if self._nodata is None or v != self._nodata:
+                    result[i] = v
+        return result
+
+
+def check_occlusion_vec(
+    cam_utm_x: float, cam_utm_y: float, cam_z: float,
+    ground_x: np.ndarray, ground_y: np.ndarray, ground_z: np.ndarray,
+    dsm_sampler: "DTMSampler",
+    n_steps: int = 10,
+) -> np.ndarray:
+    """
+    Ray-march from camera to each ground point, sampling DSM along the ray.
+
+    Returns boolean mask (N,): True = unoccluded (camera can see ground point).
+
+    For each ground point, samples the DSM at n_steps positions along the ray
+    from the camera to the ground. If any DSM sample exceeds the ray height,
+    the view is occluded.
+    """
+    n = len(ground_x)
+    unoccluded = np.ones(n, dtype=bool)
+
+    # Steps along ray: t=0 is camera, t=1 is ground. Sample interior only.
+    t_vals = np.linspace(0.15, 0.85, n_steps)  # avoid endpoints
+
+    for t in t_vals:
+        # Interpolate positions along ray
+        rx = cam_utm_x + t * (ground_x - cam_utm_x)
+        ry = cam_utm_y + t * (ground_y - cam_utm_y)
+        rz = cam_z + t * (ground_z - cam_z)  # ray height at this t
+
+        # Only check points still considered unoccluded
+        check_mask = unoccluded & np.isfinite(rx)
+        if not np.any(check_mask):
+            break
+
+        check_idx = np.where(check_mask)[0]
+        dsm_z = dsm_sampler.sample_points(rx[check_idx], ry[check_idx])
+
+        # If DSM surface is above the ray, the view is blocked
+        blocked = np.isfinite(dsm_z) & (dsm_z > rz[check_idx] + 0.5)  # 0.5m tolerance
+        unoccluded[check_idx[blocked]] = False
+
+    return unoccluded
+
+
 # ---------------------------------------------------------------------------
 # Image cache
 # ---------------------------------------------------------------------------
@@ -466,11 +526,16 @@ def process_true_ortho(
         print("ERROR: empty crop region", file=sys.stderr)
         return
 
-    # --- Load DTM ---
+    # --- Load DTM / DSM ---
     dtm_sampler = None
     if dtm_path:
         print(f"Loading DTM: {dtm_path}")
         dtm_sampler = DTMSampler(dtm_path)
+
+    dsm_sampler = None
+    if dsm_path:
+        print(f"Loading DSM: {dsm_path}")
+        dsm_sampler = DTMSampler(dsm_path)
 
     # --- Read original ortho crop (for fallback + alpha) ---
     print("Reading original orthophoto crop...")
@@ -609,6 +674,20 @@ def process_true_ortho(
                 continue
 
             better_idx = np.where(better)[0]
+
+            # DSM occlusion check: ray-march from camera to ground, reject if blocked
+            if dsm_sampler is not None:
+                b_x = x_utm_valid[better_idx] if len(x_utm_valid) > len(better_idx) else x_utm_all[valid_cols[better_idx]]
+                b_y = np.full(len(better_idx), y_utm)
+                b_z = z_ground[better_idx]
+                unoccluded = check_occlusion_vec(
+                    cx_utm, cy_utm, _enu_to_lla_scalar(C[0], C[1], C[2], ref_lat, ref_lon, ref_alt)[2],
+                    b_x, b_y, b_z, dsm_sampler,
+                )
+                better_idx = better_idx[unoccluded]
+                if len(better_idx) == 0:
+                    continue
+
             pts_better = points_enu[better_idx]
 
             # Project through camera
@@ -670,7 +749,7 @@ def process_true_ortho(
 def _process_tile(args_tuple):
     """Worker function for multiprocessing. Processes a single tile."""
     (tile_col, tile_row, tile_w, tile_h, col_off, row_off,
-     ortho_path, image_dir, dtm_path, default_z,
+     ortho_path, image_dir, dtm_path, dsm_path, default_z,
      recon_data, ortho_gt, ortho_srs_wkt, epsg_str) = args_tuple
 
     # Reconstruct camera data from shared dict
@@ -736,8 +815,9 @@ def _process_tile(args_tuple):
 
     cam_utm = np.array(cam_utm)
 
-    # DTM
+    # DTM / DSM
     dtm_sampler = DTMSampler(dtm_path) if dtm_path else None
+    dsm_sampler = DTMSampler(dsm_path) if dsm_path else None
 
     # Output buffer (start with ortho RGB)
     out_buf = np.zeros((3, tile_h, tile_w), dtype=np.uint8)
@@ -814,6 +894,20 @@ def _process_tile(args_tuple):
                 continue
 
             better_idx = np.where(better)[0]
+
+            # DSM occlusion check
+            if dsm_sampler is not None:
+                b_x = x_utm_all[valid_cols[better_idx]]
+                b_y = np.full(len(better_idx), y_utm)
+                b_z = z_ground[better_idx]
+                cam_alt = _enu_to_lla_scalar(C[0], C[1], C[2], ref_lat, ref_lon, ref_alt)[2]
+                unoccluded = check_occlusion_vec(
+                    cx_utm, cy_utm, cam_alt, b_x, b_y, b_z, dsm_sampler,
+                )
+                better_idx = better_idx[unoccluded]
+                if len(better_idx) == 0:
+                    continue
+
             pts_better = points_enu[better_idx]
             px, py, proj_valid = project_points_brown_vec(pts_better, R, t_vec, cam)
             if not np.any(proj_valid):
@@ -838,6 +932,7 @@ def process_true_ortho_full(
     image_dir: str,
     output_path: str,
     dtm_path: Optional[str] = None,
+    dsm_path: Optional[str] = None,
     default_z: float = 0.0,
     tile_size: int = 512,
     workers: int = 1,
@@ -890,7 +985,7 @@ def process_true_ortho_full(
     # Build args for each tile
     tile_args = [
         (t[0], t[1], t[2], t[3], t[4], t[5],
-         ortho_path, image_dir, dtm_path, default_z,
+         ortho_path, image_dir, dtm_path, dsm_path, default_z,
          recon_data, ortho_gt, ortho_srs_wkt, epsg_str)
         for t in tiles
     ]
@@ -1027,6 +1122,7 @@ def main():
             image_dir=args.image_dir,
             output_path=args.output,
             dtm_path=args.dtm,
+            dsm_path=args.dsm,
             default_z=args.default_z,
             tile_size=args.tile_size,
             workers=args.workers,
