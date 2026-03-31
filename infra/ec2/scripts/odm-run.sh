@@ -130,7 +130,7 @@ run_stage() {
   timeout "${STAGE_TIMEOUT}" \
     docker run --rm --name "${container}" \
       -v "${PROJECT_DIR}":/datasets/project \
-      "${ODM_IMAGE:-opendronemap/odm:3.6.0}" \
+      "${ODM_IMAGE:-opendronemap/odm:3.5.6}" \
       --project-path /datasets project \
       ${ODM_FLAGS} \
       --max-concurrency "${threads}" \
@@ -288,7 +288,7 @@ PROM
     -v "${PROJECT_DIR}":/data \
     -v /usr/local/bin/true_ortho.py:/scripts/true_ortho.py \
     --entrypoint python3 \
-    "${ODM_IMAGE:-opendronemap/odm:3.6.0}" \
+    "${ODM_IMAGE:-opendronemap/odm:3.5.6}" \
     /scripts/true_ortho.py \
     /data/opensfm/reconstruction.topocentric.json \
     /data/odm_orthophoto/odm_orthophoto.original.tif \
