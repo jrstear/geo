@@ -196,6 +196,37 @@ def _get_cam_params(cam: dict):
     return w, h, fx, fy, cx, cy, cx_off, cy_off, k1, k2, k3, p1, p2
 
 
+def project_points_pinhole_vec(
+    points_enu: np.ndarray,  # (N, 3)
+    R: np.ndarray,           # (3, 3) world->camera
+    t: np.ndarray,           # (3,) translation
+    cam: dict,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Vectorised pinhole projection (no distortion) for undistorted images.
+    """
+    w, h = cam["width"], cam["height"]
+    mwh = max(w, h)
+    fx = fy = cam.get("focal", cam.get("focal_x", 0.5)) * mwh
+    if "focal_y" in cam:
+        fy = cam["focal_y"] * mwh
+    cx_off = cam.get("c_x", 0.0) * mwh
+    cy_off = cam.get("c_y", 0.0) * mwh
+    cx, cy = w / 2.0, h / 2.0
+
+    p_cam = (R @ points_enu.T).T + t
+    z_cam = p_cam[:, 2]
+    valid = z_cam > 0.1
+    z_safe = np.where(valid, z_cam, 1.0)
+
+    px = fx * (p_cam[:, 0] / z_safe) + cx + cx_off
+    py = fy * (p_cam[:, 1] / z_safe) + cy + cy_off
+
+    margin = 2.0
+    valid &= (px >= margin) & (px < w - margin) & (py >= margin) & (py < h - margin)
+    return px, py, valid
+
+
 def project_points_brown_vec(
     points_enu: np.ndarray,  # (N, 3)
     R: np.ndarray,           # (3, 3) world->camera
@@ -240,6 +271,35 @@ def project_points_brown_vec(
     valid &= (px >= margin) & (px < w - margin) & (py >= margin) & (py < h - margin)
 
     return px, py, valid
+
+
+def _detect_undistorted(image_dir: str, recon_path: str) -> Tuple[Optional[str], Optional[dict], bool]:
+    """
+    Auto-detect undistorted images alongside the reconstruction.
+
+    If opensfm/undistorted/images/ exists relative to the reconstruction,
+    prefer it over raw images. Also loads the undistorted reconstruction
+    for its camera model (simple perspective, no distortion).
+
+    Returns (image_dir, cameras_override, use_pinhole):
+        - image_dir: path to use for image loading
+        - cameras_override: camera dict from undistorted reconstruction, or None
+        - use_pinhole: True if using undistorted images (pinhole projection)
+    """
+    recon_dir = os.path.dirname(recon_path)
+    undist_img_dir = os.path.join(recon_dir, "undistorted", "images")
+    undist_recon = os.path.join(recon_dir, "undistorted", "reconstruction.json")
+
+    if os.path.isdir(undist_img_dir) and len(os.listdir(undist_img_dir)) > 0:
+        cameras_override = None
+        if os.path.exists(undist_recon):
+            with open(undist_recon) as f:
+                ur = json.load(f)
+            if ur and "cameras" in ur[0]:
+                cameras_override = ur[0]["cameras"]
+        return undist_img_dir, cameras_override, True
+
+    return image_dir, None, False
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +499,18 @@ def process_true_ortho(
     ref_lon = ref_lla["longitude"]
     ref_alt = ref_lla["altitude"]
     print(f"  {len(shots)} shots, ref=({ref_lat:.6f}, {ref_lon:.6f}, {ref_alt:.1f})")
+
+    # --- Auto-detect undistorted images ---
+    undist_dir, undist_cams, use_pinhole = _detect_undistorted(image_dir, recon_path)
+    if use_pinhole:
+        image_dir = undist_dir
+        if undist_cams:
+            cameras_dict = undist_cams
+        print(f"  Using undistorted images: {image_dir} (pinhole projection)")
+    else:
+        print(f"  Using original images: {image_dir} (brown distortion projection)")
+
+    project_fn = project_points_pinhole_vec if use_pinhole else project_points_brown_vec
 
     # --- Pre-compute camera poses ---
     print("Pre-computing camera poses...")
@@ -691,7 +763,7 @@ def process_true_ortho(
             pts_better = points_enu[better_idx]
 
             # Project through camera
-            px, py, proj_valid = project_points_brown_vec(pts_better, R, t_vec, cam)
+            px, py, proj_valid = project_fn(pts_better, R, t_vec, cam)
 
             if not np.any(proj_valid):
                 continue
@@ -750,7 +822,7 @@ def _process_tile(args_tuple):
     """Worker function for multiprocessing. Processes a single tile."""
     (tile_col, tile_row, tile_w, tile_h, col_off, row_off,
      ortho_path, image_dir, dtm_path, dsm_path, default_z,
-     recon_data, ortho_gt, ortho_srs_wkt, epsg_str) = args_tuple
+     recon_data, ortho_gt, ortho_srs_wkt, epsg_str, use_pinhole) = args_tuple
 
     # Reconstruct camera data from shared dict
     shots = recon_data["shots"]
@@ -909,7 +981,8 @@ def _process_tile(args_tuple):
                     continue
 
             pts_better = points_enu[better_idx]
-            px, py, proj_valid = project_points_brown_vec(pts_better, R, t_vec, cam)
+            _proj_fn = project_points_pinhole_vec if use_pinhole else project_points_brown_vec
+            px, py, proj_valid = _proj_fn(pts_better, R, t_vec, cam)
             if not np.any(proj_valid):
                 continue
 
@@ -947,6 +1020,16 @@ def process_true_ortho_full(
     recon = load_reconstruction(recon_path)
     ref_lla = recon["reference_lla"]
     print(f"  {len(recon['shots'])} shots")
+
+    # Auto-detect undistorted images
+    undist_dir, undist_cams, use_pinhole = _detect_undistorted(image_dir, recon_path)
+    if use_pinhole:
+        image_dir = undist_dir
+        if undist_cams:
+            recon["cameras"] = undist_cams
+        print(f"  Using undistorted images: {image_dir} (pinhole projection)")
+    else:
+        print(f"  Using original images: {image_dir} (brown distortion projection)")
 
     # Open ortho for metadata
     ortho_ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
@@ -986,7 +1069,7 @@ def process_true_ortho_full(
     tile_args = [
         (t[0], t[1], t[2], t[3], t[4], t[5],
          ortho_path, image_dir, dtm_path, dsm_path, default_z,
-         recon_data, ortho_gt, ortho_srs_wkt, epsg_str)
+         recon_data, ortho_gt, ortho_srs_wkt, epsg_str, use_pinhole)
         for t in tiles
     ]
 

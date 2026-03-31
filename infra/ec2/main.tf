@@ -472,8 +472,8 @@ resource "aws_s3_object" "odm_progress" {
 resource "aws_s3_object" "true_ortho" {
   bucket = var.bucket_name
   key    = "${local.scripts_s3_prefix}/true_ortho.py"
-  source = "${path.module}/../../accuracy_study/true_ortho.py"
-  etag   = filemd5("${path.module}/../../accuracy_study/true_ortho.py")
+  source = "${path.module}/../../true_ortho.py"
+  etag   = filemd5("${path.module}/../../true_ortho.py")
 }
 
 # ── EC2 Spot instance ──────────────────────────────────────────────────────────

@@ -30,9 +30,14 @@ flowchart TD
     s3(["s3 sync & terraform apply"])
     odm(["ODM on EC2"])
     rmse(["rmse.py"])
+    true_ortho(["true_ortho.py"])
+    uncertainty(["ortho_uncertainty.py"])
+    visual_report(["rmse_visual_report.py"])
     drone[/"Drone"\]
     images[["images/*.JPG"]]
     deliverables[["orthophoto,contours,surface"]]
+    true_ortho_tif[["true_orthophoto.tif"]]
+    uncertainty_tif[["uncertainty_overlay.tif"]]
     packager(["package.py"])
     delivered[["{orthophoto,contours,surface}_design"]]
     report["Accuracy report"]
@@ -76,6 +81,11 @@ flowchart TD
         deliverables
         model
         rmse
+        true_ortho
+        true_ortho_tif
+        uncertainty
+        uncertainty_tif
+        visual_report
         report
         packager
         qgis_cloud
@@ -88,9 +98,9 @@ flowchart TD
     points_6529 --> emlid
     drone --> images
     images --> s3
+    images --> true_ortho
     images --> sight
     emlid --> all --> sight
-    cameras --> sight
     sight --> targets
     sight --> marks
     targets --> gcpeditor
@@ -106,12 +116,27 @@ flowchart TD
     gcp_list --> s3
     s3 --> odm --> deliverables
     odm --> model
+    odm --> cameras
+    cameras --> sight
     gcp_list --> rmse
     chk_list --> rmse
+    model --> uncertainty
+    model --> true_ortho
     model --> rmse
+    rmse --> visual_report
     rmse --> report
-    transform_yaml --> packager
     deliverables --> packager
+    deliverables --> qgis_cloud
+    deliverables --> uncertainty
+    deliverables --> true_ortho
+    deliverables --> visual_report
+    true_ortho --> true_ortho_tif
+    uncertainty --> uncertainty_tif
+    targets_csv --> visual_report
+    visual_report --> report
+    true_ortho_tif --> qgis_cloud
+    uncertainty_tif --> qgis_cloud
+    transform_yaml --> packager
     qgis_cloud -.-> packager
     packager --> delivered
     report -.-> deliverables
@@ -120,7 +145,6 @@ flowchart TD
     delivered --> qgis_design
     points_design --> qgis_design
     targets_design --> qgis_design
-    deliverables --> qgis_cloud
     targets_csv --> qgis_cloud
     qgis_design -.-> customer
 
