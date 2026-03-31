@@ -491,14 +491,81 @@ def process_ortho(
     band = out_ds.GetRasterBand(1)
     stats = band.ComputeStatistics(False)
     out_ds = None
+    val_min, val_max, val_mean, val_std = stats
     print(f"\nOutput statistics:")
-    print(f"  Min:  {stats[0]:.4f} m")
-    print(f"  Max:  {stats[1]:.4f} m")
-    print(f"  Mean: {stats[2]:.4f} m")
-    print(f"  StdDev: {stats[3]:.4f} m")
+    print(f"  Min:  {val_min:.4f} m")
+    print(f"  Max:  {val_max:.4f} m")
+    print(f"  Mean: {val_mean:.4f} m")
+    print(f"  StdDev: {val_std:.4f} m")
+
+    # --- Generate RGBA COG with red-to-green colormap ---
+    # Green = low uncertainty (good), Yellow = moderate, Red = high uncertainty (bad)
+    # Color range is distributed over the actual data range for this job.
+    print("\nGenerating colored RGBA COG overlay...")
+    t3 = time.time()
+    rgba_path = output_path.replace(".tif", "_overlay.tif")
+    raw_tmp = output_path  # the float32 file we just created
+
+    out_ds = gdal.Open(raw_tmp, gdal.GA_ReadOnly)
+    unc_w = out_ds.RasterXSize
+    unc_h = out_ds.RasterYSize
+    unc_gt = out_ds.GetGeoTransform()
+    unc_srs = out_ds.GetProjection()
+
+    # Create RGBA temp file (tiled for COG conversion)
+    rgba_tmp = rgba_path + ".tmp.tif"
+    drv = gdal.GetDriverByName("GTiff")
+    rgba_ds = drv.Create(rgba_tmp, unc_w, unc_h, 4, gdal.GDT_Byte,
+                         options=["TILED=YES", "BLOCKXSIZE=256", "BLOCKYSIZE=256",
+                                  "COMPRESS=DEFLATE"])
+    rgba_ds.SetGeoTransform(unc_gt)
+    rgba_ds.SetProjection(unc_srs)
+
+    # Process in blocks
+    block_h = 512
+    nodata_val = -1.0
+    for row_off in range(0, unc_h, block_h):
+        bh = min(block_h, unc_h - row_off)
+        unc_block = out_ds.GetRasterBand(1).ReadAsArray(0, row_off, unc_w, bh)
+
+        r = np.zeros((bh, unc_w), dtype=np.uint8)
+        g = np.zeros((bh, unc_w), dtype=np.uint8)
+        b = np.zeros((bh, unc_w), dtype=np.uint8)
+        a = np.zeros((bh, unc_w), dtype=np.uint8)
+
+        valid = (unc_block != nodata_val) & np.isfinite(unc_block)
+        if np.any(valid):
+            # Normalize to 0-1 over the data range
+            t_val = np.clip((unc_block[valid] - val_min) / max(val_max - val_min, 1e-6), 0.0, 1.0)
+
+            # Green (0) → Yellow (0.5) → Red (1.0)
+            r[valid] = np.clip(t_val * 2.0 * 255, 0, 255).astype(np.uint8)          # 0→255 over first half, 255 for second half
+            g[valid] = np.clip((1.0 - t_val) * 2.0 * 255, 0, 255).astype(np.uint8)  # 255 for first half, 255→0 over second half
+            b[valid] = 0
+            a[valid] = 180  # semi-transparent overlay
+
+        rgba_ds.GetRasterBand(1).WriteArray(r, 0, row_off)
+        rgba_ds.GetRasterBand(2).WriteArray(g, 0, row_off)
+        rgba_ds.GetRasterBand(3).WriteArray(b, 0, row_off)
+        rgba_ds.GetRasterBand(4).WriteArray(a, 0, row_off)
+
+    rgba_ds.FlushCache()
+    rgba_ds = None
+    out_ds = None
+
+    # Convert to COG
+    gdal.Translate(rgba_path, rgba_tmp, format="COG",
+                   creationOptions=["COMPRESS=DEFLATE", "OVERVIEW_RESAMPLING=NEAREST"])
+
+    os.remove(rgba_tmp)
+    print(f"  Colored overlay: {rgba_path}")
+    print(f"  Color ramp: green ({val_min:.4f}m) → yellow → red ({val_max:.4f}m)")
+    print(f"  Generated in {time.time() - t3:.1f}s")
 
     elapsed = time.time() - t0
-    print(f"\nDone in {elapsed:.1f}s — wrote {output_path}")
+    print(f"\nDone in {elapsed:.1f}s")
+    print(f"  Raw uncertainty: {output_path}")
+    print(f"  RGBA COG overlay: {rgba_path}")
 
 
 # ---------------------------------------------------------------------------
