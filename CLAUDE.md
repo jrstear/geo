@@ -1,5 +1,6 @@
 # Permissions
 - All local file reads are pre-approved (Read, Glob, Grep, cat, head, etc.)
+- All git read commands are pre-approved (log, diff, show, blame, status, branch, etc.)
 - `bd` (beads) commands are pre-approved: list, show, ready, stats, sync, etc.
 
 # Workflow
