@@ -33,6 +33,24 @@ notify() {
     --region "${REGION}" || true
 }
 
+PROM_DIR=/var/lib/node_exporter/textfile_collector
+PHASE_FILE="${PROM_DIR}/odm_phase.prom"
+
+set_phase() {
+  local phase="$1"
+  mkdir -p "${PROM_DIR}"
+  cat > "${PHASE_FILE}" << PROM
+# HELP odm_pipeline_phase Current pipeline phase (1=pulling, 2=patching, 3=syncing, 4=running, 5=true_ortho, 8=complete, 9=failed)
+# TYPE odm_pipeline_phase gauge
+odm_pipeline_phase{project="${PROJECT}"} ${phase}
+# HELP odm_pipeline_phase_start_time Unix timestamp when this phase began
+# TYPE odm_pipeline_phase_start_time gauge
+odm_pipeline_phase_start_time{project="${PROJECT}"} $(date +%s)
+PROM
+}
+
+set_phase 0  # booting
+
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  odm-bootstrap starting (project: ${PROJECT})"
 
 # ── Pipeline already complete ──────────────────────────────────────────────────
@@ -186,6 +204,7 @@ until docker info &>/dev/null 2>&1; do
 done
 
 # Wait for ODM image (may still be pulling on first boot).
+set_phase 1  # pulling
 until docker image inspect "${ODM_IMAGE:-opendronemap/odm:3.6.0}" &>/dev/null 2>&1; do
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Waiting for ODM image pull to complete..."
   sleep 10
@@ -198,6 +217,7 @@ done
 ODM_BASE="${ODM_IMAGE:-opendronemap/odm:3.6.0}"
 ODM_PATCHED="${ODM_BASE}-patched"
 if ! docker image inspect "${ODM_PATCHED}" &>/dev/null 2>&1; then
+  set_phase 2  # patching
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Patching exifread DJI MakerNote bug..."
   docker run --name odm-patch --entrypoint bash "${ODM_BASE}" -c \
     "sed -i \"s/printable = str(values\[0\])/printable = str(values[0]) if values else \\\"\\\"/\" \
@@ -216,6 +236,7 @@ mkdir -p "${PROJECT_DIR}/images"
 # - Spot resume (same EBS):   images already present → entire block skipped
 IMAGE_COUNT=$(find "${PROJECT_DIR}/images" -maxdepth 1 -type f | wc -l)
 if [ "${IMAGE_COUNT}" -eq 0 ]; then
+  set_phase 3  # syncing
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  No images on EBS — syncing project from s3://${BUCKET}/${PROJECT}/"
   notify "ODM starting: ${PROJECT}" \
     "Syncing project from S3 (images + any prior stage outputs). Pipeline will begin automatically."
@@ -247,12 +268,14 @@ if [ -f "${PROJECT_DIR}/cameras.json" ] && ! grep -q "\-\-cameras" /etc/odm-env;
 fi
 
 # Run the pipeline.
+set_phase 4  # running
 if /usr/local/bin/odm-run.sh; then
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Pipeline complete — syncing outputs to s3://${BUCKET}/${PROJECT}/"
   aws s3 sync "${PROJECT_DIR}/" "s3://${BUCKET}/${PROJECT}/" \
     --exclude "images/*" \
     --region "${REGION}"
   touch "${DONE_MARKER}"
+  set_phase 8  # complete
 
   # Cancel the spot request so AWS doesn't relaunch a new instance after shutdown.
   SPOT_REQUEST_ID=$(curl -s http://169.254.169.254/latest/meta-data/spot/spot-instance-request-id 2>/dev/null || true)
@@ -269,6 +292,7 @@ if /usr/local/bin/odm-run.sh; then
   /sbin/shutdown -h +2
 else
   touch "${FAILED_MARKER}"
+  set_phase 9  # failed
 
   # Cancel the spot request so AWS doesn't relaunch after shutdown (same as success path).
   SPOT_REQUEST_ID=$(curl -s http://169.254.169.254/latest/meta-data/spot/spot-instance-request-id 2>/dev/null || true)

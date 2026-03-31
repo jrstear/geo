@@ -262,6 +262,16 @@ elif [ ! -f "${PROJECT_DIR}/odm_dem/dtm.tif" ]; then
 elif [ ! -f "${PROJECT_DIR}/odm_orthophoto/odm_orthophoto.original.tif" ]; then
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ⚠ true_ortho skipped — no orthophoto"
 else
+  # Update phase metric for Grafana
+  PROM_DIR=/var/lib/node_exporter/textfile_collector
+  cat > "${PROM_DIR}/odm_phase.prom" << PROM
+# HELP odm_pipeline_phase Current pipeline phase (1=pulling, 2=patching, 3=syncing, 4=running, 5=true_ortho, 8=complete, 9=failed)
+# TYPE odm_pipeline_phase gauge
+odm_pipeline_phase{project="${PROJECT}"} 5
+# HELP odm_pipeline_phase_start_time Unix timestamp when this phase began
+# TYPE odm_pipeline_phase_start_time gauge
+odm_pipeline_phase_start_time{project="${PROJECT}"} $(date +%s)
+PROM
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ▶ true_ortho"
   annotate_grafana "▶ true_ortho" "odm,stage_start,true_ortho"
   notify "ODM ${PROJECT}" "Starting true ortho post-processing on ${PROJECT}."
