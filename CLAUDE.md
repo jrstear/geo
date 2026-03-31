@@ -1,3 +1,7 @@
+# Permissions
+- All local file reads are pre-approved (Read, Glob, Grep, cat, head, etc.)
+- `bd` (beads) commands are pre-approved: list, show, ready, stats, sync, etc.
+
 # Workflow
 
 ## Issue Tracking
