@@ -112,16 +112,18 @@ def crop_ortho(ds: gdal.Dataset, cx: float, cy: float,
 
 
 def annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
+                  dx_m: float, dy_m: float,
                   px_size: float, label: str,
                   dh_m: float, dz_m: float, d3d_m: float,
                   group: str, upscale: int = 4) -> np.ndarray:
-    """Upscale crop and draw survey coordinate + fixed scale circles.
+    """Upscale crop and annotate with survey + projected markers.
 
-    The green crosshair marks the survey coordinate.  Cyan and yellow
-    circles show 0.5 ft and 1 ft radii for visual offset assessment.
-    No rmse.py-derived annotations (dH circle, reconstructed dot) are
-    drawn — the orthophoto positioning depends on DSM-based
-    orthorectification, which rmse.py's triangulation does not model.
+    Green X = survey coordinate (measured ground truth).
+    Yellow + = triangulated/projected position (survey + dX/dY from rmse.py).
+    Yellow circle = 1 ft radius centered on projected position.
+
+    The gap between markers and the visible target in the ortho shows
+    the DSM/orthorectification error that rmse.py doesn't capture.
     """
     h, w = img.shape[:2]
     out = cv2.resize(img, (w * upscale, h * upscale),
@@ -129,21 +131,28 @@ def annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
     cxs = cx_px * upscale + upscale // 2
     cys = cy_px * upscale + upscale // 2
 
-    # --- Green crosshair: survey coordinate ---
-    cross_len = 20
-    cv2.line(out, (cxs - cross_len, cys), (cxs + cross_len, cys),
-             (0, 255, 0), 1, cv2.LINE_AA)
-    cv2.line(out, (cxs, cys - cross_len), (cxs, cys + cross_len),
-             (0, 255, 0), 1, cv2.LINE_AA)
+    # --- Green X: survey coordinate ---
+    xlen = 14
+    cv2.line(out, (cxs - xlen, cys - xlen), (cxs + xlen, cys + xlen),
+             (0, 255, 0), 2, cv2.LINE_AA)
+    cv2.line(out, (cxs - xlen, cys + xlen), (cxs + xlen, cys - xlen),
+             (0, 255, 0), 2, cv2.LINE_AA)
 
-    # --- Scale circles: 0.5 ft (cyan), 1 ft (yellow) ---
+    # --- Yellow +: projected/triangulated position ---
+    # dX, dY are in metres (triangulated - survey), so projected = survey + d
+    proj_x = int(cxs + dx_m / px_size * upscale)
+    proj_y = int(cys - dy_m / px_size * upscale)  # y-axis inverted (north up, row down)
+    cross_len = 14
+    cv2.line(out, (proj_x - cross_len, proj_y), (proj_x + cross_len, proj_y),
+             (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.line(out, (proj_x, proj_y - cross_len), (proj_x, proj_y + cross_len),
+             (0, 255, 255), 2, cv2.LINE_AA)
+
+    # --- Yellow circle: 1 ft radius centered on projected position ---
     ft_to_scaled_px = lambda ft: int(round(ft * FT_TO_M / px_size * upscale))
-    half_ft = ft_to_scaled_px(0.5)
     one_ft = ft_to_scaled_px(1.0)
-    if half_ft > 2:
-        cv2.circle(out, (cxs, cys), half_ft, (255, 255, 0), 1, cv2.LINE_AA)
     if one_ft > 2:
-        cv2.circle(out, (cxs, cys), one_ft, (0, 255, 255), 1, cv2.LINE_AA)
+        cv2.circle(out, (proj_x, proj_y), one_ft, (0, 255, 255), 1, cv2.LINE_AA)
 
     # --- Text overlay ---
     dh_ft = dh_m * M_TO_FT
@@ -152,7 +161,6 @@ def annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
     text_lines = [
         f"{label} ({group})",
         f"dH={dh_ft:+.3f} ft  dZ={dz_ft:+.3f} ft  d3D={d3d_ft:.3f} ft",
-        "cyan=0.5ft  yellow=1ft",
     ]
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.45
@@ -213,10 +221,10 @@ def build_html(entries: list[dict]) -> str:
 <body>
 <h1>RMSE Visual Report — sorted by dH (worst first)</h1>
 <div class="legend">
-    <span class="green">+ survey coordinate</span>
-    <span style="color:#0ff">○ 0.5 ft radius</span>
+    <span class="green">X survey coordinate</span>
+    <span class="yellow">+ projected (triangulated)</span>
     <span class="yellow">○ 1 ft radius</span>
-    &nbsp; | &nbsp; dH = rmse.py triangulation residual (not orthophoto positioning error)
+    &nbsp; | &nbsp; gap between markers and visible target = ortho positioning error
 </div>
 <div class="grid">
 {''.join(rows)}
@@ -301,6 +309,7 @@ def main():
 
         annotated = annotate_crop(
             img, cx_px, cy_px,
+            dx_m=p["dX"], dy_m=p["dY"],
             px_size=px_sz, label=label,
             dh_m=p["dH"], dz_m=p["dZ"], d3d_m=p["d3D"],
             group=p["group"], upscale=args.upscale,
