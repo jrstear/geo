@@ -96,8 +96,14 @@ variable "instance_type" {
   #   m5.4xlarge  ~$0.18/hr  16 vCPU   64 GB  ← lighter jobs
 }
 
+variable "use_spot" {
+  description = "Use spot instances (cheaper but interruptible). Set false for on-demand."
+  type        = bool
+  default     = false  # default to on-demand — spot interruptions cause costly rework
+}
+
 variable "spot_max_price" {
-  description = "Max spot bid in USD/hr. Empty = on-demand price cap (recommended)."
+  description = "Max spot bid in USD/hr. Empty = on-demand price cap (recommended). Only applies when use_spot=true."
   default     = ""
 }
 
@@ -485,14 +491,17 @@ resource "aws_instance" "odm" {
   key_name               = aws_key_pair.odm.key_name
   vpc_security_group_ids = [aws_security_group.odm.id]
 
-  # Persistent + stop: EBS survives interruption; AWS auto-restarts the instance
-  # and odm-bootstrap.sh re-runs on boot (via @reboot cron), resuming the pipeline.
-  instance_market_options {
-    market_type = "spot"
-    spot_options {
-      max_price                      = var.spot_max_price != "" ? var.spot_max_price : null
-      spot_instance_type             = "persistent"
-      instance_interruption_behavior = "stop"
+  # Spot: persistent + stop — EBS survives interruption, auto-restarts.
+  # On-demand: no interruptions, ~70% more expensive but no rework.
+  dynamic "instance_market_options" {
+    for_each = var.use_spot ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        max_price                      = var.spot_max_price != "" ? var.spot_max_price : null
+        spot_instance_type             = "persistent"
+        instance_interruption_behavior = "stop"
+      }
     }
   }
 
