@@ -122,6 +122,10 @@ run_stage() {
   local container="odm-${stage}"
   local rerun_flag=""
   [ "${force_rerun}" = "true" ] && rerun_flag="--rerun ${stage}"
+  # --end-with ensures ODM only runs THIS stage, not everything after it.
+  # Without it, --rerun causes ODM to run from this stage through the end,
+  # defeating per-stage notifications, S3 sync, and instance switching.
+  local end_flag="--end-with ${stage}"
 
   # Remove any stale container from a prior interrupted run (would cause exit 125).
   docker rm -f "${container}" 2>/dev/null || true
@@ -134,7 +138,7 @@ run_stage() {
       --project-path /datasets project \
       ${ODM_FLAGS} \
       --max-concurrency "${threads}" \
-      ${rerun_flag} &
+      ${rerun_flag} ${end_flag} &
   local run_pid=$!
 
   # Background CPU idle watchdog.
