@@ -249,6 +249,56 @@ for stage in "${STAGES[@]}"; do
   fi
 done
 
+# ── Post-processing: true orthophoto ──────────────────────────────────────────
+# Reproject camera imagery with visibility-aware nadir camera selection.
+# Requires --dtm in ODM_FLAGS (needs DTM for ground Z).
+# Runs inside the ODM container which has numpy/scipy/gdal/cv2.
+
+TRUE_ORTHO_OUT="${PROJECT_DIR}/odm_orthophoto/true_orthophoto.tif"
+if [ -f "${TRUE_ORTHO_OUT}" ] || [ -f "${TRUE_ORTHO_OUT%.tif}_cog.tif" ]; then
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✓ true_ortho (complete, skipping)"
+elif [ ! -f "${PROJECT_DIR}/odm_dem/dtm.tif" ]; then
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ⚠ true_ortho skipped — no DTM (add --dtm to ODM_FLAGS)"
+elif [ ! -f "${PROJECT_DIR}/odm_orthophoto/odm_orthophoto.original.tif" ]; then
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ⚠ true_ortho skipped — no orthophoto"
+else
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ▶ true_ortho"
+  annotate_grafana "▶ true_ortho" "odm,stage_start,true_ortho"
+  notify "ODM ${PROJECT}" "Starting true ortho post-processing on ${PROJECT}."
+
+  NCPU=$(nproc)
+  WORKERS=$(( NCPU > 2 ? NCPU - 2 : 1 ))
+
+  docker run --rm --name odm-true-ortho \
+    -v "${PROJECT_DIR}":/data \
+    -v /usr/local/bin/true_ortho.py:/scripts/true_ortho.py \
+    --entrypoint python3 \
+    "${ODM_IMAGE:-opendronemap/odm:3.6.0}" \
+    /scripts/true_ortho.py \
+    /data/opensfm/reconstruction.topocentric.json \
+    /data/odm_orthophoto/odm_orthophoto.original.tif \
+    /data/images/ \
+    --dtm /data/odm_dem/dtm.tif \
+    --workers "${WORKERS}" \
+    -o /data/odm_orthophoto/true_orthophoto.tif
+
+  if [ $? -eq 0 ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✓ true_ortho complete"
+    annotate_grafana "✓ true_ortho complete" "odm,stage_complete,true_ortho"
+    notify "ODM ${PROJECT}" "True ortho complete on ${PROJECT}."
+
+    # Sync true ortho to S3
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Syncing true ortho to S3..."
+    aws s3 sync "${PROJECT_DIR}/odm_orthophoto/" "s3://${BUCKET}/${PROJECT}/odm_orthophoto/" \
+      --exclude "*.tif" --include "true_orthophoto*" \
+      --region "${REGION}"
+  else
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ⚠ true_ortho FAILED (non-fatal, continuing)"
+    annotate_grafana "⚠ true_ortho FAILED" "odm,stage_failed,true_ortho"
+    notify "ODM ${PROJECT}" "True ortho failed on ${PROJECT} (non-fatal)."
+  fi
+fi
+
 # Disable strict mode for cleanup — any error here must not poison the exit code
 # and prevent bootstrap from triggering the shutdown path.
 set +euo pipefail
