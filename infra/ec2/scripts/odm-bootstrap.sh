@@ -278,6 +278,9 @@ if /usr/local/bin/odm-run.sh; then
   aws s3 sync "${PROJECT_DIR}/" "s3://${BUCKET}/${PROJECT}/" \
     --exclude "images/*" \
     --region "${REGION}"
+  # Sync host logs
+  aws s3 cp /var/log/odm-bootstrap.log "s3://${BUCKET}/${PROJECT}/logs/odm-bootstrap.log" --region "${REGION}" || true
+  aws s3 cp /var/log/odm-run.log "s3://${BUCKET}/${PROJECT}/logs/odm-run.log" --region "${REGION}" 2>/dev/null || true
   touch "${DONE_MARKER}"
   set_phase 8  # complete
 
@@ -314,6 +317,9 @@ else
   aws s3 cp /var/log/odm-bootstrap.log \
     "s3://${BUCKET}/${PROJECT}/logs/odm-bootstrap.log" \
     --region "${REGION}" || true
+  aws s3 cp /var/log/odm-run.log \
+    "s3://${BUCKET}/${PROJECT}/logs/odm-run.log" \
+    --region "${REGION}" 2>/dev/null || true
 
   notify "ODM ${PROJECT}" \
     "Pipeline failed. Logs synced to s3://${BUCKET}/${PROJECT}/logs/. Instance shutting down in 15 minutes — SSH in to investigate, or touch /data/project/.no-autoshutdown to cancel shutdown. Delete /data/project/.odm-failed to re-run pipeline on next boot."

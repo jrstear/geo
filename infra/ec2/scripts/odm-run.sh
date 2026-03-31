@@ -221,6 +221,9 @@ for stage in "${STAGES[@]}"; do
     aws s3 sync "${PROJECT_DIR}/" "s3://${BUCKET}/${PROJECT}/" \
       --exclude "images/*" \
       --region "${REGION}"
+    # Sync host logs (outside project dir)
+    aws s3 cp /var/log/odm-bootstrap.log "s3://${BUCKET}/${PROJECT}/logs/odm-bootstrap.log" --region "${REGION}" 2>/dev/null || true
+    aws s3 cp /var/log/odm-run.log "s3://${BUCKET}/${PROJECT}/logs/odm-run.log" --region "${REGION}" 2>/dev/null || true
   else
     EXIT=$?
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✗ ${stage} FAILED (exit ${EXIT})"
