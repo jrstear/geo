@@ -200,10 +200,27 @@ for stage in "${STAGES[@]}"; do
 
   THREADS=$(threads_for "${stage}")
 
+  # opensfm corruption detection (geo-5sx): if reconstruction.json exists but
+  # is truncated or invalid (e.g. from spot interruption during reconstruction),
+  # delete it so opensfm starts reconstruction fresh.  Features and matches are
+  # per-image atomic files and survive interruption — only the reconstruction
+  # state needs to be cleaned.
+  if [ "${stage}" = "opensfm" ] && [ -f "${PROJECT_DIR}/opensfm/reconstruction.json" ]; then
+    if ! python3 -c "import json; json.load(open('${PROJECT_DIR}/opensfm/reconstruction.json'))" 2>/dev/null; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ⚠ Corrupted reconstruction.json detected — cleaning for fresh reconstruction"
+      annotate_grafana "⚠ corrupted reconstruction.json — cleaning" "odm,corruption,opensfm"
+      notify "ODM ${PROJECT}" "Corrupted opensfm reconstruction detected (likely spot interruption). Cleaning reconstruction state — features/matches preserved. Reconstruction will restart."
+      rm -f "${PROJECT_DIR}/opensfm/reconstruction.json"
+      rm -f "${PROJECT_DIR}/opensfm/reconstruction.topocentric.json"
+      rm -f "${PROJECT_DIR}/opensfm/tracks.csv"
+      rm -f "${PROJECT_DIR}/opensfm/profile.log"
+    fi
+  fi
+
   # opensfm: if reconstruction.json already exists (reconstruct substage complete)
   # but undistorted images don't (undistort substage incomplete), run WITHOUT
   # --rerun so ODM's internal substage cache skips reconstruct and resumes at
-  # undistort — preserving similarity_transform.json and hours of work.
+  # undistort — preserving hours of reconstruction work.
   FORCE_RERUN=true
   if [ "${stage}" = "opensfm" ] && \
      [ -f "${PROJECT_DIR}/opensfm/reconstruction.json" ] && \
