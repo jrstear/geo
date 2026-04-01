@@ -648,6 +648,260 @@ def print_summary(result: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# HTML report generation
+# ---------------------------------------------------------------------------
+
+
+def _read_targets(targets_csv: str) -> Dict[str, Tuple[float, float, float]]:
+    """Read {job}_targets.csv → {label: (X, Y, Z)}."""
+    import csv
+    targets = {}
+    with open(targets_csv, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            targets[row["label"]] = (float(row["X"]), float(row["Y"]), float(row["Z"]))
+    return targets
+
+
+def _crop_ortho(ds, cx: float, cy: float, crop_radius_m: float = 5.0):
+    """Extract a square RGB crop from the orthophoto centered on (cx, cy)."""
+    gt = ds.GetGeoTransform()
+    px_size = gt[1]
+    half_px = int(math.ceil(crop_radius_m / abs(px_size)))
+    center_col = int((cx - gt[0]) / gt[1])
+    center_row = int((cy - gt[3]) / gt[5])
+    x_off = max(0, center_col - half_px)
+    y_off = max(0, center_row - half_px)
+    x_size = min(2 * half_px, ds.RasterXSize - x_off)
+    y_size = min(2 * half_px, ds.RasterYSize - y_off)
+    if x_size <= 0 or y_size <= 0:
+        return None
+    bands = min(ds.RasterCount, 3)
+    img = np.zeros((y_size, x_size, 3), dtype=np.uint8)
+    for b in range(bands):
+        band_data = ds.GetRasterBand(b + 1).ReadAsArray(x_off, y_off, x_size, y_size)
+        if band_data is not None:
+            img[:, :, b] = band_data
+    try:
+        import cv2
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    except ImportError:
+        img = img[:, :, ::-1]  # RGB→BGR without cv2
+    cx_px = center_col - x_off
+    cy_px = center_row - y_off
+    return img, px_size, cx_px, cy_px
+
+
+def _annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
+                   dx_m: float, dy_m: float,
+                   px_size: float, label: str,
+                   dh_m: float, dz_m: float, d3d_m: float,
+                   group: str, upscale: int = 4) -> np.ndarray:
+    """Upscale crop and annotate with survey + projected markers."""
+    import cv2
+    h, w = img.shape[:2]
+    out = cv2.resize(img, (w * upscale, h * upscale), interpolation=cv2.INTER_NEAREST)
+    cxs = cx_px * upscale + upscale // 2
+    cys = cy_px * upscale + upscale // 2
+
+    # Green X: survey coordinate
+    xlen = 14
+    cv2.line(out, (cxs - xlen, cys - xlen), (cxs + xlen, cys + xlen), (0, 255, 0), 2, cv2.LINE_AA)
+    cv2.line(out, (cxs - xlen, cys + xlen), (cxs + xlen, cys - xlen), (0, 255, 0), 2, cv2.LINE_AA)
+
+    # Yellow +: projected/triangulated position
+    proj_x = int(cxs + dx_m / px_size * upscale)
+    proj_y = int(cys - dy_m / px_size * upscale)
+    cl = 14
+    cv2.line(out, (proj_x - cl, proj_y), (proj_x + cl, proj_y), (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.line(out, (proj_x, proj_y - cl), (proj_x, proj_y + cl), (0, 255, 255), 2, cv2.LINE_AA)
+
+    # Yellow circle: 1 ft radius centered on projected
+    one_ft_px = int(round(FT_TO_M / px_size * upscale))
+    if one_ft_px > 2:
+        cv2.circle(out, (proj_x, proj_y), one_ft_px, (0, 255, 255), 1, cv2.LINE_AA)
+
+    # Text overlay
+    dh_ft = dh_m * M_TO_FT
+    dz_ft = dz_m * M_TO_FT
+    d3d_ft = d3d_m * M_TO_FT
+    for i, line in enumerate([f"{label} ({group})",
+                              f"dH={dh_ft:+.3f} ft  dZ={dz_ft:+.3f} ft  d3D={d3d_ft:.3f} ft"]):
+        y = 18 + i * 18
+        cv2.putText(out, line, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(out, line, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+    return out
+
+
+def _img_to_data_uri(img: np.ndarray) -> str:
+    """Encode a BGR image as a PNG data URI."""
+    import cv2, base64
+    _, buf = cv2.imencode(".png", img)
+    return f"data:image/png;base64,{base64.b64encode(buf).decode('ascii')}"
+
+
+def generate_html_report(
+    result: dict,
+    output_path: str,
+    ortho_path: Optional[str] = None,
+    targets_csv: Optional[str] = None,
+    crop_radius: float = 5.0,
+    upscale: int = 4,
+) -> None:
+    """Generate HTML accuracy report with optional ortho crop images."""
+
+    # Collect all points sorted worst-first
+    all_points = []
+    for group_key in ("gcp", "chk"):
+        group = result.get(group_key, {})
+        for p in group.get("points", []):
+            all_points.append({**p, "group": group_key.upper()})
+    all_points.sort(key=lambda p: p["dH"], reverse=True)
+
+    # Suspect flagging
+    if all_points:
+        dh_vals = sorted(p["dH"] for p in all_points)
+        mid = len(dh_vals) // 2
+        median_dh = dh_vals[mid] if len(dh_vals) % 2 else (dh_vals[mid - 1] + dh_vals[mid]) / 2
+        suspect_thresh = max(5.0 * median_dh, 0.5 * FT_TO_M)
+        for p in all_points:
+            p["suspect"] = p["dH"] > suspect_thresh
+
+    # --- Summary tables ---
+    def _summary_table(label: str, g: dict) -> str:
+        if g["n"] == 0:
+            return f"<h3>{label} — N=0</h3>"
+        rows = ""
+        for name, key in [("RMS_H", "rms_h"), ("RMS_Z", "rms_z"), ("RMS_3D", "rms_3d"),
+                          ("mean_dZ", "mean_dz"), ("std_dZ", "std_dz")]:
+            v = g[key]
+            if v is not None:
+                rows += f"<tr><td>{name}</td><td>{v:.4f} m</td><td>{v * M_TO_FT:.4f} ft</td></tr>\n"
+        return f"""<h3>{label} — N={g['n']}</h3>
+<table class="summary"><tr><th>Metric</th><th>Metres</th><th>Feet</th></tr>
+{rows}</table>"""
+
+    gcp_table = _summary_table("GCP residuals (control fit)", result["gcp"])
+    chk_table = _summary_table("CHK accuracy (independent)", result["chk"])
+
+    # --- Per-point detail table ---
+    has_images = ortho_path and targets_csv
+    detail_rows = ""
+    for p in all_points:
+        dh_ft = p["dH"] * M_TO_FT
+        dz_ft = p["dZ"] * M_TO_FT
+        d3d_ft = p["d3D"] * M_TO_FT
+        suspect = " ⚠" if p.get("suspect") else ""
+        label_cell = f'<a href="#img-{p["label"]}">{p["label"]}</a>' if has_images else p["label"]
+        detail_rows += (f'<tr><td>{label_cell}</td><td>{p["group"]}</td>'
+                        f'<td>{dh_ft:+.4f}</td><td>{dz_ft:+.4f}</td>'
+                        f'<td>{d3d_ft:.4f}</td><td>{suspect}</td></tr>\n')
+
+    detail_table = f"""<h3>Per-point residuals (all, sorted worst-first by dH)</h3>
+<table class="detail">
+<tr><th>Label</th><th>Group</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th><th></th></tr>
+{detail_rows}</table>"""
+
+    # --- Ortho crop images ---
+    image_html = ""
+    if has_images:
+        try:
+            from osgeo import gdal
+            gdal.UseExceptions()
+        except ImportError:
+            print("WARNING: GDAL not available — skipping ortho crops", file=sys.stderr)
+            has_images = False
+
+    if has_images:
+        targets = _read_targets(targets_csv)
+        ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
+        if ds is None:
+            print(f"WARNING: Cannot open {ortho_path} — skipping crops", file=sys.stderr)
+        else:
+            cards = []
+            for i, p in enumerate(all_points):
+                label = p["label"]
+                if label not in targets:
+                    continue
+                sx, sy, _ = targets[label]
+                print(f"  [{i+1}/{len(all_points)}] {label}  dH={p['dH']*M_TO_FT:.4f} ft",
+                      file=sys.stderr)
+                crop_result = _crop_ortho(ds, sx, sy, crop_radius)
+                if crop_result is None:
+                    print(f"    skipped (outside orthophoto extent)", file=sys.stderr)
+                    continue
+                img, px_sz, cx_px, cy_px = crop_result
+                annotated = _annotate_crop(
+                    img, cx_px, cy_px,
+                    dx_m=p["dX"], dy_m=p["dY"],
+                    px_size=px_sz, label=label,
+                    dh_m=p["dH"], dz_m=p["dZ"], d3d_m=p["d3D"],
+                    group=p["group"], upscale=upscale,
+                )
+                cards.append(f"""
+        <div class="card" id="img-{label}">
+            <div class="info">
+                <b>{label}</b> <span class="group">{p['group']}</span><br/>
+                dH={p['dH']*M_TO_FT:+.4f} ft &nbsp; dZ={p['dZ']*M_TO_FT:+.4f} ft
+            </div>
+            <img src="{_img_to_data_uri(annotated)}" />
+        </div>""")
+            ds = None
+            if cards:
+                image_html = f"""
+<h3>Ortho crops</h3>
+<div class="legend">
+    <span class="green">X survey coordinate</span>
+    <span class="yellow">+ projected (triangulated)</span>
+    <span class="yellow">○ 1 ft radius</span>
+    &nbsp; | &nbsp; gap between markers and visible target = ortho positioning error
+</div>
+<div class="grid">
+{''.join(cards)}
+</div>"""
+
+    # --- Assemble HTML ---
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>RMSE Accuracy Report</title>
+<style>
+    body {{ font-family: monospace; background: #1a1a1a; color: #eee; margin: 20px; }}
+    h1 {{ font-size: 18px; }}
+    h3 {{ font-size: 14px; margin-top: 24px; color: #ccc; }}
+    table {{ border-collapse: collapse; margin: 8px 0 16px 0; }}
+    th, td {{ padding: 4px 12px; text-align: right; border: 1px solid #444; }}
+    th {{ background: #333; }}
+    td:first-child {{ text-align: left; }}
+    .summary td:first-child {{ font-weight: bold; }}
+    .detail a {{ color: #6cf; }}
+    .legend {{ font-size: 13px; margin-bottom: 16px; color: #aaa; }}
+    .green {{ color: #0f0; }}
+    .yellow {{ color: #ff0; }}
+    .grid {{ display: flex; flex-wrap: wrap; gap: 12px; }}
+    .card {{ background: #2a2a2a; border-radius: 6px; overflow: hidden; }}
+    .card img {{ display: block; }}
+    .info {{ padding: 6px 10px; font-size: 12px; line-height: 1.5; }}
+    .group {{ color: #888; font-size: 11px; }}
+</style>
+</head>
+<body>
+<h1>RMSE Accuracy Report</h1>
+{gcp_table}
+{chk_table}
+{detail_table}
+{image_html}
+</body>
+</html>"""
+
+    from pathlib import Path
+    Path(output_path).write_text(html, encoding="utf-8")
+    print(f"\nWrote HTML report: {output_path} ({len(all_points)} points)",
+          file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Synthetic self-contained test
 # ---------------------------------------------------------------------------
 
@@ -834,6 +1088,36 @@ def main() -> None:
         action="store_true",
         help="Run synthetic self-contained test (no external files required).",
     )
+    parser.add_argument(
+        "--html",
+        default=None,
+        metavar="report.html",
+        help="Generate HTML accuracy report (tables + optional ortho crops).",
+    )
+    parser.add_argument(
+        "--ortho",
+        default=None,
+        metavar="orthophoto.tif",
+        help="Orthophoto for annotated crop images in HTML report.",
+    )
+    parser.add_argument(
+        "--targets",
+        default=None,
+        metavar="targets.csv",
+        help="Targets CSV (label,X,Y,Z) for ortho crop positions.",
+    )
+    parser.add_argument(
+        "--crop-radius",
+        type=float,
+        default=5.0,
+        help="Crop radius in metres for ortho images (default: 5.0).",
+    )
+    parser.add_argument(
+        "--upscale",
+        type=int,
+        default=4,
+        help="Upscale factor for ortho crop images (default: 4).",
+    )
     args = parser.parse_args()
 
     if args.test:
@@ -849,6 +1133,16 @@ def main() -> None:
     print_summary(result)
     json.dump(result, sys.stdout, indent=2)
     print()  # trailing newline
+
+    if args.html:
+        generate_html_report(
+            result,
+            output_path=args.html,
+            ortho_path=args.ortho,
+            targets_csv=args.targets,
+            crop_radius=args.crop_radius,
+            upscale=args.upscale,
+        )
 
 
 if __name__ == "__main__":
