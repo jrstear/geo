@@ -488,6 +488,9 @@ def _compute_residuals(
             "dZ": round(dZ, 6),
             "dH": round(dH, 6),
             "d3D": round(d3D, 6),
+            "survey_x": round(surv[0], 6),
+            "survey_y": round(surv[1], 6),
+            "survey_z": round(surv[2], 6),
         })
     return points
 
@@ -744,7 +747,6 @@ def generate_html_report(
     result: dict,
     output_path: str,
     ortho_path: Optional[str] = None,
-    targets_csv: Optional[str] = None,
     crop_radius: float = 5.0,
     upscale: int = 4,
     suspect_ratio: float = 5.0,
@@ -793,19 +795,17 @@ def generate_html_report(
 {summary_rows}</table>"""
 
     # --- Overview map: low-res ortho with point locations ---
-    has_images = ortho_path and targets_csv
+    has_ortho = ortho_path is not None
     overview_html = ""
-    targets = None
-    if has_images:
+    if has_ortho:
         try:
             from osgeo import gdal
             gdal.UseExceptions()
-            targets = _read_targets(targets_csv)
         except ImportError:
             print("WARNING: GDAL not available — skipping ortho crops", file=sys.stderr)
-            has_images = False
+            has_ortho = False
 
-    if has_images and targets:
+    if has_ortho:
         try:
             import cv2
             ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
@@ -828,9 +828,7 @@ def generate_html_report(
 
                 for p in all_points:
                     label = p["label"]
-                    if label not in targets:
-                        continue
-                    sx, sy, _ = targets[label]
+                    sx, sy = p["survey_x"], p["survey_y"]
                     px = int((sx - gt[0]) / gt[1] / scale)
                     py = int((sy - gt[3]) / gt[5] / scale)
                     if not (0 <= px < sw and 0 <= py < sh):
@@ -886,7 +884,7 @@ def generate_html_report(
         dz_ft = p["dZ"] * M_TO_FT
         d3d_ft = p["d3D"] * M_TO_FT
         suspect = " ⚠" if p.get("suspect") else ""
-        label_cell = f'<a href="#img-{p["label"]}">{p["label"]}</a>' if has_images else p["label"]
+        label_cell = f'<a href="#img-{p["label"]}">{p["label"]}</a>' if has_ortho else p["label"]
         suspect_mark = ' <span style="color:#f44">⚠</span>' if p.get("suspect") else ""
         detail_rows += (f'<tr><td>{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
                         f'<td>{dh_ft:+.4f}</td><td>{dz_ft:+.4f}</td>'
@@ -933,7 +931,7 @@ All points are within the threshold.</p>"""
 
     # --- Ortho crop images ---
     image_html = ""
-    if has_images and targets:
+    if has_ortho:
         from osgeo import gdal
         ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
         if ds is None:
@@ -942,9 +940,7 @@ All points are within the threshold.</p>"""
             cards = []
             for i, p in enumerate(all_points):
                 label = p["label"]
-                if label not in targets:
-                    continue
-                sx, sy, _ = targets[label]
+                sx, sy = p["survey_x"], p["survey_y"]
                 print(f"  [{i+1}/{len(all_points)}] {label}  dH={p['dH']*M_TO_FT:.4f} ft",
                       file=sys.stderr)
                 crop_result = _crop_ortho(ds, sx, sy, crop_radius)
@@ -1224,12 +1220,6 @@ def main() -> None:
         help="Orthophoto for annotated crop images in HTML report.",
     )
     parser.add_argument(
-        "--targets",
-        default=None,
-        metavar="targets.csv",
-        help="Targets CSV (label,X,Y,Z) for ortho crop positions.",
-    )
-    parser.add_argument(
         "--crop-radius",
         type=float,
         default=5.0,
@@ -1274,7 +1264,6 @@ def main() -> None:
             result,
             output_path=args.html,
             ortho_path=args.ortho,
-            targets_csv=args.targets,
             crop_radius=args.crop_radius,
             upscale=args.upscale,
             suspect_ratio=args.suspect_ratio,
