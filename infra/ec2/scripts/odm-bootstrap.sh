@@ -111,7 +111,7 @@ fi
 #   on-demand  → AWS Pricing API (us-east-1 endpoint) for list price
 # Writes INSTANCE_COST_PER_HOUR to /etc/odm-env for downstream scripts.
 lookup_instance_cost() {
-  local token instance_id instance_type lifecycle region cost
+  local token instance_id instance_type lifecycle region cost=""
 
   token=$(curl -sf -X PUT \
     -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
