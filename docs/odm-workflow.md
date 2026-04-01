@@ -78,7 +78,7 @@ flowchart TD
         chk_list
         targets
 	launch_odm
-	subgraph "ODM Pipeline"
+	subgraph ODM ["ODM Pipeline"]
             odm
             orthophoto
             pointcloud
@@ -89,6 +89,7 @@ flowchart TD
             true_ortho
             true_ortho_tif
 	end
+	style ODM fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
         cameras
         rmse
         uncertainty
