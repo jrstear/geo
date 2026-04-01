@@ -842,10 +842,18 @@ _worker_recon_data: Optional[dict] = None
 _worker_config: Optional[dict] = None
 
 
-def _init_worker(recon_data: dict, config: dict):
-    """Pool initializer: store shared data in module globals."""
+def _init_worker(recon_path: str, config: dict):
+    """Pool initializer: each worker loads reconstruction from disk independently.
+
+    Loading from JSON (~7s) is much faster than deserializing via pickle (~60s
+    for a 600MB dict). Workers load in parallel after fork, so total wall time
+    is just one load duration.
+    """
     global _worker_recon_data, _worker_config
-    _worker_recon_data = recon_data
+    _worker_recon_data = {
+        k: v for k, v in load_reconstruction(recon_path).items()
+        if k in ("shots", "cameras", "reference_lla")
+    }
     _worker_config = config
 
 
@@ -1159,7 +1167,7 @@ def process_true_ortho_full(
 
     if workers <= 1:
         # Single-process mode: set globals directly
-        _init_worker(recon_data, worker_config)
+        _init_worker(recon_path, worker_config)
         for i, args in enumerate(tile_args):
             elapsed = time.time() - t0
             rate = tiles_done / max(1, elapsed)
@@ -1171,8 +1179,10 @@ def process_true_ortho_full(
             write_tile(result)
     else:
         print(f"Using {workers} worker processes")
+        # Pass recon_path (string) not recon_data (600MB dict) — each worker
+        # loads the JSON independently (~7s each, in parallel after fork).
         with Pool(workers, initializer=_init_worker,
-                  initargs=(recon_data, worker_config)) as pool:
+                  initargs=(recon_path, worker_config)) as pool:
             for result in pool.imap_unordered(_process_tile, tile_args, chunksize=1):
                 write_tile(result)
                 if tiles_done % 10 == 0:
