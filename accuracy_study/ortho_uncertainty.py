@@ -424,6 +424,8 @@ def process_ortho(
     print(f"Upsampling to full resolution ({ortho_w} x {ortho_h})...")
     t2 = time.time()
 
+    import multiprocessing
+    n_threads = multiprocessing.cpu_count()
     warp_opts = gdal.WarpOptions(
         format="GTiff",
         width=ortho_w,
@@ -435,12 +437,15 @@ def process_ortho(
             gt[3],                           # maxY
         ],
         resampleAlg=gdal.GRA_Bilinear,
+        multithread=True,
+        warpOptions=[f"NUM_THREADS={n_threads}"],
         creationOptions=[
             "TILED=YES",
             "BLOCKXSIZE=256",
             "BLOCKYSIZE=256",
             "COMPRESS=DEFLATE",
             "PREDICTOR=3",
+            f"NUM_THREADS={n_threads}",
         ],
     )
     result = gdal.Warp(output_path, coarse_path, options=warp_opts)
