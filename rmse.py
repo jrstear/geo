@@ -1006,7 +1006,7 @@ All points are within the threshold.</p>"""
 <h3>Ortho crops</h3>
 <div class="legend">
     <span class="green">X survey coordinate</span>
-    <span class="yellow">+ projected (triangulated)</span>
+    <span class="yellow">+ projected</span>
     <span class="yellow">○ 1 ft radius</span>
     &nbsp; | &nbsp; gap between markers and visible target = ortho positioning error
 </div>
