@@ -747,6 +747,8 @@ def generate_html_report(
     targets_csv: Optional[str] = None,
     crop_radius: float = 5.0,
     upscale: int = 4,
+    suspect_ratio: float = 5.0,
+    suspect_floor_ft: float = 0.5,
 ) -> None:
     """Generate HTML accuracy report with optional ortho crop images."""
 
@@ -759,33 +761,125 @@ def generate_html_report(
     all_points.sort(key=lambda p: p["dH"], reverse=True)
 
     # Suspect flagging
+    suspect_floor_m = suspect_floor_ft * FT_TO_M
+    median_dh = 0.0
+    suspect_thresh = suspect_floor_m
     if all_points:
         dh_vals = sorted(p["dH"] for p in all_points)
         mid = len(dh_vals) // 2
         median_dh = dh_vals[mid] if len(dh_vals) % 2 else (dh_vals[mid - 1] + dh_vals[mid]) / 2
-        suspect_thresh = max(5.0 * median_dh, 0.5 * FT_TO_M)
+        suspect_thresh = max(suspect_ratio * median_dh, suspect_floor_m)
         for p in all_points:
             p["suspect"] = p["dH"] > suspect_thresh
 
-    # --- Summary tables ---
-    def _summary_table(label: str, g: dict) -> str:
-        if g["n"] == 0:
-            return f"<h3>{label} — N=0</h3>"
-        rows = ""
-        for name, key in [("RMS_H", "rms_h"), ("RMS_Z", "rms_z"), ("RMS_3D", "rms_3d"),
-                          ("mean_dZ", "mean_dz"), ("std_dZ", "std_dz")]:
-            v = g[key]
-            if v is not None:
-                rows += f"<tr><td>{name}</td><td>{v:.4f} m</td><td>{v * M_TO_FT:.4f} ft</td></tr>\n"
-        return f"""<h3>{label} — N={g['n']}</h3>
-<table class="summary"><tr><th>Metric</th><th>Metres</th><th>Feet</th></tr>
-{rows}</table>"""
+    # --- Combined summary table (GCP + CHK side by side) ---
+    gcp = result["gcp"]
+    chk = result["chk"]
+    summary_rows = ""
+    for name, key in [("RMS_H", "rms_h"), ("RMS_Z", "rms_z"), ("RMS_3D", "rms_3d"),
+                      ("mean_dZ", "mean_dz"), ("std_dZ", "std_dz")]:
+        gv = gcp.get(key)
+        cv = chk.get(key)
+        gm = f"{gv:.4f}" if gv is not None else "—"
+        gf = f"{gv * M_TO_FT:.4f}" if gv is not None else "—"
+        cm = f"{cv:.4f}" if cv is not None else "—"
+        cf = f"{cv * M_TO_FT:.4f}" if cv is not None else "—"
+        summary_rows += f"<tr><td>{name}</td><td>{gm}</td><td>{gf}</td><td>{cm}</td><td>{cf}</td></tr>\n"
 
-    gcp_table = _summary_table("GCP residuals (control fit)", result["gcp"])
-    chk_table = _summary_table("CHK accuracy (independent)", result["chk"])
+    summary_table = f"""<h3>Summary — GCP (N={gcp['n']}) &amp; CHK (N={chk['n']})</h3>
+<table class="summary">
+<tr><th></th><th colspan="2">GCP (control fit)</th><th colspan="2">CHK (independent)</th></tr>
+<tr><th>Metric</th><th>m</th><th>ft</th><th>m</th><th>ft</th></tr>
+{summary_rows}</table>"""
 
-    # --- Per-point detail table ---
+    # --- Overview map: low-res ortho with point locations ---
     has_images = ortho_path and targets_csv
+    overview_html = ""
+    targets = None
+    if has_images:
+        try:
+            from osgeo import gdal
+            gdal.UseExceptions()
+            targets = _read_targets(targets_csv)
+        except ImportError:
+            print("WARNING: GDAL not available — skipping ortho crops", file=sys.stderr)
+            has_images = False
+
+    if has_images and targets:
+        try:
+            import cv2
+            ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
+            if ds is not None:
+                gt = ds.GetGeoTransform()
+                ow, oh = ds.RasterXSize, ds.RasterYSize
+                # Read a low-res overview (~800px wide)
+                scale = max(1, ow // 800)
+                sw, sh = ow // scale, oh // scale
+                overview = np.zeros((sh, sw, 3), dtype=np.uint8)
+                for b in range(min(3, ds.RasterCount)):
+                    overview[:, :, b] = ds.GetRasterBand(b + 1).ReadAsArray(
+                        0, 0, ow, oh, buf_xsize=sw, buf_ysize=sh)
+                overview = cv2.cvtColor(overview, cv2.COLOR_RGB2BGR)
+
+                # Draw each point as a colored dot + label with collision avoidance
+                placed_labels = []  # [(x, y, w, h), ...] for collision detection
+                font_scale = 0.28
+                font = cv2.FONT_HERSHEY_SIMPLEX
+
+                for p in all_points:
+                    label = p["label"]
+                    if label not in targets:
+                        continue
+                    sx, sy, _ = targets[label]
+                    px = int((sx - gt[0]) / gt[1] / scale)
+                    py = int((sy - gt[3]) / gt[5] / scale)
+                    if not (0 <= px < sw and 0 <= py < sh):
+                        continue
+
+                    # Color: green for GCP, yellow for CHK, red for suspect
+                    if p.get("suspect"):
+                        color = (0, 0, 255)
+                    elif p["group"] == "GCP":
+                        color = (0, 255, 0)
+                    else:
+                        color = (0, 255, 255)
+                    cv2.circle(overview, (px, py), 4, color, -1, cv2.LINE_AA)
+                    cv2.circle(overview, (px, py), 4, (0, 0, 0), 1, cv2.LINE_AA)
+
+                    # Label placement with collision + boundary avoidance
+                    (tw, th), _ = cv2.getTextSize(label, font, font_scale, 1)
+                    lx, ly = px + 6, py + 3
+                    # Try offsets: right, left, below, above
+                    for dx, dy in [(6, 3), (-tw - 6, 3), (6, th + 8), (6, -th - 2),
+                                   (-tw - 6, th + 8), (-tw - 6, -th - 2)]:
+                        lx, ly = px + dx, py + dy
+                        # Check image bounds
+                        if lx < 0 or lx + tw > sw or ly - th < 0 or ly > sh:
+                            continue
+                        collision = False
+                        for ox, oy, ow, oh in placed_labels:
+                            if (lx < ox + ow and lx + tw > ox and
+                                    ly - th < oy and ly > oy - oh):
+                                collision = True
+                                break
+                        if not collision:
+                            break
+                    # Final clamp to image bounds
+                    lx = max(0, min(lx, sw - tw))
+                    ly = max(th, min(ly, sh))
+
+                    placed_labels.append((lx, ly, tw, th))
+                    cv2.putText(overview, label, (lx, ly), font, font_scale,
+                                (0, 0, 0), 2, cv2.LINE_AA)
+                    cv2.putText(overview, label, (lx, ly), font, font_scale,
+                                color, 1, cv2.LINE_AA)
+                ds = None  # will reopen for crops
+                overview_html = (f'<img src="{_img_to_data_uri(overview)}" '
+                                 f'style="max-height:600px; border:1px solid #444; border-radius:4px;" />')
+        except Exception as e:
+            print(f"WARNING: overview map failed: {e}", file=sys.stderr)
+
+    # --- Per-point detail table (with overview map to the right) ---
     detail_rows = ""
     for p in all_points:
         dh_ft = p["dH"] * M_TO_FT
@@ -793,27 +887,54 @@ def generate_html_report(
         d3d_ft = p["d3D"] * M_TO_FT
         suspect = " ⚠" if p.get("suspect") else ""
         label_cell = f'<a href="#img-{p["label"]}">{p["label"]}</a>' if has_images else p["label"]
-        detail_rows += (f'<tr><td>{label_cell}</td><td>{p["group"]}</td>'
+        suspect_mark = ' <span style="color:#f44">⚠</span>' if p.get("suspect") else ""
+        detail_rows += (f'<tr><td>{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
                         f'<td>{dh_ft:+.4f}</td><td>{dz_ft:+.4f}</td>'
-                        f'<td>{d3d_ft:.4f}</td><td>{suspect}</td></tr>\n')
+                        f'<td>{d3d_ft:.4f}</td></tr>\n')
 
-    detail_table = f"""<h3>Per-point residuals (all, sorted worst-first by dH)</h3>
-<table class="detail">
-<tr><th>Label</th><th>Group</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th><th></th></tr>
+    detail_table_html = f"""<table class="detail">
+<tr><th>Label</th><th>Group</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th></tr>
 {detail_rows}</table>"""
+
+    # --- Suspect / outlier check ---
+    suspects = [p for p in all_points if p.get("suspect")]
+    criteria_desc = (
+        f"A point is flagged when its horizontal residual (dH) exceeds both "
+        f"{suspect_ratio:.0f}× the median dH <b>and</b> {suspect_floor_ft:.1f} ft. "
+        f"Median dH = {median_dh * M_TO_FT:.4f} ft, "
+        f"threshold = {suspect_thresh * M_TO_FT:.4f} ft."
+    )
+    if suspects:
+        suspect_rows = ""
+        for p in sorted(suspects, key=lambda x: x["dH"], reverse=True):
+            ratio = p["dH"] / median_dh if median_dh > 0 else 0
+            suspect_rows += (
+                f'<tr><td>{p["label"]}</td><td>{p["group"]}</td>'
+                f'<td>{p["dH"] * M_TO_FT:.3f}</td>'
+                f'<td>{ratio:.0f}×</td>'
+                f'<td>Verify pixel tagging — possible mis-tag, wrong target, '
+                f'or base station confusion.</td></tr>\n')
+        suspect_html = f"""<h3 style="color:#f44">⚠ Suspect tagging — {len(suspects)} point{'s' if len(suspects) != 1 else ''} flagged</h3>
+<p style="color:#aaa; font-size:12px;">{criteria_desc}</p>
+<table class="detail">
+<tr><th>Label</th><th>Group</th><th>dH (ft)</th><th>× median</th><th>Recommendation</th></tr>
+{suspect_rows}</table>"""
+    else:
+        suspect_html = f"""<h3 style="color:#0f0">✓ Outlier check — no suspect points</h3>
+<p style="color:#aaa; font-size:12px;">{criteria_desc}
+All points are within the threshold.</p>"""
+
+    detail_section = f"""<h3>Per-point residuals (all, sorted worst-first by dH)</h3>
+<div class="detail-with-map">
+{detail_table_html}
+{overview_html}
+</div>
+{suspect_html}"""
 
     # --- Ortho crop images ---
     image_html = ""
-    if has_images:
-        try:
-            from osgeo import gdal
-            gdal.UseExceptions()
-        except ImportError:
-            print("WARNING: GDAL not available — skipping ortho crops", file=sys.stderr)
-            has_images = False
-
-    if has_images:
-        targets = _read_targets(targets_csv)
+    if has_images and targets:
+        from osgeo import gdal
         ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
         if ds is None:
             print(f"WARNING: Cannot open {ortho_path} — skipping crops", file=sys.stderr)
@@ -875,7 +996,10 @@ def generate_html_report(
     th {{ background: #333; }}
     td:first-child {{ text-align: left; }}
     .summary td:first-child {{ font-weight: bold; }}
+    .summary th[colspan] {{ text-align: center; }}
     .detail a {{ color: #6cf; }}
+    .detail-with-map {{ display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }}
+    .detail-with-map table {{ flex-shrink: 0; }}
     .legend {{ font-size: 13px; margin-bottom: 16px; color: #aaa; }}
     .green {{ color: #0f0; }}
     .yellow {{ color: #ff0; }}
@@ -888,9 +1012,8 @@ def generate_html_report(
 </head>
 <body>
 <h1>RMSE Accuracy Report</h1>
-{gcp_table}
-{chk_table}
-{detail_table}
+{summary_table}
+{detail_section}
 {image_html}
 </body>
 </html>"""
@@ -1118,6 +1241,18 @@ def main() -> None:
         default=4,
         help="Upscale factor for ortho crop images (default: 4).",
     )
+    parser.add_argument(
+        "--suspect-ratio",
+        type=float,
+        default=5.0,
+        help="Flag points with dH > N× median dH (default: 5.0).",
+    )
+    parser.add_argument(
+        "--suspect-floor",
+        type=float,
+        default=0.5,
+        help="Minimum dH in feet to trigger suspect flag (default: 0.5).",
+    )
     args = parser.parse_args()
 
     if args.test:
@@ -1142,6 +1277,8 @@ def main() -> None:
             targets_csv=args.targets,
             crop_radius=args.crop_radius,
             upscale=args.upscale,
+            suspect_ratio=args.suspect_ratio,
+            suspect_floor_ft=args.suspect_floor,
         )
 
 
