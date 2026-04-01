@@ -165,6 +165,12 @@ variable "grafana_api_key" {
   sensitive   = true
 }
 
+variable "grafana_sa_key" {
+  description = "Grafana Cloud service account token (glsa_...) for annotations. Separate from the data-plane API key."
+  default     = ""
+  sensitive   = true
+}
+
 variable "grafana_stack_url" {
   description = "Grafana Cloud stack base URL for annotations API (e.g. https://yourorg.grafana.net)"
   default     = ""
@@ -546,6 +552,7 @@ resource "aws_instance" "odm" {
     export GRAFANA_LOKI_USER="${var.grafana_loki_user}"
     export GRAFANA_API_KEY="${var.grafana_api_key}"
     export GRAFANA_STACK_URL="${var.grafana_stack_url}"
+    export GRAFANA_SA_KEY="${var.grafana_sa_key}"
     ENVFILE
 
     # Download scripts from S3 (uploaded by Terraform from infra/ec2/scripts/).

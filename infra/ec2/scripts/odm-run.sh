@@ -106,7 +106,10 @@ notify() {
 # Tags are comma-separated: "odm,stage_start,opensfm"
 annotate_grafana() {
   local text="$1" tags_csv="${2:-odm}"
-  [ -n "${GRAFANA_STACK_URL:-}" ] && [ -n "${GRAFANA_API_KEY:-}" ] || return 0
+  # Annotations require the Grafana SA token (management API), not the
+  # data-plane access policy token (metrics/logs push only).
+  local ann_key="${GRAFANA_SA_KEY:-${GRAFANA_API_KEY:-}}"
+  [ -n "${GRAFANA_STACK_URL:-}" ] && [ -n "${ann_key}" ] || return 0
   local ts_ms tags_json text_esc
   ts_ms=$(date +%s%3N)
   # "a,b,c" → ["a","b","c"]
@@ -114,7 +117,7 @@ annotate_grafana() {
   text_esc="${text//\"/\\\"}"
   curl -s -o /dev/null --max-time 5 \
     -X POST "${GRAFANA_STACK_URL}/api/annotations" \
-    -H "Authorization: Bearer ${GRAFANA_API_KEY}" \
+    -H "Authorization: Bearer ${ann_key}" \
     -H "Content-Type: application/json" \
     -d "{\"time\":${ts_ms},\"text\":\"${text_esc}\",\"tags\":${tags_json}}" &
 }
