@@ -118,8 +118,8 @@ prometheus.scrape "node" {
     instance    = env("INSTANCE_ID"),
     project     = env("PROJECT"),
   }]
-  scrape_interval = "10s"
-  scrape_timeout  = "8s"
+  scrape_interval = "30s"
+  scrape_timeout  = "25s"
   forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 }
 
@@ -131,8 +131,8 @@ prometheus.scrape "cadvisor" {
     instance    = env("INSTANCE_ID"),
     project     = env("PROJECT"),
   }]
-  scrape_interval = "10s"
-  scrape_timeout  = "8s"
+  scrape_interval = "30s"
+  scrape_timeout  = "25s"
   forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 }
 
