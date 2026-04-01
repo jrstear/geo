@@ -31,25 +31,66 @@ threads_for() {
   esac
 }
 
-# Returns 0 if stage outputs are present (safe to skip).
-# opensfm also checks undistorted images — their absence (from --optimize-disk-space
-# on a prior run) forces opensfm to rerun rather than silently skipping.
+# Returns 0 if stage completed cleanly (atomic .done marker present).
+# A stage is only "done" if it ran to completion AND synced to S3.
+# Partial outputs from spot interruptions won't have the marker.
+DONE_DIR="${PROJECT_DIR}/.stage_done"
+
 is_done() {
-  case "$1" in
-    dataset)            [ -f "${PROJECT_DIR}/opensfm/camera_models.json" ] ;;
-    opensfm)            [ -f "${PROJECT_DIR}/opensfm/reconstruction.json" ] &&
-                        ls "${PROJECT_DIR}"/opensfm/undistorted/images/*.* &>/dev/null 2>&1 ;;
-    openmvs)            [ -f "${PROJECT_DIR}/opensfm/undistorted/openmvs/scene_dense.ply" ] ;;
-    odm_filterpoints)   ls "${PROJECT_DIR}"/odm_filterpoints/*.ply &>/dev/null 2>&1 ;;
-    odm_meshing)        [ -f "${PROJECT_DIR}/odm_meshing/odm_mesh.ply" ] ;;
-    mvs_texturing)      ls "${PROJECT_DIR}"/odm_texturing/*.obj &>/dev/null 2>&1 ;;
-    odm_georeferencing) [ -f "${PROJECT_DIR}/odm_georeferencing/odm_georeferenced_model.las" ] ;;
-    odm_dem)            ls "${PROJECT_DIR}"/odm_dem/*.tif &>/dev/null 2>&1 ;;
-    odm_orthophoto)     [ -f "${PROJECT_DIR}/odm_orthophoto/odm_orthophoto.tif" ] ;;
-    odm_report)         ls "${PROJECT_DIR}"/odm_report/*.pdf &>/dev/null 2>&1 ;;
-    *) return 1 ;;
-  esac
+  [ -f "${DONE_DIR}/$1" ]
 }
+
+mark_done() {
+  mkdir -p "${DONE_DIR}"
+  touch "${DONE_DIR}/$1"
+}
+
+# Clean partial outputs for stages where incomplete state is harmful.
+# Per-image stages (features, matches, undistort) are NOT cleaned —
+# ODM resumes from partial. Monolithic stages (DEM) are cleaned
+# to prevent the "DSM exists but no DTM" skip problem.
+clean_if_partial() {
+  local stage="$1"
+  if [ -d "${PROJECT_DIR}/$stage" ] && [ ! -f "${DONE_DIR}/$stage" ]; then
+    case "$stage" in
+      odm_dem)
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ⚠ Cleaning partial ${stage} outputs (no .done marker)"
+        rm -rf "${PROJECT_DIR}/${stage}"
+        ;;
+    esac
+  fi
+}
+
+# Migrate: if old-style outputs exist but no .done marker, create markers
+# for stages that look complete. This handles the first run after this
+# change, where prior stages completed under the old is_done logic.
+_migrate_done_markers() {
+  mkdir -p "${DONE_DIR}"
+  _check() { [ ! -f "${DONE_DIR}/$1" ] && "$@" && mark_done "$1"; }
+  _old_dataset()            { [ -f "${PROJECT_DIR}/opensfm/camera_models.json" ]; }
+  _old_opensfm()            { [ -f "${PROJECT_DIR}/opensfm/reconstruction.json" ] &&
+                              ls "${PROJECT_DIR}"/opensfm/undistorted/images/*.* &>/dev/null 2>&1; }
+  _old_openmvs()            { [ -f "${PROJECT_DIR}/opensfm/undistorted/openmvs/scene_dense.ply" ]; }
+  _old_odm_filterpoints()   { ls "${PROJECT_DIR}"/odm_filterpoints/*.ply &>/dev/null 2>&1; }
+  _old_odm_meshing()        { [ -f "${PROJECT_DIR}/odm_meshing/odm_mesh.ply" ]; }
+  _old_mvs_texturing()      { ls "${PROJECT_DIR}"/odm_texturing/*.obj &>/dev/null 2>&1; }
+  _old_odm_georeferencing() { [ -f "${PROJECT_DIR}/odm_georeferencing/odm_georeferenced_model.laz" ] ||
+                              [ -f "${PROJECT_DIR}/odm_georeferencing/odm_georeferenced_model.las" ]; }
+  _old_odm_dem()            { ls "${PROJECT_DIR}"/odm_dem/dtm.tif &>/dev/null 2>&1 ||
+                              { ! echo "${ODM_FLAGS}" | grep -q "\-\-dtm" &&
+                                ls "${PROJECT_DIR}"/odm_dem/dsm.tif &>/dev/null 2>&1; }; }
+  _old_odm_orthophoto()     { [ -f "${PROJECT_DIR}/odm_orthophoto/odm_orthophoto.tif" ]; }
+  _old_odm_report()         { ls "${PROJECT_DIR}"/odm_report/*.pdf &>/dev/null 2>&1; }
+
+  for stage in dataset opensfm openmvs odm_filterpoints odm_meshing mvs_texturing \
+               odm_georeferencing odm_dem odm_orthophoto odm_report; do
+    if [ ! -f "${DONE_DIR}/${stage}" ] && "_old_${stage}" 2>/dev/null; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ↑ Migrated .done marker for ${stage} (legacy outputs present)"
+      mark_done "${stage}"
+    fi
+  done
+}
+_migrate_done_markers
 
 notify() {
   aws sns publish \
@@ -200,6 +241,9 @@ for stage in "${STAGES[@]}"; do
 
   THREADS=$(threads_for "${stage}")
 
+  # Clean partial outputs for stages where incomplete state causes problems
+  clean_if_partial "${stage}"
+
   # opensfm corruption detection (geo-5sx): if reconstruction.json exists but
   # is truncated or invalid (e.g. from spot interruption during reconstruction),
   # delete it so opensfm starts reconstruction fresh.  Features and matches are
@@ -245,6 +289,8 @@ for stage in "${STAGES[@]}"; do
     # Sync host logs (outside project dir)
     aws s3 cp /var/log/odm-bootstrap.log "s3://${BUCKET}/${PROJECT}/logs/odm-bootstrap.log" --region "${REGION}" 2>/dev/null || true
     aws s3 cp /var/log/odm-run.log "s3://${BUCKET}/${PROJECT}/logs/odm-run.log" --region "${REGION}" 2>/dev/null || true
+    # Mark stage complete AFTER sync — so a kill during sync doesn't mark it done
+    mark_done "${stage}"
   else
     EXIT=$?
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  ✗ ${stage} FAILED (exit ${EXIT})"
