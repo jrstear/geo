@@ -19,20 +19,19 @@ flowchart TD
     cameras["cameras.json"]
     sight(["sight.py"])
     marks["marks_6529.csv for Pix4D"]
-    targets["{job}.txt"]
+    pretag["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
     tagged["{job}_tagged.txt"]
     split(["transform.py split"])
     gcp_list["gcp_list.txt"]
     chk_list["chk_list.txt"]
-    targets_csv["{job}_targets.csv"]
+    targets["{job}_targets.csv"]
     targets_design["{job}_targets_design.csv"]
     s3(["s3 sync & terraform apply"])
     odm(["ODM on EC2"])
     rmse(["rmse.py"])
     true_ortho(["true_ortho.py"])
     uncertainty(["ortho_uncertainty.py"])
-    visual_report(["rmse_visual_report.py"])
     drone[/"Drone"\]
     images[["images/*.JPG"]]
     deliverables[["orthophoto,contours,surface"]]
@@ -66,7 +65,7 @@ flowchart TD
     subgraph "Cloud eg EPSG:32613"
         drone
         images
-        targets
+        pretag
         cameras
         sight
         transform_yaml
@@ -75,7 +74,7 @@ flowchart TD
         split
         gcp_list
         chk_list
-        targets_csv
+        targets
         s3
         odm
         deliverables
@@ -85,7 +84,6 @@ flowchart TD
         true_ortho_tif
         uncertainty
         uncertainty_tif
-        visual_report
         report
         packager
         qgis_cloud
@@ -101,9 +99,9 @@ flowchart TD
     images --> true_ortho
     images --> sight
     emlid --> all --> sight
-    sight --> targets
+    sight --> pretag
     sight --> marks
-    targets --> gcpeditor
+    pretag --> gcpeditor
     gcpeditor --> tagged
     tagged --> split
     tagged --> gcpeditor
@@ -111,7 +109,7 @@ flowchart TD
     transform_yaml --> sight
     split --> gcp_list
     split --> chk_list
-    split --> targets_csv
+    split --> targets
     split --> targets_design
     gcp_list --> s3
     s3 --> odm --> deliverables
@@ -123,17 +121,14 @@ flowchart TD
     model --> uncertainty
     model --> true_ortho
     model --> rmse
-    rmse --> visual_report
     rmse --> report
     deliverables --> packager
     deliverables --> qgis_cloud
     deliverables --> uncertainty
     deliverables --> true_ortho
-    deliverables --> visual_report
+    deliverables --> rmse
     true_ortho --> true_ortho_tif
     uncertainty --> uncertainty_tif
-    targets_csv --> visual_report
-    visual_report --> report
     true_ortho_tif --> qgis_cloud
     uncertainty_tif --> qgis_cloud
     transform_yaml --> packager
@@ -145,7 +140,7 @@ flowchart TD
     delivered --> qgis_design
     points_design --> qgis_design
     targets_design --> qgis_design
-    targets_csv --> qgis_cloud
+    targets --> qgis_cloud
     qgis_design -.-> customer
 
 ```
@@ -163,7 +158,7 @@ flowchart TD
 **Why EPSG:32613 for ODM?**  EPSG:3618 and 6529 are 2D — they define XY units (US
 survey feet) but not vertical units.  ODM assumes Z is in metres for any 2D CRS,
 causing a ~3.28× Z scale error when Z is in feet.  EPSG:32613 is unambiguous:
-all axes in metres.  `convert_coords.py` handles the conversion automatically.
+all axes in metres.  `transform.py` and `sight.py` handle the conversion automatically.
 
 ---
 
@@ -302,7 +297,7 @@ and shuts down when the pipeline finishes.
 
 Recommended ODM flags (set in `main.tf` `local.odm_flags`):
 ```
---pc-quality medium --feature-quality high --orthophoto-resolution 5 --optimize-disk-space
+--pc-quality medium --feature-quality high --orthophoto-resolution 5 --dtm --dsm --dem-resolution 5 --cog --build-overviews
 ```
 
 Expected runtime: ~20 hours on m5.4xlarge (16 vCPU). See `docs/cloud-infra-spec.md`.
@@ -354,18 +349,21 @@ geometry and GCP constraints.
 The **orthophoto accuracy** (where features appear in the deliverable) includes
 additional error from DSM-based orthorectification.  Vegetation, DSM interpolation,
 and off-nadir camera angles can shift features in the ortho by more than the
-reconstruction accuracy would suggest.  Use `rmse_visual_report.py` to visually
-assess ortho-level accuracy:
+reconstruction accuracy would suggest.  Add `--html` and `--ortho` to generate a
+visual accuracy report with annotated ortho crops:
 
 ```bash
-conda run -n geo python accuracy_study/rmse_visual_report.py \
+conda run -n geo python rmse.py \
     ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
     ~/stratus/{job}/gcp_list.txt \
     ~/stratus/{job}/chk_list.txt \
-    ~/stratus/{job}/{job}_targets.csv \
-    ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original_cog.tif \
-    -o ~/stratus/{job}/rmse_report.html
+    --html ~/stratus/{job}/rmse_report.html \
+    --ortho ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original.tif
 ```
+
+The HTML report includes summary tables (GCP + CHK), per-point residuals sorted
+worst-first with an overview map, outlier detection, and annotated ortho crops
+showing survey coordinates vs target positions.
 
 Expected reconstruction accuracy (250 ft AGL, GCPs well-distributed):
 
