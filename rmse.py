@@ -914,13 +914,13 @@ def generate_html_report(
                 f'<td>{ratio:.0f}×</td>'
                 f'<td>Verify pixel tagging — possible mis-tag, wrong target, '
                 f'or base station confusion.</td></tr>\n')
-        suspect_html = f"""<h3 style="color:#f44">⚠ Suspect tagging — {len(suspects)} point{'s' if len(suspects) != 1 else ''} flagged</h3>
+        suspect_html = f"""<h3>⚠ Suspect tagging — {len(suspects)} point{'s' if len(suspects) != 1 else ''} flagged</h3>
 <p style="color:#aaa; font-size:12px;">{criteria_desc}</p>
 <table class="detail">
 <tr><th>Label</th><th>Group</th><th>dH (ft)</th><th>× median</th><th>Recommendation</th></tr>
 {suspect_rows}</table>"""
     else:
-        suspect_html = f"""<h3 style="color:#0f0">✓ Outlier check — no suspect points</h3>
+        suspect_html = f"""<h3>✓ Outlier check — no suspect points</h3>
 <p style="color:#aaa; font-size:12px;">{criteria_desc}
 All points are within the threshold.</p>"""
 
