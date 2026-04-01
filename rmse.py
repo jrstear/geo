@@ -47,6 +47,7 @@ import argparse
 import json
 import math
 import sys
+import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -812,14 +813,21 @@ def generate_html_report(
             if ds is not None:
                 gt = ds.GetGeoTransform()
                 ow, oh = ds.RasterXSize, ds.RasterYSize
-                # Read a low-res overview (~800px wide)
+                # Read a low-res overview (~800px wide) using GDAL's
+                # buf_xsize/buf_ysize for efficient subsampled read.
+                # For COGs with overviews this is fast; for raw TIFFs
+                # GDAL must read the full raster — accept the cost.
                 scale = max(1, ow // 800)
                 sw, sh = ow // scale, oh // scale
+                t_ov = time.time()
                 overview = np.zeros((sh, sw, 3), dtype=np.uint8)
                 for b in range(min(3, ds.RasterCount)):
                     overview[:, :, b] = ds.GetRasterBand(b + 1).ReadAsArray(
                         0, 0, ow, oh, buf_xsize=sw, buf_ysize=sh)
                 overview = cv2.cvtColor(overview, cv2.COLOR_RGB2BGR)
+                print(f"  Overview map ({sw}x{sh}) in {time.time()-t_ov:.1f}s"
+                      f" (use --ortho with a COG for faster overview)",
+                      file=sys.stderr)
 
                 # Draw each point as a colored dot + label with collision avoidance
                 placed_labels = []  # [(x, y, w, h), ...] for collision detection
@@ -929,42 +937,52 @@ All points are within the threshold.</p>"""
 </div>
 {suspect_html}"""
 
-    # --- Ortho crop images ---
+    # --- Ortho crop images (threaded for speed) ---
     image_html = ""
     if has_ortho:
         from osgeo import gdal
-        ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
-        if ds is None:
-            print(f"WARNING: Cannot open {ortho_path} — skipping crops", file=sys.stderr)
-        else:
-            cards = []
-            for i, p in enumerate(all_points):
-                label = p["label"]
-                sx, sy = p["survey_x"], p["survey_y"]
-                print(f"  [{i+1}/{len(all_points)}] {label}  dH={p['dH']*M_TO_FT:.4f} ft",
-                      file=sys.stderr)
-                crop_result = _crop_ortho(ds, sx, sy, crop_radius)
-                if crop_result is None:
-                    print(f"    skipped (outside orthophoto extent)", file=sys.stderr)
-                    continue
-                img, px_sz, cx_px, cy_px = crop_result
-                annotated = _annotate_crop(
-                    img, cx_px, cy_px,
-                    dx_m=p["dX"], dy_m=p["dY"],
-                    px_size=px_sz, label=label,
-                    dh_m=p["dH"], dz_m=p["dZ"], d3d_m=p["d3D"],
-                    group=p["group"], upscale=upscale,
-                )
-                cards.append(f"""
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        # Each thread opens its own GDAL handle (thread-local)
+        _tls = threading.local()
+
+        def _process_crop(p):
+            if not hasattr(_tls, "ds"):
+                _tls.ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
+            label = p["label"]
+            sx, sy = p["survey_x"], p["survey_y"]
+            crop_result = _crop_ortho(_tls.ds, sx, sy, crop_radius)
+            if crop_result is None:
+                return None
+            img, px_sz, cx_px, cy_px = crop_result
+            annotated = _annotate_crop(
+                img, cx_px, cy_px,
+                dx_m=p["dX"], dy_m=p["dY"],
+                px_size=px_sz, label=label,
+                dh_m=p["dH"], dz_m=p["dZ"], d3d_m=p["d3D"],
+                group=p["group"], upscale=upscale,
+            )
+            return f"""
         <div class="card" id="img-{label}">
             <div class="info">
                 <b>{label}</b> <span class="group">{p['group']}</span><br/>
                 dH={p['dH']*M_TO_FT:+.4f} ft &nbsp; dZ={p['dZ']*M_TO_FT:+.4f} ft
             </div>
             <img src="{_img_to_data_uri(annotated)}" />
-        </div>""")
-            ds = None
-            if cards:
+        </div>"""
+
+        print(f"  Generating {len(all_points)} ortho crops (threaded)...",
+              file=sys.stderr)
+        t_crops = time.time()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            # map preserves order (worst-first) matching the detail table
+            results = list(pool.map(_process_crop, all_points))
+        cards = [r for r in results if r is not None]
+        skipped = sum(1 for r in results if r is None)
+        print(f"  {len(cards)} crops in {time.time()-t_crops:.1f}s "
+              f"({skipped} skipped)", file=sys.stderr)
+        if cards:
                 image_html = f"""
 <h3>Ortho crops</h3>
 <div class="legend">
