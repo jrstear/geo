@@ -554,67 +554,153 @@ def process_ortho(
         rgba_ds.GetRasterBand(3).WriteArray(b, 0, row_off)
         rgba_ds.GetRasterBand(4).WriteArray(a, 0, row_off)
 
-    # Burn in legend at top-right corner (outside corridor, won't occlude data)
+    # Burn in legend — sized to fill the largest empty corner region
     try:
         import cv2
-        legend_w, legend_h = 280, 100
-        margin = 20
-        lx = unc_w - legend_w - margin
-        ly = margin
-        if lx > 0 and ly + legend_h < unc_h:
-            # Read the legend region
-            legend_r = rgba_ds.GetRasterBand(1).ReadAsArray(lx, ly, legend_w, legend_h)
-            legend_g = rgba_ds.GetRasterBand(2).ReadAsArray(lx, ly, legend_w, legend_h)
-            legend_b = rgba_ds.GetRasterBand(3).ReadAsArray(lx, ly, legend_w, legend_h)
-            legend_a = rgba_ds.GetRasterBand(4).ReadAsArray(lx, ly, legend_w, legend_h)
 
-            # Build legend as BGR image for cv2 drawing
-            legend_img = np.zeros((legend_h, legend_w, 3), dtype=np.uint8)
-            legend_img[:, :] = (40, 40, 40)  # dark background
+        # Downsample alpha to ~1000px wide for fast empty-region detection
+        alpha_band = rgba_ds.GetRasterBand(4)
+        ds_scale = max(1, unc_w // 1000)
+        ds_w, ds_h = unc_w // ds_scale, unc_h // ds_scale
+        alpha_ds = alpha_band.ReadAsArray(0, 0, unc_w, unc_h,
+                                          buf_xsize=ds_w, buf_ysize=ds_h)
+        empty = (alpha_ds == 0)  # True where nodata
 
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            M = 3.28084  # M_TO_FT
+        # For each corner, find how far we can extend a rectangle into the
+        # image while staying >90% empty. Grow in 5% increments.
+        aspect = 2.8  # width:height ratio for the legend
+        best_area = 0
+        best_corner = None
+        best_size = (400, 143)  # minimum fallback
 
-            # Title
-            cv2.putText(legend_img, "Positional uncertainty", (8, 18),
-                        font, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
+        for corner_name, x_start, y_start, dx, dy in [
+            ("TR", ds_w - 1, 0, -1, 1),
+            ("TL", 0, 0, 1, 1),
+            ("BR", ds_w - 1, ds_h - 1, -1, -1),
+            ("BL", 0, ds_h - 1, 1, -1),
+        ]:
+            # Grow rectangle from corner, testing emptiness
+            best_w_ds, best_h_ds = 0, 0
+            step = max(1, ds_w // 20)  # 5% increments
+            for trial_w in range(step, ds_w // 2, step):
+                trial_h = max(1, int(trial_w / aspect))
+                if trial_h > ds_h // 2:
+                    break
+                # Rectangle bounds in downsampled coords
+                if dx > 0:
+                    x0, x1 = x_start, min(x_start + trial_w, ds_w)
+                else:
+                    x0, x1 = max(x_start - trial_w + 1, 0), x_start + 1
+                if dy > 0:
+                    y0, y1 = y_start, min(y_start + trial_h, ds_h)
+                else:
+                    y0, y1 = max(y_start - trial_h + 1, 0), y_start + 1
 
-            # Color ramp bar
-            bar_x, bar_y, bar_w, bar_h = 8, 28, legend_w - 16, 20
-            for px_i in range(bar_w):
-                t = px_i / max(bar_w - 1, 1)
-                r_val = int(min(t * 2.0 * 255, 255))
-                g_val = int(min((1.0 - t) * 2.0 * 255, 255))
-                cv2.line(legend_img, (bar_x + px_i, bar_y),
-                         (bar_x + px_i, bar_y + bar_h), (0, g_val, r_val), 1)
+                region = empty[y0:y1, x0:x1]
+                if region.size == 0:
+                    break
+                empty_frac = np.sum(region) / region.size
+                if empty_frac > 0.90:
+                    best_w_ds, best_h_ds = trial_w, trial_h
+                else:
+                    break  # hit data, stop growing
 
-            # Min/max labels
-            cv2.putText(legend_img, f"{val_min * M:.2f} ft", (bar_x, bar_y + bar_h + 14),
-                        font, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
-            max_label = f"{val_max * M:.2f} ft"
-            (tw, _), _ = cv2.getTextSize(max_label, font, 0.35, 1)
-            cv2.putText(legend_img, max_label, (bar_x + bar_w - tw, bar_y + bar_h + 14),
-                        font, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
+            area = best_w_ds * best_h_ds
+            if area > best_area:
+                best_area = area
+                best_corner = (corner_name, x_start, y_start, dx, dy)
+                best_size = (best_w_ds * ds_scale, best_h_ds * ds_scale)
 
-            # Mean label centered
-            mean_label = f"mean: {val_mean * M:.2f} ft"
-            (tw2, _), _ = cv2.getTextSize(mean_label, font, 0.35, 1)
-            cv2.putText(legend_img, mean_label, ((legend_w - tw2) // 2, bar_y + bar_h + 30),
-                        font, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
+        # Apply margin (10% inset from the found rectangle)
+        legend_w = int(best_size[0] * 0.85)
+        legend_h = int(legend_w / aspect)
+        legend_w = max(400, min(legend_w, unc_w // 3))  # min 400, max 1/3 image
+        legend_h = max(143, int(legend_w / aspect))
 
-            # Green/red labels
-            cv2.putText(legend_img, "low", (bar_x, bar_y - 4),
-                        font, 0.3, (0, 200, 0), 1, cv2.LINE_AA)
-            cv2.putText(legend_img, "high", (bar_x + bar_w - 24, bar_y - 4),
-                        font, 0.3, (0, 0, 200), 1, cv2.LINE_AA)
+        # Position based on winning corner
+        margin = max(20, legend_w // 15)
+        if best_corner is None or best_corner[0] == "TR":
+            lx = unc_w - legend_w - margin
+            ly = margin
+        elif best_corner[0] == "TL":
+            lx = margin
+            ly = margin
+        elif best_corner[0] == "BR":
+            lx = unc_w - legend_w - margin
+            ly = unc_h - legend_h - margin
+        else:  # BL
+            lx = margin
+            ly = unc_h - legend_h - margin
 
-            # Write legend pixels to RGBA bands
-            rgba_ds.GetRasterBand(1).WriteArray(legend_img[:, :, 2], lx, ly)  # R
-            rgba_ds.GetRasterBand(2).WriteArray(legend_img[:, :, 1], lx, ly)  # G
-            rgba_ds.GetRasterBand(3).WriteArray(legend_img[:, :, 0], lx, ly)  # B
-            legend_alpha = np.full((legend_h, legend_w), 230, dtype=np.uint8)
-            rgba_ds.GetRasterBand(4).WriteArray(legend_alpha, lx, ly)
-            print(f"  Legend burned in at ({lx}, {ly})")
+        lx = max(0, min(lx, unc_w - legend_w))
+        ly = max(0, min(ly, unc_h - legend_h))
+
+        # Build legend at appropriate scale
+        legend_img = np.zeros((legend_h, legend_w, 3), dtype=np.uint8)
+        legend_img[:, :] = (40, 40, 40)
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        M = 3.28084
+        pad = legend_w // 20  # internal padding
+
+        # Scale font relative to legend size
+        title_scale = legend_w / 700.0
+        label_scale = title_scale * 0.85
+        thickness = max(1, int(title_scale * 2.5))
+        thin = max(1, int(title_scale * 1.5))
+
+        # Title
+        cv2.putText(legend_img, "Positional uncertainty",
+                    (pad, int(legend_h * 0.18)),
+                    font, title_scale, (200, 200, 200), thickness, cv2.LINE_AA)
+
+        # Color ramp bar
+        bar_x = pad
+        bar_y = int(legend_h * 0.28)
+        bar_w = legend_w - 2 * pad
+        bar_h = int(legend_h * 0.22)
+        for px_i in range(bar_w):
+            t = px_i / max(bar_w - 1, 1)
+            r_val = int(min(t * 2.0 * 255, 255))
+            g_val = int(min((1.0 - t) * 2.0 * 255, 255))
+            cv2.line(legend_img, (bar_x + px_i, bar_y),
+                     (bar_x + px_i, bar_y + bar_h), (0, g_val, r_val), 1)
+
+        # Border around ramp
+        cv2.rectangle(legend_img, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                      (100, 100, 100), 1)
+
+        # Low/high labels above bar
+        cv2.putText(legend_img, "low", (bar_x, bar_y - int(legend_h * 0.03)),
+                    font, label_scale, (0, 200, 0), thin, cv2.LINE_AA)
+        high_txt = "high"
+        (hw, _), _ = cv2.getTextSize(high_txt, font, label_scale, thin)
+        cv2.putText(legend_img, high_txt, (bar_x + bar_w - hw, bar_y - int(legend_h * 0.03)),
+                    font, label_scale, (0, 0, 200), thin, cv2.LINE_AA)
+
+        # Min/max labels below bar
+        min_txt = f"{val_min * M:.2f} ft"
+        max_txt = f"{val_max * M:.2f} ft"
+        label_y = bar_y + bar_h + int(legend_h * 0.15)
+        cv2.putText(legend_img, min_txt, (bar_x, label_y),
+                    font, label_scale, (180, 180, 180), thin, cv2.LINE_AA)
+        (mw, _), _ = cv2.getTextSize(max_txt, font, label_scale, thin)
+        cv2.putText(legend_img, max_txt, (bar_x + bar_w - mw, label_y),
+                    font, label_scale, (180, 180, 180), thin, cv2.LINE_AA)
+
+        # Mean label centered
+        mean_txt = f"mean: {val_mean * M:.2f} ft"
+        (mw2, _), _ = cv2.getTextSize(mean_txt, font, label_scale, thin)
+        cv2.putText(legend_img, mean_txt, ((legend_w - mw2) // 2, label_y + int(legend_h * 0.15)),
+                    font, label_scale, (180, 180, 180), thin, cv2.LINE_AA)
+
+        # Write to RGBA bands
+        rgba_ds.GetRasterBand(1).WriteArray(legend_img[:, :, 2], lx, ly)
+        rgba_ds.GetRasterBand(2).WriteArray(legend_img[:, :, 1], lx, ly)
+        rgba_ds.GetRasterBand(3).WriteArray(legend_img[:, :, 0], lx, ly)
+        rgba_ds.GetRasterBand(4).WriteArray(
+            np.full((legend_h, legend_w), 230, dtype=np.uint8), lx, ly)
+        print(f"  Legend ({legend_w}x{legend_h}) placed at ({lx}, {ly})")
     except ImportError:
         print("  cv2 not available — skipping legend burn-in")
 
