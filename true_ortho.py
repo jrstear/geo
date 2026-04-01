@@ -339,20 +339,38 @@ class DTMSampler:
 
 
     def sample_points(self, x_utm: np.ndarray, y_utm: np.ndarray) -> np.ndarray:
-        """Sample DTM/DSM Z at arbitrary (x, y) UTM points. Returns NaN for no-data."""
+        """Sample DTM/DSM Z at arbitrary (x, y) UTM points. Returns NaN for no-data.
+
+        Reads a single bounding-box block from the raster and indexes into it,
+        rather than reading individual pixels (which has huge GDAL call overhead).
+        """
         cols = ((x_utm - self._gt[0]) / self._gt[1]).astype(int)
         rows = ((y_utm - self._gt[3]) / self._gt[5]).astype(int)
         result = np.full(len(x_utm), np.nan)
         in_bounds = (cols >= 0) & (cols < self._w) & (rows >= 0) & (rows < self._h)
         if not np.any(in_bounds):
             return result
-        # Read individual pixels (slower than row-based but works for scattered points)
-        for i in np.where(in_bounds)[0]:
-            val = self._band.ReadAsArray(int(cols[i]), int(rows[i]), 1, 1)
-            if val is not None:
-                v = float(val[0, 0])
-                if self._nodata is None or v != self._nodata:
-                    result[i] = v
+
+        bc = cols[in_bounds]
+        br = rows[in_bounds]
+
+        # Read bounding box that covers all points in one GDAL call
+        c_min, c_max = int(bc.min()), int(bc.max())
+        r_min, r_max = int(br.min()), int(br.max())
+        block_w = c_max - c_min + 1
+        block_h = r_max - r_min + 1
+
+        block = self._band.ReadAsArray(c_min, r_min, block_w, block_h)
+        if block is None:
+            return result
+
+        # Index into the block
+        local_c = bc - c_min
+        local_r = br - r_min
+        vals = block[local_r, local_c].astype(float)
+        if self._nodata is not None:
+            vals[vals == self._nodata] = np.nan
+        result[in_bounds] = vals
         return result
 
 
