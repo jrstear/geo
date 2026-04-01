@@ -836,13 +836,35 @@ def process_true_ortho(
 # ---------------------------------------------------------------------------
 
 
+# Module-level globals for multiprocessing workers (set by pool initializer).
+# Workers inherit these via fork() copy-on-write — no pickling overhead.
+_worker_recon_data: Optional[dict] = None
+_worker_config: Optional[dict] = None
+
+
+def _init_worker(recon_data: dict, config: dict):
+    """Pool initializer: store shared data in module globals."""
+    global _worker_recon_data, _worker_config
+    _worker_recon_data = recon_data
+    _worker_config = config
+
+
 def _process_tile(args_tuple):
     """Worker function for multiprocessing. Processes a single tile."""
-    (tile_col, tile_row, tile_w, tile_h, col_off, row_off,
-     ortho_path, image_dir, dtm_path, dsm_path, default_z,
-     recon_data, ortho_gt, ortho_srs_wkt, epsg_str, use_pinhole) = args_tuple
+    (tile_col, tile_row, tile_w, tile_h, col_off, row_off) = args_tuple
 
-    # Reconstruct camera data from shared dict
+    # Read shared data from module globals (set by _init_worker)
+    recon_data = _worker_recon_data
+    ortho_path = _worker_config["ortho_path"]
+    image_dir = _worker_config["image_dir"]
+    dtm_path = _worker_config["dtm_path"]
+    dsm_path = _worker_config["dsm_path"]
+    default_z = _worker_config["default_z"]
+    ortho_gt = _worker_config["ortho_gt"]
+    ortho_srs_wkt = _worker_config["ortho_srs_wkt"]
+    epsg_str = _worker_config["epsg_str"]
+    use_pinhole = _worker_config["use_pinhole"]
+
     shots = recon_data["shots"]
     cameras_dict = recon_data["cameras"]
     ref_lla = recon_data["reference_lla"]
@@ -1076,18 +1098,28 @@ def process_true_ortho_full(
     n_tiles = len(tiles)
     print(f"Tile grid: {tile_size}px tiles, {n_tiles} total")
 
-    # Prepare recon data for workers (serializable dict)
+    # Shared data for workers — passed via pool initializer, not per-task args.
+    # Workers inherit via fork() copy-on-write (no pickling of 600MB dict per task).
     recon_data = {
         "shots": recon["shots"],
         "cameras": recon["cameras"],
         "reference_lla": recon["reference_lla"],
     }
+    worker_config = {
+        "ortho_path": ortho_path,
+        "image_dir": image_dir,
+        "dtm_path": dtm_path,
+        "dsm_path": dsm_path,
+        "default_z": default_z,
+        "ortho_gt": ortho_gt,
+        "ortho_srs_wkt": ortho_srs_wkt,
+        "epsg_str": epsg_str,
+        "use_pinhole": use_pinhole,
+    }
 
-    # Build args for each tile
+    # Tile args are now just the tile geometry (tiny — no reconstruction data)
     tile_args = [
-        (t[0], t[1], t[2], t[3], t[4], t[5],
-         ortho_path, image_dir, dtm_path, dsm_path, default_z,
-         recon_data, ortho_gt, ortho_srs_wkt, epsg_str, use_pinhole)
+        (t[0], t[1], t[2], t[3], t[4], t[5])
         for t in tiles
     ]
 
@@ -1126,6 +1158,8 @@ def process_true_ortho_full(
         tiles_done += 1
 
     if workers <= 1:
+        # Single-process mode: set globals directly
+        _init_worker(recon_data, worker_config)
         for i, args in enumerate(tile_args):
             elapsed = time.time() - t0
             rate = tiles_done / max(1, elapsed)
@@ -1137,7 +1171,8 @@ def process_true_ortho_full(
             write_tile(result)
     else:
         print(f"Using {workers} worker processes")
-        with Pool(workers) as pool:
+        with Pool(workers, initializer=_init_worker,
+                  initargs=(recon_data, worker_config)) as pool:
             for result in pool.imap_unordered(_process_tile, tile_args, chunksize=1):
                 write_tile(result)
                 if tiles_done % 10 == 0:
