@@ -27,19 +27,22 @@ flowchart TD
     chk_list["chk_list.txt"]
     targets["{job}_targets.csv"]
     targets_design["{job}_targets_design.csv"]
-    s3(["s3 sync & terraform apply"])
-    odm(["ODM on EC2"])
+    launch_odm(["s3 sync & terraform apply"])
+    odm(["odm-bootstrap.sh"])
     rmse(["rmse.py"])
     true_ortho(["true_ortho.py"])
     uncertainty(["ortho_uncertainty.py"])
     drone[/"Drone"\]
     images[["images/*.JPG"]]
-    deliverables[["orthophoto,contours,surface"]]
+    undistorted[["undistorted images"]]
+    pointcloud
+    tin
+    contours
+    orthophoto[["orthophoto.original.tif"]]
     true_ortho_tif[["true_orthophoto.tif"]]
     uncertainty_tif[["uncertainty_overlay.tif"]]
     packager(["package.py"])
-    delivered[["{orthophoto,contours,surface}_design"]]
-    report["Accuracy report"]
+    report["rmse.html"]
     model["reconstruction.topocentric.json"]
     customer[\"Customer"/]
     qgis_cloud(["QGIS review"])
@@ -66,7 +69,6 @@ flowchart TD
         drone
         images
         pretag
-        cameras
         sight
         transform_yaml
         gcpeditor
@@ -75,13 +77,20 @@ flowchart TD
         gcp_list
         chk_list
         targets
-        s3
-        odm
-        deliverables
-        model
+	launch_odm
+	subgraph "ODM Pipeline"
+            odm
+            orthophoto
+            pointcloud
+            tin
+            contours
+            model
+	    undistorted
+            true_ortho
+            true_ortho_tif
+	end
+        cameras
         rmse
-        true_ortho
-        true_ortho_tif
         uncertainty
         uncertainty_tif
         report
@@ -89,15 +98,16 @@ flowchart TD
         qgis_cloud
     end
 
+    images --> launch_odm
+    launch_odm --> odm
     cust_dc --> extract
     extract --> points_6529
     extract --> transform_yaml
     extract --> points_design
     points_6529 --> emlid
     drone --> images
-    images --> s3
-    images --> true_ortho
     images --> sight
+    undistorted --> true_ortho
     emlid --> all --> sight
     sight --> pretag
     sight --> marks
@@ -111,30 +121,37 @@ flowchart TD
     split --> chk_list
     split --> targets
     split --> targets_design
-    gcp_list --> s3
-    s3 --> odm --> deliverables
+    gcp_list --> launch_odm
     odm --> model
+    cameras -.-> sight
+    cameras -.-> launch_odm
+    odm --> undistorted
+    odm --> orthophoto
+    odm --> pointcloud
+    odm --> tin
     odm --> cameras
-    cameras --> sight
-    gcp_list --> rmse
     chk_list --> rmse
+    gcp_list --> rmse
     model --> uncertainty
-    model --> true_ortho
     model --> rmse
+    model --> true_ortho
     rmse --> report
-    deliverables --> packager
-    deliverables --> qgis_cloud
-    deliverables --> uncertainty
-    deliverables --> true_ortho
-    deliverables --> rmse
+    tin -.-> qgis_cloud
+    tin -.-> packager
+    contours -.-> qgis_cloud
+    contours -.-> packager
+    true_ortho_tif --> qgis_cloud
+    true_ortho_tif --> rmse
+    true_ortho_tif --> packager
+    qgis_cloud -.-> packager
+    orthophoto --> uncertainty
+    orthophoto --> true_ortho
     true_ortho --> true_ortho_tif
     uncertainty --> uncertainty_tif
-    true_ortho_tif --> qgis_cloud
+    pointcloud --> tin --> contours
     uncertainty_tif --> qgis_cloud
     transform_yaml --> packager
-    qgis_cloud -.-> packager
     packager --> delivered
-    report -.-> deliverables
     report --> customer
     delivered --> customer
     delivered --> qgis_design
