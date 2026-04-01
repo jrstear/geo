@@ -48,7 +48,7 @@ flowchart TD
     qgis_cloud(["QGIS review"])
     qgis_design(["QGIS review"])
 
-    subgraph "Customer Design Grid (job-specific offset, no EPSG)"
+    subgraph "Customer Design Grid"
         cust_dc
         extract
         points_design
@@ -56,6 +56,7 @@ flowchart TD
         delivered
         qgis_design
         customer
+        transform_yaml
     end
 
     subgraph "Survey eg EPSG:6529"
@@ -70,7 +71,6 @@ flowchart TD
         images
         pretag
         sight
-        transform_yaml
         gcpeditor
         tagged
         split
@@ -123,15 +123,13 @@ flowchart TD
     split --> targets_design
     gcp_list --> launch_odm
     odm --> model
-    cameras -.-> sight
     cameras -.-> launch_odm
+    cameras -.-> sight
     odm --> undistorted
     odm --> orthophoto
     odm --> pointcloud
     odm --> tin
     odm --> cameras
-    chk_list --> rmse
-    gcp_list --> rmse
     model --> uncertainty
     model --> rmse
     model --> true_ortho
@@ -141,7 +139,9 @@ flowchart TD
     contours -.-> qgis_cloud
     contours -.-> packager
     true_ortho_tif --> qgis_cloud
-    true_ortho_tif --> rmse
+    orthophoto --> rmse
+    chk_list --> rmse
+    gcp_list --> rmse
     true_ortho_tif --> packager
     qgis_cloud -.-> packager
     orthophoto --> uncertainty
@@ -152,7 +152,7 @@ flowchart TD
     uncertainty_tif --> qgis_cloud
     transform_yaml --> packager
     packager --> delivered
-    report --> customer
+    report --> delivered
     delivered --> customer
     delivered --> qgis_design
     points_design --> qgis_design
