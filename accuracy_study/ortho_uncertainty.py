@@ -554,6 +554,70 @@ def process_ortho(
         rgba_ds.GetRasterBand(3).WriteArray(b, 0, row_off)
         rgba_ds.GetRasterBand(4).WriteArray(a, 0, row_off)
 
+    # Burn in legend at top-right corner (outside corridor, won't occlude data)
+    try:
+        import cv2
+        legend_w, legend_h = 280, 100
+        margin = 20
+        lx = unc_w - legend_w - margin
+        ly = margin
+        if lx > 0 and ly + legend_h < unc_h:
+            # Read the legend region
+            legend_r = rgba_ds.GetRasterBand(1).ReadAsArray(lx, ly, legend_w, legend_h)
+            legend_g = rgba_ds.GetRasterBand(2).ReadAsArray(lx, ly, legend_w, legend_h)
+            legend_b = rgba_ds.GetRasterBand(3).ReadAsArray(lx, ly, legend_w, legend_h)
+            legend_a = rgba_ds.GetRasterBand(4).ReadAsArray(lx, ly, legend_w, legend_h)
+
+            # Build legend as BGR image for cv2 drawing
+            legend_img = np.zeros((legend_h, legend_w, 3), dtype=np.uint8)
+            legend_img[:, :] = (40, 40, 40)  # dark background
+
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            M = 3.28084  # M_TO_FT
+
+            # Title
+            cv2.putText(legend_img, "Positional uncertainty", (8, 18),
+                        font, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
+
+            # Color ramp bar
+            bar_x, bar_y, bar_w, bar_h = 8, 28, legend_w - 16, 20
+            for px_i in range(bar_w):
+                t = px_i / max(bar_w - 1, 1)
+                r_val = int(min(t * 2.0 * 255, 255))
+                g_val = int(min((1.0 - t) * 2.0 * 255, 255))
+                cv2.line(legend_img, (bar_x + px_i, bar_y),
+                         (bar_x + px_i, bar_y + bar_h), (0, g_val, r_val), 1)
+
+            # Min/max labels
+            cv2.putText(legend_img, f"{val_min * M:.2f} ft", (bar_x, bar_y + bar_h + 14),
+                        font, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
+            max_label = f"{val_max * M:.2f} ft"
+            (tw, _), _ = cv2.getTextSize(max_label, font, 0.35, 1)
+            cv2.putText(legend_img, max_label, (bar_x + bar_w - tw, bar_y + bar_h + 14),
+                        font, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
+
+            # Mean label centered
+            mean_label = f"mean: {val_mean * M:.2f} ft"
+            (tw2, _), _ = cv2.getTextSize(mean_label, font, 0.35, 1)
+            cv2.putText(legend_img, mean_label, ((legend_w - tw2) // 2, bar_y + bar_h + 30),
+                        font, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
+
+            # Green/red labels
+            cv2.putText(legend_img, "low", (bar_x, bar_y - 4),
+                        font, 0.3, (0, 200, 0), 1, cv2.LINE_AA)
+            cv2.putText(legend_img, "high", (bar_x + bar_w - 24, bar_y - 4),
+                        font, 0.3, (0, 0, 200), 1, cv2.LINE_AA)
+
+            # Write legend pixels to RGBA bands
+            rgba_ds.GetRasterBand(1).WriteArray(legend_img[:, :, 2], lx, ly)  # R
+            rgba_ds.GetRasterBand(2).WriteArray(legend_img[:, :, 1], lx, ly)  # G
+            rgba_ds.GetRasterBand(3).WriteArray(legend_img[:, :, 0], lx, ly)  # B
+            legend_alpha = np.full((legend_h, legend_w), 230, dtype=np.uint8)
+            rgba_ds.GetRasterBand(4).WriteArray(legend_alpha, lx, ly)
+            print(f"  Legend burned in at ({lx}, {ly})")
+    except ImportError:
+        print("  cv2 not available — skipping legend burn-in")
+
     rgba_ds.FlushCache()
     rgba_ds = None
     out_ds = None
