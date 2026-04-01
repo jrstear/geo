@@ -748,6 +748,7 @@ def generate_html_report(
     result: dict,
     output_path: str,
     ortho_path: Optional[str] = None,
+    uncertainty_path: Optional[str] = None,
     crop_radius: float = 5.0,
     upscale: int = 4,
     suspect_ratio: float = 5.0,
@@ -1013,6 +1014,62 @@ All points are within the threshold.</p>"""
 {''.join(cards)}
 </div>"""
 
+    # --- Uncertainty overlay ---
+    uncertainty_html = ""
+    if uncertainty_path:
+        try:
+            import cv2, base64
+            from osgeo import gdal as _gdal
+            _gdal.UseExceptions()
+            unc_ds = _gdal.Open(uncertainty_path, _gdal.GA_ReadOnly)
+            if unc_ds is not None:
+                uw, uh = unc_ds.RasterXSize, unc_ds.RasterYSize
+                # Downsample for embedding (~1200px wide max)
+                target_w = min(1200, uw)
+                target_h = int(uh * target_w / uw)
+                n_bands = min(unc_ds.RasterCount, 4)
+                unc_img = np.zeros((target_h, target_w, n_bands), dtype=np.uint8)
+                for b in range(n_bands):
+                    unc_img[:, :, b] = unc_ds.GetRasterBand(b + 1).ReadAsArray(
+                        0, 0, uw, uh, buf_xsize=target_w, buf_ysize=target_h)
+                unc_ds = None
+                # Convert RGBA to BGR for cv2 encoding, preserve alpha
+                if n_bands == 4:
+                    bgr = cv2.cvtColor(unc_img[:, :, :3], cv2.COLOR_RGB2BGR)
+                    unc_img = np.dstack([bgr, unc_img[:, :, 3]])
+                elif n_bands == 3:
+                    unc_img = cv2.cvtColor(unc_img, cv2.COLOR_RGB2BGR)
+                _, buf = cv2.imencode(".png", unc_img)
+                unc_uri = f"data:image/png;base64,{base64.b64encode(buf).decode('ascii')}"
+                uncertainty_html = f"""
+<h3>Positional Uncertainty Overlay</h3>
+<div class="method">
+<p><b>What this shows:</b> Estimated horizontal positional uncertainty at each
+orthophoto pixel, driven by camera viewing geometry and surface model accuracy.</p>
+<p>The uncertainty at each pixel is: <b>σ_horizontal = σ_DTM × tan(θ_off_nadir) + σ_reconstruction</b></p>
+<p>Where <b>σ_DTM</b> is the surface model accuracy at that location,
+<b>θ_off_nadir</b> is the viewing angle of the camera selected for that pixel
+(the dominant factor — nadir views have near-zero uncertainty, oblique views
+amplify surface errors), and <b>σ_reconstruction</b> is the base reconstruction
+accuracy (~0.035 m for this dataset).</p>
+<p>Green regions have low uncertainty (camera viewed near-nadir, good geometry).
+Red regions have high uncertainty (oblique viewing angle, typically at flight line
+edges). This overlay helps identify where the orthophoto is most and least reliable
+for measurement.</p>
+<p><b>Note:</b> This measures <i>geometric</i> uncertainty from camera/surface
+interaction. It does not account for tagging errors, GCP accuracy, or atmospheric
+effects. Correlate with the per-point residuals above to assess whether high-residual
+points coincide with high-uncertainty regions.</p>
+</div>
+<img src="{unc_uri}" style="max-width:100%; border:1px solid #444; border-radius:4px;" />
+"""
+                print(f"  Uncertainty overlay embedded ({unc_img.shape[1]}x{unc_img.shape[0]})",
+                      file=sys.stderr)
+            else:
+                print(f"WARNING: Cannot open {uncertainty_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"WARNING: uncertainty image failed: {e}", file=sys.stderr)
+
     # --- Assemble HTML ---
     html = f"""<!DOCTYPE html>
 <html>
@@ -1052,6 +1109,7 @@ All points are within the threshold.</p>"""
 {summary_table}
 {detail_section}
 {image_html}
+{uncertainty_html}
 </body>
 </html>"""
 
@@ -1273,6 +1331,12 @@ def main() -> None:
         help="Upscale factor for ortho crop images (default: 4).",
     )
     parser.add_argument(
+        "--uncertainty",
+        default=None,
+        metavar="uncertainty_overlay.tif",
+        help="Uncertainty overlay image to embed at end of HTML report.",
+    )
+    parser.add_argument(
         "--suspect-ratio",
         type=float,
         default=5.0,
@@ -1305,6 +1369,7 @@ def main() -> None:
             result,
             output_path=args.html,
             ortho_path=args.ortho,
+            uncertainty_path=args.uncertainty,
             crop_radius=args.crop_radius,
             upscale=args.upscale,
             suspect_ratio=args.suspect_ratio,
