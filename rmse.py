@@ -775,6 +775,24 @@ def generate_html_report(
         for p in all_points:
             p["suspect"] = p["dH"] > suspect_thresh
 
+    # --- Methodology note ---
+    method_html = """<div class="method">
+<p><b>How these values are computed:</b> For each target, the tagged pixel positions
+across multiple camera images are triangulated through the reconstruction's camera
+models to produce a 3D position. This is converted to the survey CRS via proper
+geodetic conversion (ENU→ECEF→lat/lon→projected). The residual (dH, dZ) is the
+difference between this triangulated position and the GNSS survey coordinate.</p>
+<p><b>GCP</b> (Ground Control Points) were used in ODM's bundle adjustment — the
+reconstruction was optimized to fit them. Their residuals indicate control fit quality.
+<b>CHK</b> (Check Points) were withheld from the bundle adjustment — their residuals
+are an independent measure of reconstruction accuracy.</p>
+<p><b>Note:</b> These residuals measure <i>reconstruction</i> accuracy, not
+<i>orthophoto</i> accuracy. The orthophoto may show additional positioning offsets
+from DSM projection and camera selection effects. The ortho crops below (if present)
+show the visual relationship between survey coordinates and target positions in the
+orthophoto.</p>
+</div>"""
+
     # --- Combined summary table (GCP + CHK side by side) ---
     gcp = result["gcp"]
     chk = result["chk"]
@@ -1022,10 +1040,15 @@ All points are within the threshold.</p>"""
     .card img {{ display: block; }}
     .info {{ padding: 6px 10px; font-size: 12px; line-height: 1.5; }}
     .group {{ color: #888; font-size: 11px; }}
+    .method {{ font-size: 12px; color: #aaa; background: #252525; padding: 10px 14px;
+               border-radius: 4px; margin: 12px 0; line-height: 1.6; max-width: 900px; }}
+    .method b {{ color: #ccc; }}
+    .method i {{ color: #9cf; }}
 </style>
 </head>
 <body>
 <h1>RMSE Accuracy Report</h1>
+{method_html}
 {summary_table}
 {detail_section}
 {image_html}
