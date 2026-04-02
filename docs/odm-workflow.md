@@ -30,7 +30,6 @@ flowchart TD
     launch_odm(["s3 sync & terraform apply"])
     odm(["odm-bootstrap.sh"])
     rmse(["rmse.py"])
-    true_ortho(["true_ortho.py"])
     uncertainty(["ortho_uncertainty.py"])
     drone[/"Drone"\]
     images[["images/*.JPG"]]
@@ -39,7 +38,6 @@ flowchart TD
     tin
     contours
     orthophoto[["orthophoto.original.tif"]]
-    true_ortho_tif[["true_orthophoto.tif"]]
     uncertainty_tif[["uncertainty_overlay.tif"]]
     packager(["package.py"])
     report["rmse.html"]
@@ -86,8 +84,6 @@ flowchart TD
             contours
             model
 	    undistorted
-            true_ortho
-            true_ortho_tif
 	end
 	style ODM fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
         cameras
@@ -108,7 +104,6 @@ flowchart TD
     points_6529 --> emlid
     drone --> images
     images --> sight
-    undistorted --> true_ortho
     emlid --> all --> sight
     sight --> pretag
     sight --> marks
@@ -131,23 +126,19 @@ flowchart TD
     odm --> pointcloud
     odm --> tin
     odm --> cameras
-    model --> uncertainty
-    model --> rmse
-    model --> true_ortho
     rmse --> report
     tin -.-> qgis_cloud
     tin -.-> packager
     contours -.-> qgis_cloud
     contours -.-> packager
-    true_ortho_tif --> qgis_cloud
     orthophoto --> rmse
     chk_list --> rmse
     gcp_list --> rmse
-    true_ortho_tif --> packager
+    orthophoto --> packager
     qgis_cloud -.-> packager
     orthophoto --> uncertainty
-    orthophoto --> true_ortho
-    true_ortho --> true_ortho_tif
+    model --> uncertainty
+    model --> rmse
     uncertainty --> uncertainty_tif
     pointcloud --> tin --> contours
     uncertainty_tif --> qgis_cloud
