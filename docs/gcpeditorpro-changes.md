@@ -80,3 +80,6 @@ of the original input file.  Now the original ordering is preserved, enabling mu
 | `src/app/load-config-txt/load-config-txt.component.html` | Confidence + marker_bbox columns in input preview table |
 | `src/app/storage.service.ts` | Adds `hasPipelineEstimates` flag and `inputFileName`; adds `ImageInfo.getOrientation()` (cached XMP yaw/pitch read for compass+tilt overlays) |
 | `src/app/app.module.ts` | Declares the new `SubImageCropComponent` |
+## Suggestions
+- change "Ground Control Points" on target list page to "Targets", since there are both GCP and CHK points in the list
+- rename GCPEditorPro as TargetTaggerPro

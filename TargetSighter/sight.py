@@ -453,7 +453,7 @@ def project_pixel_mode_a(exif: dict, gcp: dict,
     GimbalRoll = 180° flips both X and Y axes (opposite-facing mount).
 
     Validated (nadir): mean 73.6 px error at 7–99 m AGL
-    (see docs/dji_m3e_camera_model.md).
+    (see docs/details/dji_m3e_camera_model.md).
 
     Returns (px, py) in image pixel space, or None if GCP is behind/out of frame.
     """

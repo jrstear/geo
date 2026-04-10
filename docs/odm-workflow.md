@@ -260,7 +260,42 @@ conda run -n geo python TargetSighter/sight.py \
 # → ~/stratus/{job}/marks_design.csv  (Pix4D parallel workflow — not used in ODM path)
 ```
 
-By default, sight.py names the ten most-dispersed targets as GCP, sets the remainder as CHK (or DUP for near-duplicate coordinates), and ranks the targets and their images by tagging value. These are **recommendations** - the user has final say on role assignment in GCPEditorPro (step 3).
+By default, sight.py names the ten most-dispersed targets as GCP, sets the remainder as CHK (or DUP for near-duplicate coordinates), and ranks the targets and their images by tagging value - tagging in order will produce the best accuracy for least effort. Target names are **recommendations** - the user has final say on role assignment in GCPEditorPro (step 3).
+
+**How sight.py orders targets** — the sequence is designed to lock down the
+model's geometry as quickly as possible with the fewest tags:
+
+| Order | GCP selected as | Why first |
+|-------|-----------------|-----------|
+| 1st | Most distal from centroid | Sets one anchor of the bounding box |
+| 2nd | Most distal from #1 | Defines global scale and orientation |
+| 3rd | Highest elevation *(hilly sites only)* | Prevents vertical drift upward |
+| 4th | Lowest elevation *(hilly sites only)* | Prevents vertical drift downward |
+| 5th | Closest to centroid | Anti-doming center pin |
+| 6th–10th | Remaining, perimeter-first | Redundancy — strongest structural value |
+| 11th+ | Remaining, interior-first | Become CHK- check points |
+
+Z-priority slots (3rd and 4th) activate only when the site's elevation range
+exceeds 5 % of the horizontal span (`--z-threshold`).  Flat sites skip from
+2nd directly to the center pin.
+
+Within each target, **images are sorted by confidence** — well-centred shots
+(less lens distortion) before edge shots, with nadir and oblique images
+interleaved so that the first 7 contain both nadir coverage (accurate X/Y) and
+oblique coverage (parallax for accurate Z).  Use `--nadir-weight` to tune how
+aggressively obliques are promoted (default 0.2; higher values push obliques
+later in the list).
+
+**Common sight.py flags:**
+
+| Flag | Effect |
+|------|--------|
+| `--no-sort` | Output targets in input CSV order, images in match order (let upstream control ordering) |
+| `--no-coloredX` | Disable Stage-3 color-based marker refinement (runs by default; needs cv2/numpy) |
+| `--n-control 7` | How many top targets become GCP- (default 10) |
+| `--z-threshold 0.02` | Lower threshold to activate Z-priority slots on modest terrain (default 0.05) |
+| `--nadir-weight 0.4` | Tune oblique/nadir interleaving (0 = treat equally, 1 = all nadir first; default 0.2) |
+| `--reconstruction path/to/reconstruction.json` | Use SfM-refined camera poses for ±5–20 px estimates instead of EXIF-only ±30–150 px (requires a prior ODM run) |
 
 ### 3. Tag in GCPEditorPro
 
@@ -272,6 +307,22 @@ By default, sight.py names the ten most-dispersed targets as GCP, sets the remai
    - You may reassign labels between GCP- and CHK- roles as needed (select in target list, then toggle the Checkpoint checkbox).
 4. Go to next step → Download → saves as **`{job}_tagged.txt`**
    - All rows are exported (tagged and untagged)
+
+**Tagging targets (USGS / ASPRS):**
+
+| Requirement | Minimum | Target |
+|---|---|---|
+| GCP- control points confirmed | 3 | **7** (of 10 candidates) |
+| CHK- check points confirmed | 3 | **7** |
+| Confirmed images per GCP-/CHK- point | 3 | **7** |
+
+The minimums are hard floors from the *USGS National Geospatial Program — Lidar
+Base Specification* and *ASPRS Positional Accuracy Standards for Digital
+Geospatial Data (2015)*; both specify ≥ 3 independent check points for
+publishable accuracy reporting.  The "target 7" values match the green-badge
+threshold in GCPEditorPro's progress indicators.  Work top-to-bottom through
+the list — sight.py's ordering means the first 7 give the best structural
+coverage for the least effort.
 
 ### 4. Split into deliverable files
 

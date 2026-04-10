@@ -98,7 +98,7 @@ def _refine_single(image_path: str, px: float, py: float,
     """
     Refine a single (image, GCP) pixel estimate using color analysis.
 
-    Implements the four-stage pipeline from docs/gcp_object_identification.md §3:
+    Implements the four-stage pipeline from docs/details/gcp_object_identification.md §3:
       3a — Anomaly-relative color detection (LAB space); HSV-mask fallback.
       3b — Nearest connected-component search within max_radius (expanding-annuli
            equivalent: select the component whose closest pixel is nearest the seed).

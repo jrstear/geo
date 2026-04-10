@@ -193,7 +193,7 @@ bd update geo-rv4 --status=in_progress
 
 # Give the agent context
 # Prompt: "Work on geo-rv4. Read the bead: bd show geo-rv4.
-#          Read the spec: docs/experiment-framework-spec.md.
+#          Read the spec: docs/plans/experiment-framework-spec.md.
 #          Implement, run acceptance tests, close the bead when done."
 ```
 

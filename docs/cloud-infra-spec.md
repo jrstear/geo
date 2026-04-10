@@ -270,7 +270,7 @@ ENTRYPOINT ["/app/run.sh"]
 **IMPORTANT — sparse-only optimization**: For ablation/RMSE experiments, dense
 reconstruction, meshing, texturing, DEM, and orthophoto are unnecessary. RMSE is
 determined entirely by sparse SfM + bundle adjustment. See
-`docs/experiment-framework-spec.md` → "Pipeline Optimization for RMSE Experiments"
+`docs/plans/experiment-framework-spec.md` → "Pipeline Optimization for RMSE Experiments"
 for full rationale.
 
 The script below implements Option A (OpenSfM direct, ~20–45 min/run). Fallback to

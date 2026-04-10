@@ -228,7 +228,7 @@ elevationComparison/
 analyze_color.py
 TargetSighter/bsn2gcp.py
 docs/mermaid_wide.css
-docs/note
-docs/odm-output-options.md
+docs/.obsidian/
+docs/details/odm-output-options.md
 infra/ec2/bigger
 .gitattributes

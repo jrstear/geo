@@ -170,7 +170,7 @@ In order of impact:
 2. **Place GCPs using structural geometry.**  End anchors at both ends of the
    corridor, center pin at mid-corridor, then perimeter fill every ~0.5 mile
    alternating sides.  9–11 points for a 6-mile section.  A GCP placement advisor
-   tool is in development (see `docs/gcp-placement-advisor.md`) that will generate
+   tool is in development (see `docs/plans/gcp-placement-advisor.md`) that will generate
    these locations automatically from a corridor polygon and export a KML for field
    navigation.
 
