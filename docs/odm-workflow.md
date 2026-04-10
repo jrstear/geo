@@ -18,7 +18,7 @@ flowchart TD
     all["{job}_emlid_6529.csv"]
     cameras["cameras.json"]
     sight(["sight.py"])
-    marks["marks_6529.csv for Pix4D"]
+    marks["marks_design.csv for Pix4D"]
     pretag["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
     tagged["{job}_tagged.txt"]
@@ -49,9 +49,10 @@ flowchart TD
     subgraph "Customer Design Grid"
         cust_dc
         extract
+        marks
         points_design
         targets_design
-        delivered
+        deliverables
         qgis_design
         customer
         transform_yaml
@@ -60,13 +61,15 @@ flowchart TD
     subgraph "Survey eg EPSG:6529"
         points_6529
         emlid
-        marks
         all
     end
 
-    subgraph "Cloud eg EPSG:32613"
+    subgraph "Drone (WGS84)"
         drone
         images
+    end
+
+    subgraph "ODM eg EPSG:32613"
         pretag
         sight
         gcpeditor
@@ -75,17 +78,17 @@ flowchart TD
         gcp_list
         chk_list
         targets
-	launch_odm
-	subgraph ODM ["ODM Pipeline"]
+        launch_odm
+        subgraph ODM ["ODM Pipeline"]
             odm
             orthophoto
             pointcloud
             tin
             contours
             model
-	    undistorted
-	end
-	style ODM fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
+            undistorted
+        end
+        style ODM fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
         cameras
         rmse
         uncertainty
@@ -110,7 +113,7 @@ flowchart TD
     pretag --> gcpeditor
     gcpeditor --> tagged
     tagged --> split
-    tagged --> gcpeditor
+    tagged -.-> gcpeditor
     transform_yaml --> split
     transform_yaml --> sight
     split --> gcp_list
@@ -131,6 +134,7 @@ flowchart TD
     tin -.-> packager
     contours -.-> qgis_cloud
     contours -.-> packager
+    orthophoto --> qgis_cloud
     orthophoto --> rmse
     chk_list --> rmse
     gcp_list --> rmse
@@ -143,10 +147,10 @@ flowchart TD
     pointcloud --> tin --> contours
     uncertainty_tif --> qgis_cloud
     transform_yaml --> packager
-    packager --> delivered
-    report --> delivered
-    delivered --> customer
-    delivered --> qgis_design
+    packager --> deliverables
+    report --> deliverables
+    deliverables --> customer
+    deliverables --> qgis_design
     points_design --> qgis_design
     targets_design --> qgis_design
     targets --> qgis_cloud
@@ -154,18 +158,26 @@ flowchart TD
 
 ```
 
+### Edge Notes
+
+Dotted edges signify a) recycled or iterative (eg cameras.json and {job}\_tagged.txt), b) decision (eg QGIS review before package.py or customer delivery), or c) not done yet (tin and contours).
+
 ---
 
-## Critical CRS rules
+## CRS notes
 
 | CRS | Use | Notes |
 |-----|-----|-------|
 | **EPSG:32613** (WGS 84 / UTM 13N, metres) | ODM control + RMSE check files | **Always use this for ODM** |
-| **EPSG:3618** (NAD83 NM Central, feet) | Field survey, internal analysis | CSV/QGIS only |
-| **EPSG:6529** (NAD83(2011) NM Central, feet) | Emlid native output | Same zone as 3618; convert before ODM |
+| **EPSG:6529** (NAD83(2011) NM Central, ftUS) | Field survey, Emlid native output, internal analysis | Convert before ODM |
 
-**Why EPSG:32613 for ODM?**  EPSG:3618 and 6529 are 2D — they define XY units (US
-survey feet) but not vertical units.  ODM assumes Z is in metres for any 2D CRS,
+**Note on EPSG:3618 vs 6529:** Both are NAD83 NM Central in US survey feet for the same zone.
+The difference is the realization year (1986 vs 2011); horizontal coordinates differ by only
+a fraction of a foot regionally and are interchangeable for this workflow.  We use 6529
+throughout because it is the Emlid native output.
+
+**Why EPSG:32613 for ODM?**  EPSG:6529 is 2D — it defines XY units (US survey
+feet) but not vertical units.  ODM assumes Z is in metres for any 2D CRS,
 causing a ~3.28× Z scale error when Z is in feet.  EPSG:32613 is unambiguous:
 all axes in metres.  `transform.py` and `sight.py` handle the conversion automatically.
 
@@ -175,54 +187,56 @@ all axes in metres.  `transform.py` and `sight.py` handle the conversion automat
 
 ### 1. Obtain control monument coordinates
 
-You need control monument coordinates in EPSG:3618 before going to the field.
+You need control monument coordinates in EPSG:6529 before going to the field.
 
 **Customer/Trimble jobs**: Customer provides a `.dc` data collector file with design-grid
 coordinates. `transform.py dc` converts them to state plane and writes
 `{job}_6529.csv`, `{job}_design.csv`, and `transform.yaml`:
 
 ```bash
-# Run without --anchor to see all control monuments in the .dc file, then pick one
-# whose state-plane coords you can look up from the NGS database or client datasheet:
-conda run -n geo python transform.py dc \
-    ~/stratus/{job}/{customer}_{job}.dc
-
-# Then re-run with the anchor:
+# Default: auto-query the NGS API to identify anchor monuments and compute the shift.
 conda run -n geo python transform.py dc \
     ~/stratus/{job}/{customer}_{job}.dc \
-    --anchor <monument_id> <state_E_ft> <state_N_ft> \
     --out-dir ~/stratus/{job}/
 # → ~/stratus/{job}/{job}_6529.csv    (state-plane EPSG:6529, for Emlid localization)
 # → ~/stratus/{job}/{job}_design.csv  (design-grid coords, for QGIS design review)
 # → ~/stratus/{job}/transform.yaml    (CRS + shift params; used downstream)
 
-# Aztec job example (NGS monument 14, 'NGS VCM 3D Y 430', from NGS datasheet):
+# Manual override (when NGS auto-lookup fails or you need higher accuracy than the
+# lat/lon-derived fallback ±20 ft):
 conda run -n geo python transform.py dc \
     ~/stratus/aztec/"F100340 AZTEC.dc" \
     --anchor 14 1147722.527 2144275.554 \
     --out-dir ~/stratus/aztec/
 ```
 
-**How to identify the anchor monument:**
+**How the anchor is identified:**
 
-The customer provides a control sheet PDF alongside the `.dc` file.  The control sheet
-lists all monuments with their design-grid coordinates and descriptions.  Monuments
-labeled **"NGS"** (e.g. "NGS VCM 3D Y 430") are federally-published benchmarks with
-official state-plane coordinates in the NGS database — these are the anchor candidates.
+`transform.py dc` first tries the NGS API automatically — for any control monument in
+the `.dc` file described as an NGS benchmark (e.g. "NGS VCM 3D Y 430"), it queries the
+NGS datasheet database, retrieves the official state-plane coordinates, and computes the
+design-grid shift.  When multiple NGS anchors are present, the script cross-checks them
+and prints how closely they agree (typically within a fraction of a foot).  For most
+jobs no manual lookup is needed.
 
-1. Run `transform.py dc <file.dc>` without `--anchor` to see the monument table.
-   NGS candidates are flagged with `← NGS anchor candidate`.
-2. Search the NGS datasheet database (https://www.ngs.noaa.gov/datasheets/) by monument
+If auto-lookup fails (no NGS-described monuments in the file, or the API returns no
+matches), the script prints the monument table — flagging NGS candidates with `← NGS` —
+and exits.  In that case:
+
+1. Search the NGS datasheet database (https://www.ngs.noaa.gov/datasheets/) by monument
    description or by lat/lon near the project site.
-3. Read the state-plane E/N in **US survey feet** from the datasheet.
-4. Re-run with `--anchor <id> <state_E_ft> <state_N_ft>`.
+2. Read the state-plane E/N in **US survey feet** from the datasheet.
+3. Re-run with `--anchor <id> <state_E_ft> <state_N_ft>`.
 
-The shift is saved in `transform.yaml` for all downstream steps.  It only needs to be
+You may also use `--anchor` to override the API result when you need tighter accuracy
+than the API's lat/lon-derived fallback (~±20 ft) provides.
+
+The shift is saved in `transform.yaml` for consistent reuse downstream.  It only needs to be
 computed once per job (same `.dc` file = same design grid = same shift).
 
-**Other jobs**: obtain monument coordinates in EPSG:3618 directly from the surveyor.
+**Other jobs**: obtain monument coordinates in EPSG:6529 directly from the surveyor.
 
-Use `{job}_points.csv` for Emlid RS3 base/rover localization in the field.
+Use `{job}_6529.csv` for Emlid RS3 base/rover localization in the field.
 
 > **Before proceeding:** manually prune `{job}_6529.csv` (or the Emlid survey CSV)
 > to remove any rows you do not want flowing through the pipeline — e.g. base-setup
@@ -235,7 +249,7 @@ Use `{job}_points.csv` for Emlid RS3 base/rover localization in the field.
 
 ```bash
 conda run -n geo python TargetSighter/sight.py \
-    ~/stratus/{job}/{job}_surveyed_6529.csv \
+    ~/stratus/{job}/{job}_emlid_6529.csv \
     ~/stratus/{job}/images/
 # If transform.yaml is present in ~/stratus/{job}/, sight.py auto-loads it:
 #   field_crs → used as fallback CRS for the survey CSV
@@ -246,22 +260,18 @@ conda run -n geo python TargetSighter/sight.py \
 # → ~/stratus/{job}/marks_design.csv  (Pix4D parallel workflow — not used in ODM path)
 ```
 
-sight.py assigns GCP-/CHK- label prefixes as **recommendations** based on the survey
-CSV labels.  The user has final say on role assignment in GCPEditorPro (step 3).
+By default, sight.py names the ten most-dispersed targets as GCP, sets the remainder as CHK (or DUP for near-duplicate coordinates), and ranks the targets and their images by tagging value. These are **recommendations** - the user has final say on role assignment in GCPEditorPro (step 3).
 
 ### 3. Tag in GCPEditorPro
 
 1. Open GCPEditorPro
 2. Load **`{job}.txt`** and the images directory
-3. Review each GCP- and CHK- point; tag pixel observations
+3. Review GCP- and CHK- points, tag pixel observations
    - GCP- labels = ground control (given to ODM to georeference the reconstruction)
    - CHK- labels = independent check points (withheld from ODM; used for accuracy QC only)
-   - You may reassign labels between GCP- and CHK- roles as needed
-4. Export → single "Download tagged file" button → saves as **`{job}_tagged.txt`**
+   - You may reassign labels between GCP- and CHK- roles as needed (select in target list, then toggle the Checkpoint checkbox).
+4. Go to next step → Download → saves as **`{job}_tagged.txt`**
    - All rows are exported (tagged and untagged)
-   - Tagged observations have `tagged` in column 8; untagged have empty column 8
-
-> `marks.csv` supports the parallel Pix4D workflow and is not used here.
 
 ### 4. Split into deliverable files
 
@@ -294,8 +304,8 @@ aws s3 cp ~/stratus/{job}/gcp_list.txt \
 # Launch EC2 instance — pipeline starts automatically on boot
 cd ~/git/geo/infra/ec2
 terraform apply \
-    --var="project={PROJECT}" \
-    --var="notify_email=your@email.com"
+    -var="project={PROJECT}" \
+    -var="notify_email=your@email.com"
 ```
 
 Where `{PROJECT}` is the S3 prefix, e.g. `bsn/myjob`.
@@ -309,13 +319,11 @@ Recommended ODM flags (set in `main.tf` `local.odm_flags`):
 --pc-quality medium --feature-quality high --orthophoto-resolution 5 --dtm --dsm --dem-resolution 5 --cog --build-overviews
 ```
 
-Expected runtime: ~20 hours on m5.4xlarge (16 vCPU). See `docs/cloud-infra-spec.md`.
-
 **To destroy and resume on a fresh instance** (e.g. to pick up updated scripts/policies):
 
 ```bash
 terraform destroy   # outputs already synced to S3 after each stage
-terraform apply --var="project={PROJECT}" --var="notify_email=your@email.com"
+terraform apply -var="project={PROJECT}" -var="notify_email=your@email.com"
 # new instance syncs from S3 and resumes from the next incomplete stage
 ```
 
@@ -374,7 +382,7 @@ The HTML report includes summary tables (GCP + CHK), per-point residuals sorted
 worst-first with an overview map, outlier detection, and annotated ortho crops
 showing survey coordinates vs target positions.
 
-Expected reconstruction accuracy (250 ft AGL, GCPs well-distributed):
+Expected reconstruction accuracy (250 ft AGL, RTK, GCPs well-distributed):
 
 | Component | Expected |
 |-----------|----------|
@@ -385,7 +393,24 @@ Expected reconstruction accuracy (250 ft AGL, GCPs well-distributed):
 CHK residuals are the independent accuracy metric.  Orthophoto accuracy may be
 0.3–1.0 ft larger depending on vegetation and camera angles at each target.
 
-### 7. Deliver
+If you have run `ortho_uncertainty.py` (see diagram) to produce a per-pixel uncertainty
+overlay TIF, pass it via `--uncertainty` to embed it at the end of the HTML report:
+
+```bash
+conda run -n geo python rmse.py \
+    ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
+    ~/stratus/{job}/gcp_list.txt \
+    ~/stratus/{job}/chk_list.txt \
+    --html ~/stratus/{job}/rmse_report.html \
+    --ortho ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original.tif \
+    --uncertainty ~/stratus/{job}/uncertainty_overlay.tif
+```
+
+This combines the point-wise residual report with a spatial view of where the
+reconstruction is least confident — useful for spotting regions where the orthophoto
+accuracy is likely to depart most from the CHK residual statistics.
+
+### 7. Package
 
 ```bash
 # Sync deliverables from S3
@@ -399,5 +424,8 @@ aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_report/ \
 python packager/package.py \
     --tif-file ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original.tif \
     --transform-yaml ~/stratus/{job}/transform.yaml
-# Or use the GUI: python packager/app.py → http://localhost:5001
+# Or use the GUI via python packager/app.py
 ```
+
+### 8. Review and deliver
+Use QGIS to review deliverables in cloud and/or design coordinates, deliver when ready.
