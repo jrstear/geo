@@ -17,7 +17,7 @@ workflow with diagram, CRS notes, and step-by-step commands.
 |---|---|
 | [`transform.py`](transform.py) | Trimble `.dc` → state-plane CSV + design-grid CSV + `transform.yaml`; auto-NGS lookup; post-tagging split into `gcp_list.txt` / `chk_list.txt` / target CSVs |
 | [`TargetSighter/sight.py`](TargetSighter/sight.py) | Emlid CSV + drone images → tagging file with EXIF-projected pixel estimates, structural ordering (most-distal anchors first), and optional color-X marker refinement |
-| [GCPEditorPro fork](https://github.com/jrstear/GCPEditorPro/tree/feature/auto-gcp-pipeline) | Pixel tagging UI with zoom view, compass/tilt overlays, spacebar confirm, progress badges. See [`docs/gcpeditorpro-changes.md`](docs/gcpeditorpro-changes.md) for the modifications relative to upstream uav4geo/GCPEditorPro |
+| [GCPEditorPro fork](https://github.com/jrstear/GCPEditorPro/tree/feature/auto-gcp-pipeline) | Pixel tagging UI with zoom view, compass/tilt overlays, spacebar confirm, progress badges. The list of modifications relative to upstream uav4geo/GCPEditorPro lives in the fork itself: [`CHANGES-fork.md`](https://github.com/jrstear/GCPEditorPro/blob/feature/auto-gcp-pipeline/CHANGES-fork.md) |
 | [`infra/ec2/`](infra/ec2/) | Terraform module that provisions an EC2 ODM instance, runs the pipeline via `odm-bootstrap.sh`, syncs to/from S3, sends SNS stage notifications, and shuts itself down on completion. See [`docs/cloud-infra-spec.md`](docs/cloud-infra-spec.md) |
 | [`rmse.py`](rmse.py) | Independent RMSE accuracy assessment from `reconstruction.topocentric.json` + GCP/CHK lists. Generates an HTML report with annotated ortho crops, outlier detection, and optional uncertainty overlay |
 | [`packager/`](packager/) | GDAL wrappers for reprojecting + shifting + tiling the ODM orthophoto into customer-deliverable form (design-grid CRS, COG, optional downsizing) |
@@ -29,7 +29,7 @@ workflow with diagram, CRS notes, and step-by-step commands.
 | Doc | When to read |
 |---|---|
 | [`docs/odm-workflow.md`](docs/odm-workflow.md) | Canonical end-to-end workflow |
-| [`docs/gcpeditorpro-changes.md`](docs/gcpeditorpro-changes.md) | Description of GCPEditorPro fork modifications |
+| [GCPEditorPro `CHANGES-fork.md`](https://github.com/jrstear/GCPEditorPro/blob/feature/auto-gcp-pipeline/CHANGES-fork.md) | Description of GCPEditorPro fork modifications (lives in the fork repo, not here) |
 | [`docs/cloud-infra-spec.md`](docs/cloud-infra-spec.md) | AWS infrastructure spec for the ODM EC2 pipeline |
 | [`docs/coordinate-flow.md`](docs/coordinate-flow.md) | CRS reference: which coordinate system is used at each step and why |
 | [`docs/rmse-explained.md`](docs/rmse-explained.md) | Accuracy concepts for surveyors reading rmse.py output |

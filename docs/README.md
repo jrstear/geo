@@ -8,9 +8,10 @@ com# Documentation index
 
 ## Top-level reference
 
-- **[gcpeditorpro-changes.md](gcpeditorpro-changes.md)** — GCPEditorPro modifications
-  on the `feature/auto-gcp-pipeline` branch (zoom view, compass/tilt, tag status,
-  spacebar confirm, etc.) with file-change summary.
+- **GCPEditorPro fork modifications** — the description of what's changed on
+  the `feature/auto-gcp-pipeline` branch (zoom view, compass/tilt, tag status,
+  spacebar confirm, etc.) lives in the fork repo itself:
+  [`CHANGES-fork.md`](https://github.com/jrstear/GCPEditorPro/blob/feature/auto-gcp-pipeline/CHANGES-fork.md).
 - **[cloud-infra-spec.md](cloud-infra-spec.md)** — AWS infrastructure spec for the
   ODM EC2 pipeline (terraform module, S3 layout, SNS notifications, spot strategy).
 - **[coordinate-flow.md](coordinate-flow.md)** — which CRS is in use at each step

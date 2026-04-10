@@ -299,6 +299,12 @@ later in the list).
 
 ### 3. Tag in GCPEditorPro
 
+This step uses a [GCPEditorPro fork](https://github.com/jrstear/GCPEditorPro/tree/feature/auto-gcp-pipeline)
+with pipeline-aware features (zoom view, spacebar confirm, progress badges,
+compass/tilt overlays, etc.). The full list of modifications relative to
+upstream uav4geo/GCPEditorPro lives in the fork itself:
+[`CHANGES-fork.md`](https://github.com/jrstear/GCPEditorPro/blob/feature/auto-gcp-pipeline/CHANGES-fork.md).
+
 1. Open GCPEditorPro.  Running from source (this fork on
    `feature/auto-gcp-pipeline`) requires the OpenSSL legacy provider:
    ```bash
