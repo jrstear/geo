@@ -9,7 +9,9 @@ A true-orthophoto post-processor for ODM orthophotos. For each output pixel it
 re-projects the ground point through the most-nadir camera (with optional DSM
 occlusion ray-march), instead of using ODM's standard DTM-orthophoto path.
 
-**Status:** Shelved on 2026-04-01 (bead **geo-ksd**, P4/backlog).
+**Status:** Shelved on 2026-04-01 (bead **geo-ksd**, P4/backlog). Full
+side-by-side analysis with annotated examples lives in
+[`true-ortho-comparison.md`](true-ortho-comparison.md).
 
 **Why shelved.** A small-crop proof of concept (geo-51u) showed clear visible
 improvement at survey targets, so the post-processor was integrated into the
