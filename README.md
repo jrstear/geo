@@ -1,68 +1,65 @@
-# Geo Packager
+# geo
 
-High-performance GDAL wrappers for fast and easy preparation of large-scale GeoTIFF deliverables.
+Survey-quality drone-photogrammetry pipeline built around OpenDroneMap.
 
-## 🛠 Setup & Quick Start
+The pipeline takes raw drone imagery plus GNSS-surveyed ground control points
+and produces an orthomosaic, DSM, DTM, and an independent accuracy report
+suitable for survey-quality deliverables. The workflow is designed for
+operation by a single surveyor with a Trimble data collector, an Emlid Reach
+RS3 base/rover pair, and a DJI drone, running OpenDroneMap on AWS EC2.
 
-1.  **Environment**: Run `bash setup.sh` to create the `geo` environment.
-2.  **Activate**: Run `conda activate geo`.
-3.  **Launch GUI**: Run `./packager/app.py` and open `http://127.0.0.1:5001` in your browser.
+**Start here:** [`docs/odm-workflow.md`](docs/odm-workflow.md) — end-to-end
+workflow with diagram, CRS notes, and step-by-step commands.
 
----
+## Components
 
-## 🚀 Components
+| Component | What it does |
+|---|---|
+| [`transform.py`](transform.py) | Trimble `.dc` → state-plane CSV + design-grid CSV + `transform.yaml`; auto-NGS lookup; post-tagging split into `gcp_list.txt` / `chk_list.txt` / target CSVs |
+| [`TargetSighter/sight.py`](TargetSighter/sight.py) | Emlid CSV + drone images → tagging file with EXIF-projected pixel estimates, structural ordering (most-distal anchors first), and optional color-X marker refinement |
+| [GCPEditorPro fork](https://github.com/jrstear/GCPEditorPro/tree/feature/auto-gcp-pipeline) | Pixel tagging UI with zoom view, compass/tilt overlays, spacebar confirm, progress badges. See [`docs/gcpeditorpro-changes.md`](docs/gcpeditorpro-changes.md) for the modifications relative to upstream uav4geo/GCPEditorPro |
+| [`infra/ec2/`](infra/ec2/) | Terraform module that provisions an EC2 ODM instance, runs the pipeline via `odm-bootstrap.sh`, syncs to/from S3, sends SNS stage notifications, and shuts itself down on completion. See [`docs/cloud-infra-spec.md`](docs/cloud-infra-spec.md) |
+| [`rmse.py`](rmse.py) | Independent RMSE accuracy assessment from `reconstruction.topocentric.json` + GCP/CHK lists. Generates an HTML report with annotated ortho crops, outlier detection, and optional uncertainty overlay |
+| [`packager/`](packager/) | GDAL wrappers for reprojecting + shifting + tiling the ODM orthophoto into customer-deliverable form (design-grid CRS, COG, optional downsizing) |
+| [`accuracy_study/`](accuracy_study/) | Research scripts: refinement comparison, image-count ablations, projection mode validation, ortho uncertainty overlay generation. See [`accuracy_study/README.md`](accuracy_study/README.md) |
+| [`experimental/`](experimental/) | Validated-but-shelved code kept for reference (currently `true_ortho.py`). See [`experimental/README.md`](experimental/README.md) |
 
-### 1. `packager/app.py` (GUI Dashboard)
-A Flask-based graphical interface for `packager/package.py` featuring real-time log streaming, logic grouping, and native macOS file/directory pickers.
+## Documentation
 
-**Usage:**
-```bash
-python packager/app.py
-```
+| Doc | When to read |
+|---|---|
+| [`docs/odm-workflow.md`](docs/odm-workflow.md) | Canonical end-to-end workflow |
+| [`docs/gcpeditorpro-changes.md`](docs/gcpeditorpro-changes.md) | Description of GCPEditorPro fork modifications |
+| [`docs/cloud-infra-spec.md`](docs/cloud-infra-spec.md) | AWS infrastructure spec for the ODM EC2 pipeline |
+| [`docs/coordinate-flow.md`](docs/coordinate-flow.md) | CRS reference: which coordinate system is used at each step and why |
+| [`docs/rmse-explained.md`](docs/rmse-explained.md) | Accuracy concepts for surveyors reading rmse.py output |
+| [`docs/details/`](docs/details/) | Long-tail references: camera model, CSV formats, ODM flags, etc. |
+| [`docs/plans/`](docs/plans/) | Design specs for not-yet-built features |
 
-### 2. `packager/package.py` (The Engine)
-A parallelized pipeline for scaling, shifting, downsizing, tiling, and cleaning rasters.
-
-**Key Features:**
-- **Adaptive Downsizing**: Automatically applies 30% downsizing for input files > 20GB (unless overridden).
-- **Smart Tiling**: Parallel generation with automatic detection and removal of empty (alpha=0) tiles.
-- **Sequential Naming**: Zero-padded numbering (e.g., `_001.tif`) for consistent file sorting.
-- **macOS Safety**: Ignores `._*` metadata files on Apple-formatted volumes.
-- **Error Handling**: Gracefully cleans up partial output if a process is interrupted.
-
-**Usage:**
-```bash
-python packager/package.py <input.tiff> [options]
-```
-- `--output-dir`: Output directory (default: `<input_dir>/<name>_tiles`).
-- `--clobber`: Overwrites output directory if it exists.
-- `--scale`: Grid-to-ground scale factor.
-- `--downsize-percent`: Resolution reduction (e.g., 25 for 0.25x pixels).
-- `--shift-x` / `--shift-y`: Easting/Northing translation shift.
-- `--tile-size`: Pixel size of output tiles (default 20,000).
-
-### 3. `compare.py` (Validation)
-A metadata verification tool to confirm transformations and analyze residuals.
-
-**Usage:**
-```bash
-python compare.py <original.tif> <processed_dir_or_vrt>
-```
-- **Residual Analysis**: Calculates "Origin Shift" and "Edge Drift" *after* accounting for the measured scale factor. 
-- **Anchor Logic**: Identifies the scaling anchor point assuming zero residual shift.
-
----
-
-## 🏁 Example CLI Workflow
-
-Assuming the `geo` environment is active:
+## Setup
 
 ```bash
-# Package with 0.9996 scale and +100ft shift, downsizing to 25% resolution
-python packager/package.py data.tif --scale 0.9996 --shift-x 100 --downsize-percent 25 --clobber
-
-# Verify the results against the original
-python compare.py data.tif data_tiles/
+bash setup.sh           # creates the conda 'geo' env (gdal, pyproj, opencv, numpy)
+conda activate geo
 ```
 
+All Python pipeline scripts are designed to run inside the `geo` env, e.g.:
 
+```bash
+conda run -n geo python TargetSighter/sight.py ...
+conda run -n geo python transform.py dc ...
+conda run -n geo python rmse.py ...
+```
+
+## Issue tracking and development workflow
+
+Multi-session work is tracked in [**bd (beads)**](https://github.com/steveyegge/beads).
+The repo's working conventions, commit/sync protocol, and Claude Code agent
+patterns are documented in [`AGENTS.md`](AGENTS.md). Use `bd ready` to find
+unblocked work and `bd show <id>` to read an issue.
+
+## License
+
+This repository is currently licensed under the **GNU Affero General Public
+License v3** (see [`LICENSE`](LICENSE)). The [GCPEditorPro fork](https://github.com/jrstear/GCPEditorPro/tree/feature/auto-gcp-pipeline)
+is governed by its own license (Fair Source, inherited from upstream uav4geo).

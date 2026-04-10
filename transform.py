@@ -867,7 +867,13 @@ def cmd_split(args) -> int:
     job_name = transform.get("job") or (stem[:-7] if stem.endswith("_tagged") else stem)
 
     def _display_label(label: str, is_tagged: bool) -> str:
-        """Keep prefix for tagged targets; strip any XXX- prefix for untagged."""
+        """Keep prefix for tagged targets; strip any XXX- prefix for untagged.
+
+        Note: 'XXX-' here is regex shorthand for 'any uppercase prefix followed
+        by a hyphen' (sight.py assigns GCP-/CHK-/DUP- prefixes to all targets;
+        this strips them back to bare monument IDs for untagged rows so the
+        QGIS targets layer shows the surveyor's original labels). Not a TODO.
+        """
         if is_tagged:
             return label
         return re.sub(r'^[A-Z]+-', '', label)

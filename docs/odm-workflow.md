@@ -299,7 +299,12 @@ later in the list).
 
 ### 3. Tag in GCPEditorPro
 
-1. Open GCPEditorPro
+1. Open GCPEditorPro.  Running from source (this fork on
+   `feature/auto-gcp-pipeline`) requires the OpenSSL legacy provider:
+   ```bash
+   cd ~/git/GCPEditorPro && NODE_OPTIONS=--openssl-legacy-provider npm start
+   ```
+   The app opens at <http://localhost:4200>.
 2. Load **`{job}.txt`** and the images directory
 3. Review GCP- and CHK- points, tag pixel observations
    - GCP- labels = ground control (given to ODM to georeference the reconstruction)

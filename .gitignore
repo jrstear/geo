@@ -230,5 +230,12 @@ TargetSighter/bsn2gcp.py
 docs/mermaid_wide.css
 docs/.obsidian/
 docs/details/odm-output-options.md
+
+# Claude Code session-local state
+.claude/
+
+# Beads daemon logs
+.beads/daemon-*.log
+.beads/daemon-*.log.gz
 infra/ec2/bigger
 .gitattributes
