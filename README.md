@@ -54,9 +54,12 @@ conda run -n geo python rmse.py ...
 ## Issue tracking and development workflow
 
 Multi-session work is tracked in [**bd (beads)**](https://github.com/steveyegge/beads).
-The repo's working conventions, commit/sync protocol, and Claude Code agent
-patterns are documented in [`AGENTS.md`](AGENTS.md). Use `bd ready` to find
-unblocked work and `bd show <id>` to read an issue.
+Use `bd ready` to find unblocked work, `bd show <id>` to read an issue, and
+`bd prime` for full workflow context. First-time setup: `bd hooks install`.
+
+Claude Code-specific permissions and operational conventions live in
+[`CLAUDE.md`](CLAUDE.md). The session-close commit/sync/push protocol is
+auto-injected by a SessionStart hook.
 
 ## License
 
