@@ -166,6 +166,8 @@ Dotted edges signify a) recycled or iterative (eg cameras.json and {job}\_tagged
 
 ## CRS notes
 
+Subgraphs in the workflow diagram show distinct coordinate systems, here are some related comments.
+
 | CRS | Use | Notes |
 |-----|-----|-------|
 | **EPSG:32613** (WGS 84 / UTM 13N, metres) | ODM control + RMSE check files | **Always use this for ODM** |
@@ -183,7 +185,7 @@ all axes in metres.  `transform.py` and `sight.py` handle the conversion automat
 
 ---
 
-## Step-by-step
+## Workflow step-by-step
 
 ### 1. Obtain control monument coordinates
 
