@@ -1,12 +1,16 @@
 # geo
 
-Survey-quality drone-photogrammetry pipeline built around OpenDroneMap.
+Drone-photogrammetry pipeline built around OpenDroneMap, designed for the
+field workflow of a surveyor with an Emlid
+Reach RS3 base/rover pair, and a DJI drone.  Raw imagery plus GNSS-surveyed
+ground control points go in; an orthomosaic, DSM, DTM, and accuracy report
+come out, with OpenDroneMap running on AWS EC2 in between.
 
-The pipeline takes raw drone imagery plus GNSS-surveyed ground control points
-and produces an orthomosaic, DSM, DTM, and an independent accuracy report
-suitable for survey-quality deliverables. The workflow is designed for
-operation by a single surveyor with a Trimble data collector, an Emlid Reach
-RS3 base/rover pair, and a DJI drone, running OpenDroneMap on AWS EC2.
+The pipeline's distinguishing contributions over running OpenDroneMap directly
+are multi-CRS dataflow (Trimble design grid ↔ state plane ↔ UTM), pre-projected
+pixel estimates that make GCPEditorPro tagging much faster, one-command EC2
+deployment via terraform, and independent RMSE on held-out check points —
+a publishable accuracy figure that stock ODM doesn't produce.
 
 **Start here:** [`docs/odm-workflow.md`](docs/odm-workflow.md) — end-to-end
 workflow with diagram, CRS notes, and step-by-step commands.

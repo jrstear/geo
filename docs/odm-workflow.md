@@ -1,7 +1,11 @@
-# Survey-Quality ODM Workflow
+# ODM Workflow for Drone Surveys
 
-End-to-end process for producing survey-quality orthophotos with OpenDroneMap,
-using Emlid GNSS survey data and GCPEditorPro pixel tagging.
+End-to-end process from a Trimble/Emlid field survey to a customer-deliverable
+orthophoto, using OpenDroneMap on EC2.  The distinguishing contributions are
+multi-CRS dataflow (Trimble design ↔ state plane ↔ UTM), pre-projected pixel
+estimates for fast tagging in GCPEditorPro, one-command EC2 deployment via
+terraform, and independent RMSE on held-out check points — a publishable
+accuracy figure that stock ODM doesn't produce.
 
 ---
 

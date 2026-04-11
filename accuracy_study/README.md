@@ -1,7 +1,7 @@
 # accuracy_study/
 
 Experimental scripts and tooling supporting the accuracy investigation around
-the survey-quality ODM workflow. These are research tools, not production
+the ODM drone survey workflow. These are research tools, not production
 pipeline stages — they generate variants, run ablations, and produce overlays
 that feed back into design decisions in `sight.py`, `rmse.py`, and the EC2
 pipeline.

@@ -2,7 +2,7 @@ com# Documentation index
 
 ## Start here
 
-- **[odm-workflow.md](odm-workflow.md)** — end-to-end survey-quality ODM workflow
+- **[odm-workflow.md](odm-workflow.md)** — end-to-end ODM workflow for drone surveys
   (Trimble `.dc` → Emlid → sight.py → GCPEditorPro → ODM on EC2 → rmse.py → packager).
   This is the canonical entry point.
 
