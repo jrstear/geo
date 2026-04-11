@@ -870,9 +870,14 @@ def cmd_split(args) -> int:
         """Keep prefix for tagged targets; strip any XXX- prefix for untagged.
 
         Note: 'XXX-' here is regex shorthand for 'any uppercase prefix followed
-        by a hyphen' (sight.py assigns GCP-/CHK-/DUP- prefixes to all targets;
-        this strips them back to bare monument IDs for untagged rows so the
-        QGIS targets layer shows the surveyor's original labels). Not a TODO.
+        by a hyphen' (sight.py assigns GCP-/CHK- prefixes to all targets, plus
+        a legacy DUP- prefix on older files). The regex strips the leading
+        prefix back to bare monument IDs for untagged rows so the QGIS targets
+        layer shows the surveyor's original labels. Not a TODO.
+
+        Trailing '-dup'/'-dup2'/etc. suffixes (the new near-duplicate marker)
+        are NOT stripped, so untagged 'GCP-104-dup' becomes '104-dup' — the
+        duplicate is still visually distinguishable from the primary in QGIS.
         """
         if is_tagged:
             return label

@@ -260,7 +260,7 @@ conda run -n geo python TargetSighter/sight.py \
 # → ~/stratus/{job}/marks_design.csv  (Pix4D parallel workflow — not used in ODM path)
 ```
 
-By default, sight.py names the ten most-dispersed targets as GCP, sets the remainder as CHK (or DUP for near-duplicate coordinates), and ranks the targets and their images by tagging value - tagging in order will produce the best accuracy for least effort. Target names are **recommendations** - the user has final say on role assignment in GCPEditorPro (step 3).
+By default, sight.py names the ten most-dispersed targets as GCP and the remainder as CHK, then ranks the targets and their images by tagging value — tagging in order produces the best accuracy for the least effort. Near-duplicate targets (within `--dup-tolerance` metres of another, default 1 m) inherit the role of their closest primary and get a `-dup` suffix (`GCP-104-dup`, `CHK-119-dup2`, ...), and are placed immediately after their primary in the file so they can be reviewed side-by-side. Target names are **recommendations** — the user has final say on role assignment in GCPEditorPro (step 3).
 
 **How sight.py orders targets** — the sequence is designed to lock down the
 model's geometry as quickly as possible with the fewest tags:

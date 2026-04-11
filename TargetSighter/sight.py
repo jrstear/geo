@@ -16,6 +16,7 @@ Stages:
 import csv
 import json
 import math
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
@@ -222,8 +223,8 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
             _seen[orig] += 1
             new_label = f"{orig}-{_seen[orig]}"
             print(
-                f"WARNING: duplicate label {orig!r} — renamed to {new_label!r} "
-                f"(occurrence {_seen[orig] + 1})",
+                f"WARNING: same label {orig!r} on distinct coordinates — "
+                f"renamed to {new_label!r} (occurrence {_seen[orig] + 1})",
                 file=_sys.stderr,
             )
             g['label'] = new_label
@@ -953,7 +954,9 @@ def _write_gcp_list(gcps: List[dict],
     if sort_output:
         gcps_with_estimates = [g for g in gcps if g['label'] in estimate_labels]
 
-        # Near-duplicate detection: demote co-located GCPs to end of list before sorting.
+        # Near-duplicate detection: separate co-located GCPs from the structural
+        # sort, then re-insert each one immediately after its closest primary so
+        # duplicates are visually adjacent in the output.
         if dup_tolerance_m > 0:
             gcps_main, demoted_triples = _separate_near_duplicates(
                 gcps_with_estimates, dup_tolerance_m)
@@ -962,8 +965,24 @@ def _write_gcp_list(gcps: List[dict],
 
         sorted_gcps, z_critical_labels = _sort_gcps(gcps_main, z_threshold)
 
-        if not omit_duplicates:
-            sorted_gcps += [dup for dup, _, _ in demoted_triples]
+        if not omit_duplicates and demoted_triples:
+            # Interleave each duplicate immediately after its primary in
+            # sorted_gcps.  When several duplicates share a primary, they form
+            # a contiguous block: [primary, dup1, dup2, dup3, ...] in original
+            # input order.  Spatial proximity (not labels) is used to find the
+            # end of an existing dup block, so this works regardless of whether
+            # _classify_gcps has already renamed the labels.
+            for dup, primary, _dist in demoted_triples:
+                try:
+                    primary_idx = sorted_gcps.index(primary)
+                except ValueError:
+                    sorted_gcps.append(dup)
+                    continue
+                insert_at = primary_idx + 1
+                while (insert_at < len(sorted_gcps)
+                       and _gcp_distance_m(sorted_gcps[insert_at], primary) < dup_tolerance_m):
+                    insert_at += 1
+                sorted_gcps.insert(insert_at, dup)
     else:
         sorted_gcps = [g for g in gcps if g['label'] in estimate_labels]
         z_critical_labels = set()
@@ -1078,27 +1097,48 @@ def _compute_estimates_mode_a(
 def _classify_gcps(gcps: List[dict],
                    estimates: Dict[str, Dict[str, dict]],
                    sorted_labels: List[str],
-                   n_control: int = 10) -> None:
+                   n_control: int = 10,
+                   dup_to_primary: Optional[Dict[str, str]] = None) -> None:
     """
-    Rename GCP labels in-place with GCP-* / CHK-* / DUP-* prefixes.
+    Rename GCP labels in-place with GCP-* / CHK-* prefixes (and -dup suffixes
+    for near-duplicates).
 
     sorted_labels: GCP labels in structural priority order (output of _sort_gcps,
-                   with demoted near-duplicates appended at the end).
+                   excluding near-duplicates).
 
-    Prefix assignment:
+    Prefix assignment for sorted_labels:
         Positions 1 .. n_control     → GCP-{base}   (control)
         Positions n_control+1 .. end → CHK-{base}   (check)
 
-    Near-duplicates (GCPs not in sorted_labels) → DUP-{base}.
+    Near-duplicates (GCPs not in sorted_labels):
+        Each duplicate inherits its closest primary's role PREFIX (GCP- or
+        CHK-) but keeps its own base name and gets a '-dup' suffix.  The
+        1st, 2nd, 3rd, ... duplicate of the same primary gets '-dup',
+        '-dup2', '-dup3', ... so they remain distinct.
 
-    Any existing GCP-*/CHK-*/DUP-* prefix is stripped before re-applying so
-    that re-running the pipeline on already-prefixed labels is idempotent.
+        Example: primary '18' becomes 'CHK-18'; dup '18m' becomes
+        'CHK-18m-dup' (NOT 'CHK-18-dup' — the dup's distinct base name
+        '18m' is preserved).  A duplicate of a GCP-* primary becomes
+        another GCP-* (the control count may exceed n_control); a
+        duplicate of a CHK-* primary becomes another CHK-*.
+
+        Requires dup_to_primary: {dup_label: primary_label} mapping using
+        the ORIGINAL labels (before classification renames them).  Without
+        this mapping, GCPs not in sorted_labels fall back to a legacy
+        DUP-{base} prefix (kept for backward compatibility).
+
+    Idempotency: any existing GCP-/CHK-/DUP- prefix is stripped before
+    re-applying, and any trailing -dup\\d* suffix is also stripped, so
+    re-running the pipeline on already-classified labels is a no-op.
+    Surveyor-side suffixes like '-1', '-2' (e.g. 'GCP-127-1') are NOT
+    stripped because the regex requires '-dup' specifically.
     """
     def _base(label: str) -> str:
         for pfx in ('GCP-', 'CHK-', 'DUP-'):
             if label.startswith(pfx):
-                return label[len(pfx):]
-        return label
+                label = label[len(pfx):]
+                break
+        return re.sub(r'-dup\d*$', '', label)
 
     rename: Dict[str, str] = {}
     for rank, label in enumerate(sorted_labels, start=1):
@@ -1108,11 +1148,29 @@ def _classify_gcps(gcps: List[dict],
         else:
             rename[label] = f'CHK-{base}'
 
-    # Any GCP not in sorted_labels is a near-duplicate demoted outside the main
-    # sort — give it DUP- prefix.
-    for gcp in gcps:
-        if gcp['label'] not in rename:
-            rename[gcp['label']] = f'DUP-{_base(gcp["label"])}'
+    # Near-duplicates: inherit primary's role PREFIX (GCP-/CHK-), keep
+    # the dup's own base name, and append -dup[N].  Group dups by primary
+    # so multi-duplicate clusters get -dup, -dup2, -dup3.
+    if dup_to_primary:
+        dups_by_primary: Dict[str, List[str]] = {}
+        for dup_label, primary_label in dup_to_primary.items():
+            dups_by_primary.setdefault(primary_label, []).append(dup_label)
+        for primary_label, dup_labels in dups_by_primary.items():
+            primary_role = rename.get(primary_label)
+            if primary_role is None:
+                # Primary wasn't in sorted_labels — shouldn't happen, but
+                # fall back gracefully.
+                primary_role = f'GCP-{_base(primary_label)}'
+            primary_prefix = 'CHK-' if primary_role.startswith('CHK-') else 'GCP-'
+            for n, dup_label in enumerate(dup_labels):
+                suffix = '-dup' if n == 0 else f'-dup{n + 1}'
+                dup_base = _base(dup_label)
+                rename[dup_label] = f'{primary_prefix}{dup_base}{suffix}'
+    else:
+        # Legacy fallback: anything not in sorted_labels → DUP-{base}.
+        for gcp in gcps:
+            if gcp['label'] not in rename:
+                rename[gcp['label']] = f'DUP-{_base(gcp["label"])}'
 
     # Apply to gcps list (in-place mutation of dicts)
     for gcp in gcps:
@@ -1124,10 +1182,20 @@ def _classify_gcps(gcps: List[dict],
         if new_label and new_label != old_label:
             estimates[new_label] = estimates.pop(old_label)
 
-    n_ctrl = sum(1 for g in gcps if g['label'].startswith('GCP-'))
-    n_chk  = sum(1 for g in gcps if g['label'].startswith('CHK-'))
-    n_dup  = sum(1 for g in gcps if g['label'].startswith('DUP-'))
-    print(f"  {n_ctrl} GCP-* (control),  {n_chk} CHK-* (check),  {n_dup} DUP-* (duplicate)")
+    def _is_dup(lbl: str) -> bool:
+        return bool(re.search(r'-dup\d*$', lbl))
+
+    n_ctrl     = sum(1 for g in gcps if g['label'].startswith('GCP-'))
+    n_chk      = sum(1 for g in gcps if g['label'].startswith('CHK-'))
+    n_ctrl_dup = sum(1 for g in gcps if g['label'].startswith('GCP-') and _is_dup(g['label']))
+    n_chk_dup  = sum(1 for g in gcps if g['label'].startswith('CHK-') and _is_dup(g['label']))
+    n_legacy_dup = sum(1 for g in gcps if g['label'].startswith('DUP-'))
+    if n_legacy_dup:
+        print(f"  {n_ctrl} GCP-* (control),  {n_chk} CHK-* (check),  "
+              f"{n_legacy_dup} DUP-* (legacy)")
+    else:
+        print(f"  {n_ctrl} GCP-* (control, incl. {n_ctrl_dup} -dup),  "
+              f"{n_chk} CHK-* (check, incl. {n_chk_dup} -dup)")
 
 
 # ---------------------------------------------------------------------------
@@ -1186,7 +1254,7 @@ def run_pipeline(images_dir: str,
     # B1 — Parse inputs
     print("Parsing Emlid CSV...")
     gcps = parse_survey_csv(survey_csv_path, fallback_crs=fallback_crs)
-    print(f"  {len(gcps)} GCPs")
+    print(f"  {len(gcps)} targets")
 
     if reproject_to and gcps:
         _raw_cs = gcps[0].get('cs_name') or ''
@@ -1202,13 +1270,13 @@ def run_pipeline(images_dir: str,
     exif_map = read_image_exif_batch(images_dir)
     print(f"  {len(exif_map)} images with GPS data")
 
-    print("Matching images to GCPs...")
+    print("Matching images to targets...")
     image_to_gcps = match_images_to_gcps(
         exif_map, gcps,
         fallback_radius_m=fallback_radius_m,
         threads=threads,
     )
-    print(f"  {len(image_to_gcps)} images contain at least one GCP")
+    print(f"  {len(image_to_gcps)} images contain at least one target")
 
     gcp_by_label = {g['label']: g for g in gcps}
 
@@ -1225,7 +1293,7 @@ def run_pipeline(images_dir: str,
             print(f"  WARNING: failed to load reconstruction: {e}. Using Mode A only.")
 
     # B3 — Compute pixel estimates
-    print("Estimating GCP locations via GCP,image projection geometry...")
+    print("Estimating target pixel locations via target+image projection geometry...")
     if reconstruction:
         ref = reconstruction['reference_lla']
         shots = reconstruction.get('shots', {})
@@ -1272,14 +1340,14 @@ def run_pipeline(images_dir: str,
     sorted_gcps_order: List[dict] = []
     demoted_triples_presort: List[Tuple] = []
     if sort_output:
-        print("Sorting GCPs by structural priority...")
+        print("Sorting targets by structural priority...")
         gcps_with_est = [g for g in gcps if g['label'] in estimates]
         if dup_tolerance_m > 0:
             gcps_main_pre, demoted_triples_presort = _separate_near_duplicates(
                 gcps_with_est, dup_tolerance_m)
             if demoted_triples_presort:
-                action = "omitted (--omit-duplicates)" if omit_duplicates else "labeled as duplicate and put at bottom of list"
-                print(f"  WARNING: {len(demoted_triples_presort)} GCP(s) within "
+                action = "omitted (--omit-duplicates)" if omit_duplicates else "labeled with -dup suffix and interleaved after their primary"
+                print(f"  WARNING: {len(demoted_triples_presort)} target(s) within "
                       f"{dup_tolerance_m:.1f} m of another — {action}")
         else:
             gcps_main_pre, demoted_triples_presort = gcps_with_est, []
@@ -1290,15 +1358,24 @@ def run_pipeline(images_dir: str,
         return ([g['label'] for g in sorted_gcps_order] +
                 [dup['label'] for dup, _, _ in demoted_triples_presort])
 
-    # Classification (geo-12w): rename labels with GCP-*/CHK-*/DUP-* prefixes
+    # Classification (geo-12w): rename labels with GCP-*/CHK-* prefixes,
+    # with -dup[N] suffixes for near-duplicates that inherit a primary's role.
     if classify:
         if not sorted_gcps_order:
             print("  WARNING: --classify requires sort_output; skipping classification.")
         else:
-            # Pass only the non-demoted sorted labels; demoted triples are not in
-            # this list so they fall through to the DUP-* path in _classify_gcps().
+            # Build dup → primary mapping using ORIGINAL labels (before _classify_gcps
+            # mutates them).  When omit_duplicates is set, pass None so duplicates
+            # (which won't appear in output anyway) don't get -dup labels.
+            dup_to_primary_pre = (
+                {dup['label']: primary['label']
+                 for dup, primary, _dist in demoted_triples_presort}
+                if not omit_duplicates else None
+            )
             _classify_gcps(gcps, estimates,
-                           [g['label'] for g in sorted_gcps_order], n_control)
+                           [g['label'] for g in sorted_gcps_order],
+                           n_control,
+                           dup_to_primary=dup_to_primary_pre)
             # sorted_gcps_order dicts were mutated in-place; _sorted_labels() now
             # returns the renamed labels automatically.
 
@@ -1376,8 +1453,8 @@ if __name__ == '__main__':
     parser.add_argument('--nadir-weight', type=float, default=0.2,
                         help='Penalty applied to oblique images in the sort score '
                              '(0=treat obliques same as nadirs, 1=all nadirs first; default 0.2)')
-    parser.add_argument('--out-name', default='gcp_list.txt',
-                        help='Filename for the gcp_list output (default: gcp_list.txt; '
+    parser.add_argument('--out-name', default='targets.txt',
+                        help='Filename for the tagging file output (default: targets.txt; '
                              'auto-set to {job}.txt from transform.yaml if present)')
     parser.set_defaults(classify=True, refine_pixels=True)
     parser.add_argument('--match-only', action='store_true',
@@ -1439,7 +1516,7 @@ if __name__ == '__main__':
         if _field_crs and not args.crs:
             args.crs = _field_crs
             print(f'  field_crs → --crs {_field_crs}')
-        if _job_name and args.out_name == 'gcp_list.txt':
+        if _job_name and args.out_name == 'targets.txt':
             args.out_name = f'{_job_name}.txt'
             print(f'  job → --out-name {args.out_name}')
         if _odm_crs:
@@ -1452,20 +1529,20 @@ if __name__ == '__main__':
     if args.match_only:
         print(f'Parsing {args.survey_csv}...')
         gcps = parse_survey_csv(args.survey_csv, fallback_crs=args.crs)
-        print(f'  {len(gcps)} FIX GCPs: {[g["label"] for g in gcps]}')
+        print(f'  {len(gcps)} FIX targets: {[g["label"] for g in gcps]}')
 
         print(f'\nReading EXIF from {args.image_dir}...')
         exif_map = read_image_exif_batch(args.image_dir)
         print(f'  {len(exif_map)} images with GPS data')
 
-        print(f'\nMatching images to GCPs (fallback radius={args.radius}m)...')
+        print(f'\nMatching images to targets (fallback radius={args.radius}m)...')
         image_to_gcps = match_images_to_gcps(
             exif_map, gcps,
             fallback_radius_m=args.radius,
             threads=args.threads,
         )
 
-        print(f'\nResult: {len(image_to_gcps)} images contain at least one GCP')
+        print(f'\nResult: {len(image_to_gcps)} images contain at least one target')
         for fname, labels in sorted(image_to_gcps.items()):
             print(f'  {fname}: {labels}')
     else:

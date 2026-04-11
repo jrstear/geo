@@ -21,6 +21,7 @@ Requires: opencv-python, numpy.
 """
 
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 from typing import Dict, List, Optional, Tuple
@@ -451,8 +452,9 @@ def refine_all_estimates(
                   are built in this order so that --refine-limit keeps the most
                   important pairs.  If None, dict insertion order is used.
     refine_limit: if > 0, process at most this many (gcp, image) pairs.
-                  DUP-* pairs are excluded before the limit is applied, so the
-                  limit budget is spent entirely on GCP-* and CHK-* pairs.
+                  Near-duplicate pairs (legacy DUP-* prefix or new -dup\\d*
+                  suffix on a GCP-/CHK- label) are excluded before the limit
+                  is applied, so the budget is spent on primary GCP/CHK pairs.
 
     Estimates that succeed have their px/py replaced with the refined sub-pixel
     coordinate and gain 'confidence' and 'marker_bbox' keys.  Pairs that fail
@@ -475,8 +477,10 @@ def refine_all_estimates(
         img_map = estimates.get(gcp_label)
         if not img_map:
             continue
-        # Skip DUP-* (near-duplicate) points — refinement cost is not justified.
-        if gcp_label.startswith('DUP-'):
+        # Skip near-duplicate points — refinement cost is not justified
+        # (the colocated primary already gets refined).
+        # Match both legacy 'DUP-...' and new 'GCP-...-dup'/'CHK-...-dup2' forms.
+        if gcp_label.startswith('DUP-') or re.search(r'-dup\d*$', gcp_label):
             continue
         for img_name, est in img_map.items():
             exif = exif_map.get(img_name) or {}
@@ -486,7 +490,7 @@ def refine_all_estimates(
                 tasks.append((gcp_label, img_name, path, est['px'], est['py'], gsd))
 
     if refine_limit > 0 and len(tasks) > refine_limit:
-        print(f"  Limiting to {refine_limit} of {len(tasks)} (GCP,image) pairs (--refine-limit).")
+        print(f"  Limiting to {refine_limit} of {len(tasks)} (target,image) pairs (--refine-limit).")
         tasks = tasks[:refine_limit]
 
     if not tasks:
@@ -517,7 +521,7 @@ def refine_all_estimates(
                 est['_bbox_avg']   = result.get('bbox_avg')
                 refined += 1
             if done % max(1, total // 20) == 0 or done == total:
-                print(f"  {100 * done / total:5.1f}% done: {done} of {total} GCP,image pairs analyzed",
+                print(f"  {100 * done / total:5.1f}% done: {done} of {total} target,image pairs analyzed",
                       end='\r', flush=True)
 
     print()
