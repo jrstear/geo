@@ -583,10 +583,15 @@ def compute_rmse(
     gcp_points = _compute_residuals(gcp_results, None, None, None, apply_sim=False)
     chk_points = _compute_residuals(chk_results, None, None, None, apply_sim=False)
 
+    # Image counts per label (for the HTML detail table).
+    obs_counts = {label: len(imgs) for label, imgs in gcp_obs.items()}
+    obs_counts.update({label: len(imgs) for label, imgs in chk_obs.items()})
+
     return {
         "gcp": _group_stats(gcp_points),
         "chk": _group_stats(chk_points),
         "geotransform_source": "geodetic (ENU→ECEF→LLA→proj)",
+        "obs_counts": obs_counts,
     }
 
 
@@ -757,11 +762,13 @@ def generate_html_report(
     """Generate HTML accuracy report with optional ortho crop images."""
 
     # Collect all points sorted worst-first
+    obs_counts = result.get("obs_counts", {})
     all_points = []
     for group_key in ("gcp", "chk"):
         group = result.get(group_key, {})
         for p in group.get("points", []):
-            all_points.append({**p, "group": group_key.upper()})
+            all_points.append({**p, "group": group_key.upper(),
+                               "n_images": obs_counts.get(p["label"], 0)})
     all_points.sort(key=lambda p: p["dH"], reverse=True)
 
     # Suspect flagging
@@ -914,11 +921,12 @@ orthophoto.</p>
         label_cell = f'<a href="#img-{p["label"]}">{p["label"]}</a>' if has_ortho else p["label"]
         suspect_mark = ' <span style="color:#f44">⚠</span>' if p.get("suspect") else ""
         detail_rows += (f'<tr><td>{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
+                        f'<td>{p["n_images"]}</td>'
                         f'<td>{dh_ft:+.4f}</td><td>{dz_ft:+.4f}</td>'
                         f'<td>{d3d_ft:.4f}</td></tr>\n')
 
     detail_table_html = f"""<table class="detail">
-<tr><th>Label</th><th>Group</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th></tr>
+<tr><th>Label</th><th>Group</th><th>Tagged<br/>Images</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th></tr>
 {detail_rows}</table>"""
 
     # --- Suspect / outlier check ---
