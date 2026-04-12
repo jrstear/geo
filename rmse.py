@@ -855,10 +855,35 @@ orthophoto.</p>
                       f" (use --ortho with a COG for faster overview)",
                       file=sys.stderr)
 
-                # Draw each point as a colored dot + label with collision avoidance
+                # Draw each point with color mapped to dH (green=best → red=worst)
+                # and marker shape distinguishing GCP (star) from CHK (circle).
                 placed_labels = []  # [(x, y, w, h), ...] for collision detection
                 font_scale = 0.28
                 font = cv2.FONT_HERSHEY_SIMPLEX
+
+                # Compute dH range for color mapping
+                dh_vals_for_color = [p["dH"] for p in all_points]
+                dh_min = min(dh_vals_for_color) if dh_vals_for_color else 0
+                dh_max = max(dh_vals_for_color) if dh_vals_for_color else 1
+                dh_range = dh_max - dh_min if dh_max > dh_min else 1.0
+
+                def _dh_color_bgr(dh: float) -> Tuple[int, int, int]:
+                    """Map dH to a green (best) → red (worst) gradient, BGR."""
+                    t = (dh - dh_min) / dh_range  # 0 = best, 1 = worst
+                    r = int(255 * t)
+                    g = int(255 * (1 - t))
+                    return (0, g, r)  # BGR for OpenCV
+
+                def _dh_color_css(dh: float) -> str:
+                    """Map dH to a green → red gradient, CSS rgb()."""
+                    t = (dh - dh_min) / dh_range
+                    r = int(255 * t)
+                    g = int(255 * (1 - t))
+                    return f"rgb({r},{g},0)"
+
+                # Store CSS colors for use in the detail table later.
+                for p in all_points:
+                    p["_color_css"] = _dh_color_css(p["dH"])
 
                 for p in all_points:
                     label = p["label"]
@@ -868,14 +893,12 @@ orthophoto.</p>
                     if not (0 <= px < sw and 0 <= py < sh):
                         continue
 
-                    # Color: green for GCP, yellow for CHK, red for suspect
-                    if p.get("suspect"):
-                        color = (0, 0, 255)
-                    elif p["group"] == "GCP":
-                        color = (0, 255, 0)
+                    color = _dh_color_bgr(p["dH"])
+                    if p["group"] == "GCP":
+                        cv2.drawMarker(overview, (px, py), color,
+                                       cv2.MARKER_STAR, 10, 2, cv2.LINE_AA)
                     else:
-                        color = (0, 255, 255)
-                    cv2.circle(overview, (px, py), 4, color, -1, cv2.LINE_AA)
+                        cv2.circle(overview, (px, py), 4, color, -1, cv2.LINE_AA)
                     cv2.circle(overview, (px, py), 4, (0, 0, 0), 1, cv2.LINE_AA)
 
                     # Label placement with collision + boundary avoidance
@@ -917,10 +940,12 @@ orthophoto.</p>
         dh_ft = p["dH"] * M_TO_FT
         dz_ft = p["dZ"] * M_TO_FT
         d3d_ft = p["d3D"] * M_TO_FT
-        suspect = " ⚠" if p.get("suspect") else ""
+        color_css = p.get("_color_css", "#888")
+        marker_char = "★" if p["group"] == "GCP" else "●"
+        marker_html = f'<span style="color:{color_css};margin-right:4px">{marker_char}</span>'
         label_cell = f'<a href="#img-{p["label"]}">{p["label"]}</a>' if has_ortho else p["label"]
         suspect_mark = ' <span style="color:#f44">⚠</span>' if p.get("suspect") else ""
-        detail_rows += (f'<tr><td>{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
+        detail_rows += (f'<tr><td>{marker_html}{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
                         f'<td>{p["n_images"]}</td>'
                         f'<td>{dh_ft:+.4f}</td><td>{dz_ft:+.4f}</td>'
                         f'<td>{d3d_ft:.4f}</td></tr>\n')
