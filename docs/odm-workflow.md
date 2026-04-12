@@ -444,7 +444,7 @@ conda run -n geo python rmse.py \
 The HTML report includes summary tables (GCP + CHK), per-point residuals sorted
 worst-first with an overview map, outlier detection, and annotated ortho crops
 showing survey coordinates vs target positions
-([example](../examples/rmse_report.html)).
+([example](https://jrstear.github.io/geo-samples/examples/rmse_report.html)).
 
 Expected reconstruction accuracy (250 ft AGL, RTK, GCPs well-distributed):
 
