@@ -1,19 +1,11 @@
 # geo
 
-Drone-photogrammetry pipeline built around OpenDroneMap, designed for the
-field workflow of a surveyor with an Emlid
-Reach RS3 base/rover pair, and a DJI drone.  Raw imagery plus GNSS-surveyed
-ground control points go in; an orthomosaic, DSM, DTM, and accuracy report
-come out, with OpenDroneMap running on AWS EC2 in between.
+A set of tools to make open-source drone mapping easy and accurate.
+Designed for a surveyor using Trimble control points, collecting field data
+with Emlid and DJI, tagging images, running ODM in AWS, and producing accuracy
+reports including control and check point RMSE and orthophoto crops.
 
-The pipeline's distinguishing contributions over running OpenDroneMap directly
-are multi-CRS dataflow (Trimble design grid ↔ state plane ↔ UTM), pre-projected
-pixel estimates that make GCPEditorPro tagging much faster, one-command EC2
-deployment via terraform, and independent RMSE on held-out check points —
-a publishable accuracy figure that stock ODM doesn't produce.
-
-**Start here:** [`docs/odm-workflow.md`](docs/odm-workflow.md) — end-to-end
-workflow with diagram, CRS notes, and step-by-step commands.
+See [`docs/odm-workflow.md`](docs/odm-workflow.md) for the workflow.
 
 ## Components
 
@@ -24,7 +16,7 @@ workflow with diagram, CRS notes, and step-by-step commands.
 | [GCPEditorPro fork](https://github.com/jrstear/GCPEditorPro/tree/feature/auto-gcp-pipeline) | Pixel tagging UI with zoom view, compass/tilt overlays, spacebar confirm, progress badges. The list of modifications relative to upstream uav4geo/GCPEditorPro lives in the fork itself: [`CHANGES-fork.md`](https://github.com/jrstear/GCPEditorPro/blob/feature/auto-gcp-pipeline/CHANGES-fork.md) |
 | [`infra/ec2/`](infra/ec2/) | Terraform module that provisions an EC2 ODM instance, runs the pipeline via `odm-bootstrap.sh`, syncs to/from S3, sends SNS stage notifications, and shuts itself down on completion. See [`docs/cloud-infra-spec.md`](docs/cloud-infra-spec.md) |
 | [`rmse.py`](rmse.py) | Independent RMSE accuracy assessment from `reconstruction.topocentric.json` + GCP/CHK lists. Generates an HTML report with annotated ortho crops, outlier detection, and optional uncertainty overlay |
-| [`packager/`](packager/) | GDAL wrappers for reprojecting + shifting + tiling the ODM orthophoto into customer-deliverable form (design-grid CRS, COG, optional downsizing) |
+| [`packager/`](packager/) | GDAL wrappers for reprojecting + shifting + tiling deliverables into proper form (design-grid CRS, COG, optional downsizing) |
 | [`accuracy_study/`](accuracy_study/) | Research scripts: refinement comparison, image-count ablations, projection mode validation, ortho uncertainty overlay generation. See [`accuracy_study/README.md`](accuracy_study/README.md) |
 | [`experimental/`](experimental/) | Validated-but-shelved code kept for reference (currently `true_ortho.py`). See [`experimental/README.md`](experimental/README.md) |
 
