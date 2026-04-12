@@ -376,7 +376,9 @@ terraform apply \
     -var="notify_email=your@email.com"
 ```
 
-Where `{PROJECT}` is the S3 prefix, e.g. `bsn/myjob`.
+`{PROJECT}` is the S3 path prefix, typically `{client}/{job}` (e.g.
+`acme/myjob`).  `{job}` is the local job directory name used throughout
+the earlier steps.
 
 You will receive SNS emails as each stage completes, and on spot
 interruption/resume events. The instance cancels its own spot request
