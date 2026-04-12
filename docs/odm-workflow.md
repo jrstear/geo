@@ -193,7 +193,7 @@ all axes in metres.  `transform.py` and `sight.py` handle the conversion automat
 
 ### 1. Obtain control monument coordinates
 
-You need control monument coordinates in EPSG:6529 before going to the field.
+You need control monument coordinates in the appropriate CRS (eg EPSG:6529) before going to the field.
 
 **Customer/Trimble jobs**: Customer provides a `.dc` data collector file with design-grid
 coordinates. `transform.py dc` converts them to state plane and writes
@@ -202,18 +202,18 @@ coordinates. `transform.py dc` converts them to state plane and writes
 ```bash
 # Default: auto-query the NGS API to identify anchor monuments and compute the shift.
 conda run -n geo python transform.py dc \
-    ~/stratus/{job}/{customer}_{job}.dc \
-    --out-dir ~/stratus/{job}/
-# → ~/stratus/{job}/{job}_6529.csv    (state-plane EPSG:6529, for Emlid localization)
-# → ~/stratus/{job}/{job}_design.csv  (design-grid coords, for QGIS design review)
-# → ~/stratus/{job}/transform.yaml    (CRS + shift params; used downstream)
+    {job}/{customer}_{job}.dc \
+    --out-dir {job}/
+# → {job}/{job}_6529.csv    (state-plane EPSG:6529, for Emlid localization)
+# → {job}/{job}_design.csv  (design-grid coords, for QGIS design review)
+# → {job}/transform.yaml    (CRS + shift params; used downstream)
 
 # Manual override (when NGS auto-lookup fails or you need higher accuracy than the
 # lat/lon-derived fallback ±20 ft):
 conda run -n geo python transform.py dc \
-    ~/stratus/aztec/"F100340 AZTEC.dc" \
+    {job}/"F100340 AZTEC.dc" \
     --anchor 14 1147722.527 2144275.554 \
-    --out-dir ~/stratus/aztec/
+    --out-dir {job}/
 ```
 
 **How the anchor is identified:**
@@ -240,7 +240,7 @@ than the API's lat/lon-derived fallback (~±20 ft) provides.
 The shift is saved in `transform.yaml` for consistent reuse downstream.  It only needs to be
 computed once per job (same `.dc` file = same design grid = same shift).
 
-**Other jobs**: obtain monument coordinates in EPSG:6529 directly from the surveyor.
+**Other jobs**: obtain monument coordinates in appropriate CRS directly from the surveyor.
 
 Use `{job}_6529.csv` for Emlid RS3 base/rover localization in the field.
 
@@ -255,15 +255,15 @@ Use `{job}_6529.csv` for Emlid RS3 base/rover localization in the field.
 
 ```bash
 conda run -n geo python TargetSighter/sight.py \
-    ~/stratus/{job}/{job}_emlid_6529.csv \
-    ~/stratus/{job}/images/
-# If transform.yaml is present in ~/stratus/{job}/, sight.py auto-loads it:
+    {job}/{job}_emlid_6529.csv \
+    {job}/images/
+# If transform.yaml is present in {job}/, sight.py auto-loads it:
 #   field_crs → used as fallback CRS for the survey CSV
 #   odm_crs   → target CRS for {job}.txt (EPSG:32613)
 #   job name  → used as output filename ({job}.txt)
 # Without transform.yaml, pass explicitly: --crs EPSG:XXXX --out-name "{job}"
-# → ~/stratus/{job}/{job}.txt         (all survey points, EPSG:32613, for GCPEditorPro)
-# → ~/stratus/{job}/marks_design.csv  (Pix4D parallel workflow — not used in ODM path)
+# → {job}/{job}.txt         (all survey points, EPSG:32613, for GCPEditorPro)
+# → {job}/marks_design.csv  (Pix4D parallel workflow — not used in ODM path)
 ```
 
 By default, sight.py names the ten most-dispersed targets as GCP and the remainder as CHK, then ranks the targets and their images by tagging value — tagging in order produces the best accuracy for the least effort. Near-duplicate targets (within `--dup-tolerance` metres of another, default 1 m) inherit the role of their closest primary and get a `-dup` suffix (`GCP-104-dup`, `CHK-119-dup2`, ...), and are placed immediately after their primary in the file so they can be reviewed side-by-side. Target names are **recommendations** — the user has final say on role assignment in GCPEditorPro (step 3).
@@ -341,17 +341,17 @@ threshold in GCPEditorPro's progress indicators.  Work top-to-bottom through
 the list — sight.py's ordering means the first 7 give the best structural
 coverage for the least effort.
 
-### 4. Split into deliverable files
+### 4. Split into purpose-specific files
 
 ```bash
 conda run -n geo python transform.py split \
-    ~/stratus/{job}/{job}_tagged.txt \
-    --out-dir ~/stratus/{job}/
-# Reads ~/stratus/{job}/transform.yaml automatically
-# → ~/stratus/{job}/gcp_list.txt            (GCP- tagged tuples, EPSG:32613; for ODM)
-# → ~/stratus/{job}/chk_list.txt            (CHK- tagged tuples, EPSG:32613; for rmse.py)
-# → ~/stratus/{job}/{job}_targets.csv       (one row/target, EPSG:32613; for QGIS review)
-# → ~/stratus/{job}/{job}_targets_design.csv (one row/target, design-grid; for customer QGIS)
+    {job}/{job}_tagged.txt \
+    --out-dir {job}/
+# Reads {job}/transform.yaml automatically
+# → {job}/gcp_list.txt            (GCP- tagged tuples, EPSG:32613; for ODM)
+# → {job}/chk_list.txt            (CHK- tagged tuples, EPSG:32613; for rmse.py)
+# → {job}/{job}_targets.csv       (one row/target, EPSG:32613; for QGIS review)
+# → {job}/{job}_targets_design.csv (one row/target, design-grid; for customer QGIS)
 ```
 
 **`{job}_targets.csv`** is the primary QGIS QC layer: one row per surveyed target,
@@ -362,12 +362,12 @@ monument ID.  Load as a point layer over the orthophoto to verify target placeme
 
 ```bash
 # Upload images (one-time; skip if already in S3)
-aws s3 sync ~/stratus/{job}/images/ \
-    s3://stratus-jrstear/{PROJECT}/images/
+aws s3 sync {job}/images/ \
+    s3://{BUCKET}/{PROJECT}/images/
 
 # Upload control file
-aws s3 cp ~/stratus/{job}/gcp_list.txt \
-    s3://stratus-jrstear/{PROJECT}/gcp_list.txt
+aws s3 cp {job}/gcp_list.txt \
+    s3://{BUCKET}/{PROJECT}/gcp_list.txt
 
 # Launch EC2 instance — pipeline starts automatically on boot
 cd ~/git/geo/infra/ec2
@@ -401,13 +401,13 @@ After the pipeline completes, sync the reconstruction down and run the check:
 
 ```bash
 # Sync opensfm outputs from S3
-aws s3 sync s3://stratus-jrstear/{PROJECT}/opensfm/ \
-    ~/stratus/{job}/opensfm/
+aws s3 sync s3://{BUCKET}/{PROJECT}/opensfm/ \
+    {job}/opensfm/
 
 conda run -n geo python rmse.py \
-    ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
-    ~/stratus/{job}/gcp_list.txt \
-    ~/stratus/{job}/chk_list.txt
+    {job}/opensfm/reconstruction.topocentric.json \
+    {job}/gcp_list.txt \
+    {job}/chk_list.txt
 ```
 
 rmse.py triangulates each GCP/CHK target from camera rays in the reconstruction,
@@ -439,11 +439,11 @@ visual accuracy report with annotated ortho crops:
 
 ```bash
 conda run -n geo python rmse.py \
-    ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
-    ~/stratus/{job}/gcp_list.txt \
-    ~/stratus/{job}/chk_list.txt \
-    --html ~/stratus/{job}/rmse_report.html \
-    --ortho ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original.tif
+    {job}/opensfm/reconstruction.topocentric.json \
+    {job}/gcp_list.txt \
+    {job}/chk_list.txt \
+    --html {job}/rmse_report.html \
+    --ortho {job}/odm_orthophoto/odm_orthophoto.original.tif
 ```
 
 The HTML report includes summary tables (GCP + CHK), per-point residuals sorted
@@ -466,12 +466,12 @@ overlay TIF, pass it via `--uncertainty` to embed it at the end of the HTML repo
 
 ```bash
 conda run -n geo python rmse.py \
-    ~/stratus/{job}/opensfm/reconstruction.topocentric.json \
-    ~/stratus/{job}/gcp_list.txt \
-    ~/stratus/{job}/chk_list.txt \
-    --html ~/stratus/{job}/rmse_report.html \
-    --ortho ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original.tif \
-    --uncertainty ~/stratus/{job}/uncertainty_overlay.tif
+    {job}/opensfm/reconstruction.topocentric.json \
+    {job}/gcp_list.txt \
+    {job}/chk_list.txt \
+    --html {job}/rmse_report.html \
+    --ortho {job}/odm_orthophoto/odm_orthophoto.original.tif \
+    --uncertainty {job}/uncertainty_overlay.tif
 ```
 
 This combines the point-wise residual report with a spatial view of where the
@@ -482,16 +482,16 @@ accuracy is likely to depart most from the CHK residual statistics.
 
 ```bash
 # Sync deliverables from S3
-aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_orthophoto/ \
-    ~/stratus/{job}/odm_orthophoto/
-aws s3 sync s3://stratus-jrstear/{PROJECT}/odm_report/ \
-    ~/stratus/{job}/odm_report/
+aws s3 sync s3://{BUCKET}/{PROJECT}/odm_orthophoto/ \
+    {job}/odm_orthophoto/
+aws s3 sync s3://{BUCKET}/{PROJECT}/odm_report/ \
+    {job}/odm_report/
 
 # Package for customer delivery (reproject + shift to design grid + tile/COG)
 # transform.yaml is auto-loaded from the same directory as the input TIF
 python packager/package.py \
-    --tif-file ~/stratus/{job}/odm_orthophoto/odm_orthophoto.original.tif \
-    --transform-yaml ~/stratus/{job}/transform.yaml
+    --tif-file {job}/odm_orthophoto/odm_orthophoto.original.tif \
+    --transform-yaml {job}/transform.yaml
 # Or use the GUI via python packager/app.py
 ```
 
