@@ -706,10 +706,12 @@ def _annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
                    px_size: float, label: str,
                    dh_m: float, dz_m: float, d3d_m: float,
                    group: str, upscale: int = 4,
-                   tag_px: Optional[Tuple[float, float]] = None) -> np.ndarray:
+                   tag_px: Optional[Tuple[float, float]] = None,
+                   ortho_dh_m: Optional[float] = None) -> np.ndarray:
     """Upscale crop and annotate with survey + projected markers.
 
-    tag_px: optional (crop_x, crop_y) from ortho tagging — drawn as cyan crosshair.
+    tag_px: optional (crop_x, crop_y) from ortho tagging — drawn as crosshair reticle.
+    ortho_dh_m: optional ortho dH in metres — shown on third text line.
     """
     import cv2
     h, w = img.shape[:2]
@@ -752,8 +754,13 @@ def _annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
     dh_ft = dh_m * M_TO_FT
     dz_ft = dz_m * M_TO_FT
     d3d_ft = d3d_m * M_TO_FT
-    for i, line in enumerate([f"{label} ({group})",
-                              f"dH={dh_ft:+.3f} ft  dZ={dz_ft:+.3f} ft  d3D={d3d_ft:.3f} ft"]):
+    lines = [
+        f"{label} ({group})",
+        f"Reconstruction: dH={dh_ft:+.3f}  dZ={dz_ft:+.3f}  d3D={d3d_ft:.3f} ft",
+    ]
+    if ortho_dh_m is not None:
+        lines.append(f"Orthophoto: dH={ortho_dh_m * M_TO_FT:+.3f} ft")
+    for i, line in enumerate(lines):
         y = 18 + i * 18
         cv2.putText(out, line, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2, cv2.LINE_AA)
         cv2.putText(out, line, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
@@ -1402,13 +1409,10 @@ All points are within the threshold.</p>"""
                 dh_m=p["dH"], dz_m=p["dZ"], d3d_m=p["d3D"],
                 group=p["group"], upscale=upscale,
                 tag_px=ortho_tag_px.get(label),
+                ortho_dh_m=ortho_dh_by_label.get(label),
             )
             return f"""
         <div class="card" id="img-{label}">
-            <div class="info">
-                <b>{label}</b> <span class="group">{p['group']}</span><br/>
-                dH={p['dH']*M_TO_FT:+.4f} ft &nbsp; dZ={p['dZ']*M_TO_FT:+.4f} ft
-            </div>
             <img src="{_img_to_data_uri(annotated)}" />
         </div>"""
 
