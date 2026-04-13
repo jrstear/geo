@@ -175,8 +175,7 @@ Dotted edges signify a) recycled or iterative (eg cameras.json and {job}\_tagged
 
 ## CRS notes
 
-The tools do not assume multiple CRS, but do flexibly handle them if needed, often automatically.  Subgraphs in the workflow diagram show sample multi-CRS flow,
-here are some related comments.
+The tools do not assume multiple CRS, but do flexibly handle them if needed, often automatically.  Subgraphs in the workflow diagram show a sample multi-CRS flow, here are some related comments.
 
 | CRS | Use | Notes |
 |-----|-----|-------|
