@@ -698,15 +698,19 @@ def _crop_ortho(ds, cx: float, cy: float, crop_radius_m: float = 5.0):
         img = img[:, :, ::-1]  # RGB→BGR without cv2
     cx_px = center_col - x_off
     cy_px = center_row - y_off
-    return img, px_size, cx_px, cy_px
+    return img, px_size, cx_px, cy_px, x_off, y_off
 
 
 def _annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
                    dx_m: float, dy_m: float,
                    px_size: float, label: str,
                    dh_m: float, dz_m: float, d3d_m: float,
-                   group: str, upscale: int = 4) -> np.ndarray:
-    """Upscale crop and annotate with survey + projected markers."""
+                   group: str, upscale: int = 4,
+                   tag_px: Optional[Tuple[float, float]] = None) -> np.ndarray:
+    """Upscale crop and annotate with survey + projected markers.
+
+    tag_px: optional (crop_x, crop_y) from ortho tagging — drawn as cyan crosshair.
+    """
     import cv2
     h, w = img.shape[:2]
     out = cv2.resize(img, (w * upscale, h * upscale), interpolation=cv2.INTER_NEAREST)
@@ -730,6 +734,20 @@ def _annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
     if one_ft_px > 2:
         cv2.circle(out, (proj_x, proj_y), one_ft_px, (0, 255, 255), 1, cv2.LINE_AA)
 
+    # Red crosshair reticle: ortho-tagged position (matching GCPEditorPro crosshair)
+    if tag_px is not None:
+        tx = int(tag_px[0] * upscale + upscale // 2)
+        ty = int(tag_px[1] * upscale + upscale // 2)
+        radius = 10
+        arm = 14     # crosshair arm length from center
+        gap = 3      # center gap
+        cv2.circle(out, (tx, ty), radius, (0, 0, 0), 1, cv2.LINE_AA)
+        red = (0, 0, 220)  # BGR
+        cv2.line(out, (tx - arm, ty), (tx - gap, ty), red, 1, cv2.LINE_AA)
+        cv2.line(out, (tx + gap, ty), (tx + arm, ty), red, 1, cv2.LINE_AA)
+        cv2.line(out, (tx, ty - arm), (tx, ty - gap), red, 1, cv2.LINE_AA)
+        cv2.line(out, (tx, ty + gap), (tx, ty + arm), red, 1, cv2.LINE_AA)
+
     # Text overlay
     dh_ft = dh_m * M_TO_FT
     dz_ft = dz_m * M_TO_FT
@@ -749,6 +767,266 @@ def _img_to_data_uri(img: np.ndarray) -> str:
     return f"data:image/png;base64,{base64.b64encode(buf).decode('ascii')}"
 
 
+def emit_ortho_tagging(
+    result: dict,
+    ortho_path: str,
+    crop_radius: float = 5.0,
+    thumb_radius: float = 0.5,
+) -> None:
+    """Emit ortho crops and a tagging file for GCPEditorPro.
+
+    For each GCP/CHK target, extracts a crop from the orthophoto centered on
+    the survey coordinate and writes it as a JPEG with EXIF metadata recording
+    the crop origin (for coordinate recovery on the return trip).
+
+    Output:
+        {ortho_stem}-crops/{label}.jpg  — one crop per target
+        {ortho_stem}.txt                — GCPEditorPro-format tagging file
+
+    The tagging file uses confidence='ortho_projection' and includes a
+    markerBbox representing a ~thumb_radius metre region around the estimated
+    target position (drives GCPEditorPro thumbnail adaptive zoom).
+    """
+    from pathlib import Path
+    from osgeo import gdal
+    gdal.UseExceptions()
+    import cv2
+    from PIL import Image as PILImage
+
+    ortho_stem = Path(ortho_path).stem
+    crops_dir = Path(ortho_path).parent / f"{ortho_stem}-crops"
+    crops_dir.mkdir(exist_ok=True)
+    txt_path = Path(ortho_path).parent / f"{ortho_stem}.txt"
+
+    ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
+    if ds is None:
+        raise FileNotFoundError(f"Cannot open orthophoto: {ortho_path}")
+    gt = ds.GetGeoTransform()
+    px_size = abs(gt[1])
+
+    # CRS from the GDAL dataset
+    from osgeo import osr
+    srs = osr.SpatialReference(wkt=ds.GetProjection())
+    authority = srs.GetAuthorityName(None)
+    code = srs.GetAuthorityCode(None)
+    crs_header = f"{authority}:{code}" if authority and code else ds.GetProjection()
+
+    # Collect all GCP + CHK points from the result
+    all_points = []
+    for group_key in ("gcp", "chk"):
+        group = result.get(group_key, {})
+        for p in group.get("points", []):
+            all_points.append({**p, "group": group_key.upper()})
+
+    # Thumbnail bbox half-size in pixels
+    thumb_half_px = int(math.ceil(thumb_radius / px_size))
+
+    rows = []
+    written = 0
+    for p in all_points:
+        label = p["label"]
+        sx, sy = p["survey_x"], p["survey_y"]
+
+        crop_result = _crop_ortho(ds, sx, sy, crop_radius)
+        if crop_result is None:
+            print(f"  WARNING: crop failed for {label}, skipping", file=sys.stderr)
+            continue
+        img, _px_sz, cx_px, cy_px, x_off, y_off = crop_result
+
+        # Save crop as JPEG with EXIF metadata for coordinate recovery
+        crop_filename = f"{label}.jpg"
+        crop_path = crops_dir / crop_filename
+
+        # Convert BGR→RGB for PIL
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        pil_img = PILImage.fromarray(img_rgb)
+        exif = pil_img.getexif()
+        # Store crop metadata as JSON in ImageDescription (tag 270)
+        meta = {
+            "x_off": x_off,
+            "y_off": y_off,
+            "px_size": _px_sz,
+            "source": Path(ortho_path).name,
+        }
+        exif[270] = json.dumps(meta)
+        pil_img.save(str(crop_path), "JPEG", quality=95, exif=exif.tobytes())
+
+        # markerBbox: ~thumb_radius region around estimated position
+        bbox_x1 = max(0, cx_px - thumb_half_px)
+        bbox_y1 = max(0, cy_px - thumb_half_px)
+        bbox_x2 = min(img.shape[1], cx_px + thumb_half_px)
+        bbox_y2 = min(img.shape[0], cy_px + thumb_half_px)
+
+        # Row: geoX geoY geoZ estX estY imageName label confidence bbox
+        sz = p["survey_z"]
+        rows.append(
+            f"{sx}\t{sy}\t{sz}\t"
+            f"{cx_px}\t{cy_px}\t{crop_filename}\t{label}\t"
+            f"ortho_projection\t{bbox_x1},{bbox_y1},{bbox_x2},{bbox_y2}"
+        )
+        written += 1
+
+    ds = None
+
+    # Write tagging file
+    with open(txt_path, "w") as f:
+        f.write(crs_header + "\n")
+        for row in rows:
+            f.write(row + "\n")
+
+    print(f"\nOrtho tagging output:", file=sys.stderr)
+    print(f"  {written} crops → {crops_dir}/", file=sys.stderr)
+    print(f"  {txt_path}", file=sys.stderr)
+
+
+def compute_ortho_rmse(
+    ortho_tags_path: str,
+    ortho_path: str,
+) -> dict:
+    """
+    Compute 2D (horizontal) RMSE from tagged ortho positions vs survey coordinates.
+
+    For each tagged row in the ortho-tags file:
+    1. Read crop EXIF to get x_off, y_off
+    2. Convert crop-relative pixel → full-ortho pixel
+    3. Convert full-ortho pixel → UTM via GeoTransform
+    4. Compare to survey coordinate (geo_x, geo_y in the file)
+
+    Returns dict with 'gcp' and 'chk' sub-dicts containing ortho dH per point,
+    plus group-level rms_h.
+    """
+    from pathlib import Path
+    from osgeo import gdal
+    from PIL import Image as PILImage
+    gdal.UseExceptions()
+
+    # Derive ortho stem: strip _tagged suffix from the tags file stem
+    tags_stem = Path(ortho_tags_path).stem
+    if tags_stem.endswith("_tagged"):
+        ortho_stem = tags_stem[: -len("_tagged")]
+    else:
+        ortho_stem = tags_stem
+    crops_dir = Path(ortho_tags_path).parent / f"{ortho_stem}-crops"
+
+    # Read GeoTransform from the ortho
+    ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
+    if ds is None:
+        raise FileNotFoundError(f"Cannot open orthophoto: {ortho_path}")
+    gt = ds.GetGeoTransform()
+    ds = None
+
+    # Parse the ortho-tags file
+    crs_header, coords, obs = parse_points(ortho_tags_path)
+
+    # Read confidence from raw file (parse_points doesn't return it)
+    confidences: Dict[str, Dict[str, str]] = {}  # label → {image → confidence}
+    with open(ortho_tags_path) as f:
+        for line in f.readlines()[1:]:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            fields = line.split("\t") if "\t" in line else line.split()
+            if len(fields) < 8:
+                continue
+            label = fields[6]
+            image = fields[5]
+            conf = fields[7]
+            confidences.setdefault(label, {})[image] = conf
+
+    # Determine CRS units for the survey coords in the file
+    unit = crs_axis_unit(crs_header)
+    uses_feet = "foot" in unit.lower()
+
+    gcp_points = []
+    chk_points = []
+
+    for label in sorted(coords.keys()):
+        # Only use rows where confidence is 'tagged'
+        label_confs = confidences.get(label, {})
+        tagged_obs = [
+            (img, px, py) for img, px, py in obs.get(label, [])
+            if label_confs.get(img) == "tagged"
+        ]
+        if not tagged_obs:
+            continue
+
+        # Use the first tagged observation (one crop per label in ortho mode)
+        img_name, tag_px, tag_py = tagged_obs[0]
+
+        # Read crop EXIF for coordinate recovery
+        crop_path = crops_dir / img_name
+        if not crop_path.exists():
+            print(f"WARNING: crop not found for {label}: {crop_path}", file=sys.stderr)
+            continue
+
+        try:
+            pil_img = PILImage.open(str(crop_path))
+            exif = pil_img.getexif()
+            meta = json.loads(exif[270])
+        except Exception as e:
+            print(f"WARNING: cannot read EXIF for {label}: {e}", file=sys.stderr)
+            continue
+
+        x_off = meta["x_off"]
+        y_off = meta["y_off"]
+
+        # Convert crop-relative pixel → full-ortho pixel
+        full_x = x_off + tag_px
+        full_y = y_off + tag_py
+
+        # Convert full-ortho pixel → UTM (metres)
+        utm_x = gt[0] + full_x * gt[1]
+        utm_y = gt[3] + full_y * gt[5]
+
+        # Survey coordinates from the file
+        sx, sy, sz = coords[label]
+
+        # Convert survey coords to metres if needed
+        sx_m = sx * FT_TO_M if uses_feet else sx
+        sy_m = sy * FT_TO_M if uses_feet else sy
+
+        dX = utm_x - sx_m
+        dY = utm_y - sy_m
+        dH = math.sqrt(dX ** 2 + dY ** 2)
+
+        point = {
+            "label": label,
+            "dX": round(dX, 6),
+            "dY": round(dY, 6),
+            "dH": round(dH, 6),
+        }
+
+        if label.startswith("GCP"):
+            gcp_points.append(point)
+        elif label.startswith("CHK"):
+            chk_points.append(point)
+
+    def _ortho_group_stats(points):
+        n = len(points)
+        if n == 0:
+            return {"n": 0, "points": [], "rms_h": None}
+        rms_h = math.sqrt(sum(p["dH"] ** 2 for p in points) / n)
+        return {"n": n, "points": points, "rms_h": round(rms_h, 6)}
+
+    result = {
+        "gcp": _ortho_group_stats(gcp_points),
+        "chk": _ortho_group_stats(chk_points),
+    }
+
+    # Print summary
+    for group_name, group_key in [("GCP", "gcp"), ("CHK", "chk")]:
+        g = result[group_key]
+        print(f"\nOrtho {group_name} — N={g['n']}", file=sys.stderr)
+        if g["n"] > 0:
+            print(f"  RMS_H      = {g['rms_h']:.4f} m   {g['rms_h'] * M_TO_FT:.4f} ft",
+                  file=sys.stderr)
+            for p in g["points"]:
+                print(f"    {p['label']:<12}  dH={p['dH'] * M_TO_FT:+.4f} ft",
+                      file=sys.stderr)
+
+    return result
+
+
 def generate_html_report(
     result: dict,
     output_path: str,
@@ -758,8 +1036,43 @@ def generate_html_report(
     upscale: int = 4,
     suspect_ratio: float = 5.0,
     suspect_floor_ft: float = 0.5,
+    ortho_rmse: Optional[dict] = None,
+    ortho_tags_path: Optional[str] = None,
 ) -> None:
     """Generate HTML accuracy report with optional ortho crop images."""
+
+    has_ortho_rmse = ortho_rmse is not None
+
+    # Parse ortho-tagged pixel positions per label (for cyan crosshair overlay)
+    ortho_tag_px: Dict[str, Tuple[float, float]] = {}  # label → (crop_px, crop_py)
+    if ortho_tags_path is not None:
+        with open(ortho_tags_path) as f:
+            for line in f.readlines()[1:]:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                fields = line.split("\t") if "\t" in line else line.split()
+                if len(fields) < 8:
+                    continue
+                conf = fields[7]
+                if conf != "tagged":
+                    continue
+                label = fields[6]
+                if label in ortho_tag_px:
+                    continue  # use first tagged obs per label
+                try:
+                    px = float(fields[3])
+                    py = float(fields[4])
+                except ValueError:
+                    continue
+                ortho_tag_px[label] = (px, py)
+
+    # Build ortho dH lookup: label → dH (metres)
+    ortho_dh_by_label: Dict[str, float] = {}
+    if has_ortho_rmse:
+        for group_key in ("gcp", "chk"):
+            for p in ortho_rmse.get(group_key, {}).get("points", []):
+                ortho_dh_by_label[p["label"]] = p["dH"]
 
     # Collect all points sorted worst-first
     obs_counts = result.get("obs_counts", {})
@@ -768,8 +1081,17 @@ def generate_html_report(
         group = result.get(group_key, {})
         for p in group.get("points", []):
             all_points.append({**p, "group": group_key.upper(),
-                               "n_images": obs_counts.get(p["label"], 0)})
-    all_points.sort(key=lambda p: p["dH"], reverse=True)
+                               "n_images": obs_counts.get(p["label"], 0),
+                               "ortho_dH": ortho_dh_by_label.get(p["label"])})
+
+    # Sort: when ortho-tags present, sort by ortho dH (worst first),
+    # points without ortho measurement sort to bottom
+    if has_ortho_rmse:
+        all_points.sort(
+            key=lambda p: (p["ortho_dH"] is None, -(p["ortho_dH"] or 0)),
+        )
+    else:
+        all_points.sort(key=lambda p: p["dH"], reverse=True)
 
     # Suspect flagging
     suspect_floor_m = suspect_floor_ft * FT_TO_M
@@ -784,42 +1106,75 @@ def generate_html_report(
             p["suspect"] = p["dH"] > suspect_thresh
 
     # --- Methodology note ---
-    method_html = """<div class="method">
-<p><b>How these values are computed:</b> For each target, the tagged pixel positions
+    ortho_method = ""
+    if has_ortho_rmse:
+        ortho_method = """
+<p><b>Orthophoto accuracy:</b> Target positions were tagged in the orthophoto
+and compared to GNSS survey coordinates. The residual (dH) is the
+horizontal distance between the tagged orthophoto position and the survey coordinate.</p>"""
+
+    method_html = f"""<div class="method">
+<p><b>Reconstruction accuracy:</b> For each target, the tagged pixel positions
 across multiple camera images are triangulated through the reconstruction's camera
 models to produce a 3D position. This is converted to the survey CRS via proper
 geodetic conversion (ENU→ECEF→lat/lon→projected). The residual (dH, dZ) is the
-difference between this triangulated position and the GNSS survey coordinate.</p>
+difference between this triangulated position and the GNSS survey coordinate.
+Reconstruction accuracy reflects the internal geometric quality of the
+photogrammetric solution, not the orthophoto.</p>
+{ortho_method}
 <p><b>GCP</b> (Ground Control Points) were used in ODM's bundle adjustment — the
 reconstruction was optimized to fit them. Their residuals indicate control fit quality.
 <b>CHK</b> (Check Points) were withheld from the bundle adjustment — their residuals
-are an independent measure of reconstruction accuracy.</p>
-<p><b>Note:</b> These residuals measure <i>reconstruction</i> accuracy, not
-<i>orthophoto</i> accuracy. The orthophoto may show additional positioning offsets
-from DSM projection and camera selection effects. The ortho crops below (if present)
-show the visual relationship between survey coordinates and target positions in the
-orthophoto.</p>
+are an independent measure of accuracy.</p>
 </div>"""
 
     # --- Combined summary table (GCP + CHK side by side) ---
     gcp = result["gcp"]
     chk = result["chk"]
+
+    # Ortho group stats (if available)
+    ortho_gcp = ortho_rmse.get("gcp", {}) if has_ortho_rmse else {}
+    ortho_chk = ortho_rmse.get("chk", {}) if has_ortho_rmse else {}
+
+    def _fmt_val(v, to_ft=False):
+        if v is None: return "—"
+        return f"{v * M_TO_FT:.4f}" if to_ft else f"{v:.4f}"
+
     summary_rows = ""
+    # Reconstruction section
+    summary_rows += '<tr><th colspan="5" class="section-header">Reconstruction</th></tr>\n'
     for name, key in [("RMS_H", "rms_h"), ("RMS_Z", "rms_z"), ("RMS_3D", "rms_3d"),
                       ("mean_dZ", "mean_dz"), ("std_dZ", "std_dz")]:
-        gv = gcp.get(key)
-        cv = chk.get(key)
-        gm = f"{gv:.4f}" if gv is not None else "—"
-        gf = f"{gv * M_TO_FT:.4f}" if gv is not None else "—"
-        cm = f"{cv:.4f}" if cv is not None else "—"
-        cf = f"{cv * M_TO_FT:.4f}" if cv is not None else "—"
-        summary_rows += f"<tr><td>{name}</td><td>{gm}</td><td>{gf}</td><td>{cm}</td><td>{cf}</td></tr>\n"
+        gv, cv = gcp.get(key), chk.get(key)
+        summary_rows += (f"<tr><td>{name}</td>"
+                         f"<td>{_fmt_val(gv)}</td><td>{_fmt_val(gv, True)}</td>"
+                         f"<td>{_fmt_val(cv)}</td><td>{_fmt_val(cv, True)}</td></tr>\n")
 
-    summary_table = f"""<h3>Summary — GCP (N={gcp['n']}) &amp; CHK (N={chk['n']})</h3>
+    # Orthophoto section (only when ortho-tags present)
+    if has_ortho_rmse:
+        ortho_n_gcp = ortho_gcp.get("n", 0)
+        ortho_n_chk = ortho_chk.get("n", 0)
+        summary_rows += '<tr><th colspan="5" class="section-header">Orthophoto</th></tr>\n'
+        ogv, ocv = ortho_gcp.get("rms_h"), ortho_chk.get("rms_h")
+        summary_rows += (f"<tr><td>RMS_H</td>"
+                         f"<td>{_fmt_val(ogv)}</td><td>{_fmt_val(ogv, True)}</td>"
+                         f"<td>{_fmt_val(ocv)}</td><td>{_fmt_val(ocv, True)}</td></tr>\n")
+
+    summary_table = f"""<h3>Summary</h3>
 <table class="summary">
-<tr><th></th><th colspan="2">GCP (control fit)</th><th colspan="2">CHK (independent)</th></tr>
+<tr><th></th><th colspan="2">GCP (N={gcp['n']})</th><th colspan="2">CHK (N={chk['n']})</th></tr>
 <tr><th>Metric</th><th>m</th><th>ft</th><th>m</th><th>ft</th></tr>
 {summary_rows}</table>"""
+
+    def _draw_star(img, cx, cy, radius, color):
+        """Draw a filled 5-pointed star on img centered at (cx, cy)."""
+        pts = []
+        for i in range(10):
+            angle = math.radians(-90 + i * 36)  # start from top
+            r = radius if i % 2 == 0 else radius * 0.4
+            pts.append((int(cx + r * math.cos(angle)),
+                        int(cy + r * math.sin(angle))))
+        cv2.fillPoly(img, [np.array(pts)], color, cv2.LINE_AA)
 
     # --- Overview map: low-res ortho with point locations ---
     has_ortho = ortho_path is not None
@@ -862,7 +1217,11 @@ orthophoto.</p>
                 font = cv2.FONT_HERSHEY_SIMPLEX
 
                 # Compute dH range for color mapping
-                dh_vals_for_color = [p["dH"] for p in all_points]
+                # Color gradient based on ortho dH when available, else recon dH
+                if has_ortho_rmse:
+                    dh_vals_for_color = [p["ortho_dH"] for p in all_points if p["ortho_dH"] is not None]
+                else:
+                    dh_vals_for_color = [p["dH"] for p in all_points]
                 dh_min = min(dh_vals_for_color) if dh_vals_for_color else 0
                 dh_max = max(dh_vals_for_color) if dh_vals_for_color else 1
                 dh_range = dh_max - dh_min if dh_max > dh_min else 1.0
@@ -883,7 +1242,8 @@ orthophoto.</p>
 
                 # Store CSS colors for use in the detail table later.
                 for p in all_points:
-                    p["_color_css"] = _dh_color_css(p["dH"])
+                    color_val = p["ortho_dH"] if (has_ortho_rmse and p["ortho_dH"] is not None) else p["dH"]
+                    p["_color_css"] = _dh_color_css(color_val)
 
                 for p in all_points:
                     label = p["label"]
@@ -893,13 +1253,14 @@ orthophoto.</p>
                     if not (0 <= px < sw and 0 <= py < sh):
                         continue
 
-                    color = _dh_color_bgr(p["dH"])
+                    color_val = p["ortho_dH"] if (has_ortho_rmse and p["ortho_dH"] is not None) else p["dH"]
+                    color = _dh_color_bgr(color_val)
                     if p["group"] == "GCP":
-                        cv2.drawMarker(overview, (px, py), color,
-                                       cv2.MARKER_STAR, 10, 2, cv2.LINE_AA)
+                        # Filled 5-pointed star matching ★ in the table
+                        _draw_star(overview, px, py, 6, color)
                     else:
                         cv2.circle(overview, (px, py), 4, color, -1, cv2.LINE_AA)
-                    cv2.circle(overview, (px, py), 4, (0, 0, 0), 1, cv2.LINE_AA)
+                        cv2.circle(overview, (px, py), 4, (0, 0, 0), 1, cv2.LINE_AA)
 
                     # Label placement with collision + boundary avoidance
                     (tw, th), _ = cv2.getTextSize(label, font, font_scale, 1)
@@ -942,16 +1303,42 @@ orthophoto.</p>
         d3d_ft = p["d3D"] * M_TO_FT
         color_css = p.get("_color_css", "#888")
         marker_char = "★" if p["group"] == "GCP" else "●"
-        marker_html = f'<span style="color:{color_css};margin-right:4px">{marker_char}</span>'
+        marker_html = f' <span style="color:{color_css}">{marker_char}</span>'
         label_cell = f'<a href="#img-{p["label"]}">{p["label"]}</a>' if has_ortho else p["label"]
         suspect_mark = ' <span style="color:#f44">⚠</span>' if p.get("suspect") else ""
-        detail_rows += (f'<tr><td>{marker_html}{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
-                        f'<td>{p["n_images"]}</td>'
-                        f'<td>{dh_ft:+.4f}</td><td>{dz_ft:+.4f}</td>'
-                        f'<td>{d3d_ft:.4f}</td></tr>\n')
+
+        # Ortho dH column
+        ortho_dh_val = p.get("ortho_dH")
+        if has_ortho_rmse:
+            if ortho_dh_val is not None:
+                ortho_dh_ft = ortho_dh_val * M_TO_FT
+                ortho_cell = f"{ortho_dh_ft:+.4f}{marker_html}"
+            else:
+                ortho_cell = "—"
+            # When ortho present, icons go in ortho column, not recon column
+            recon_dh_cell = f"{dh_ft:+.4f}"
+        else:
+            # No ortho: icons stay in recon dH column
+            recon_dh_cell = f"{dh_ft:+.4f}{marker_html}"
+
+        row = (f'<tr><td>{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
+               f'<td>{p["n_images"]}</td>'
+               f'<td>{recon_dh_cell}</td><td>{dz_ft:+.4f}</td>'
+               f'<td>{d3d_ft:.4f}</td>')
+        if has_ortho_rmse:
+            row += f'<td>{ortho_cell}</td>'
+        row += '</tr>\n'
+        detail_rows += row
+
+    if has_ortho_rmse:
+        detail_header = """<tr><th></th><th></th><th></th><th colspan="3">Reconstruction</th><th>Orthophoto</th></tr>
+<tr><th>Label</th><th>Group</th><th>Tagged<br/>Images</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th><th>dH (ft)</th></tr>"""
+    else:
+        detail_header = """<tr><th></th><th></th><th></th><th colspan="3">Reconstruction</th></tr>
+<tr><th>Label</th><th>Group</th><th>Tagged<br/>Images</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th></tr>"""
 
     detail_table_html = f"""<table class="detail">
-<tr><th>Label</th><th>Group</th><th>Tagged<br/>Images</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th></tr>
+{detail_header}
 {detail_rows}</table>"""
 
     # --- Suspect / outlier check ---
@@ -982,7 +1369,7 @@ orthophoto.</p>
 <p style="color:#aaa; font-size:12px;">{criteria_desc}
 All points are within the threshold.</p>"""
 
-    detail_section = f"""<h3>Per-point residuals (all, sorted worst-first by dH)</h3>
+    detail_section = f"""<h3>Per-point residuals (all targets, sorted worst-first by dH)</h3>
 <div class="detail-with-map">
 {detail_table_html}
 {overview_html}
@@ -1007,13 +1394,14 @@ All points are within the threshold.</p>"""
             crop_result = _crop_ortho(_tls.ds, sx, sy, crop_radius)
             if crop_result is None:
                 return None
-            img, px_sz, cx_px, cy_px = crop_result
+            img, px_sz, cx_px, cy_px, _xoff, _yoff = crop_result
             annotated = _annotate_crop(
                 img, cx_px, cy_px,
                 dx_m=p["dX"], dy_m=p["dY"],
                 px_size=px_sz, label=label,
                 dh_m=p["dH"], dz_m=p["dZ"], d3d_m=p["d3D"],
                 group=p["group"], upscale=upscale,
+                tag_px=ortho_tag_px.get(label),
             )
             return f"""
         <div class="card" id="img-{label}">
@@ -1035,12 +1423,14 @@ All points are within the threshold.</p>"""
         print(f"  {len(cards)} crops in {time.time()-t_crops:.1f}s "
               f"({skipped} skipped)", file=sys.stderr)
         if cards:
+                tag_legend = ('\n    <span class="red">⊕ ortho-tagged</span>'
+                              if ortho_tag_px else '')
                 image_html = f"""
 <h3>Ortho crops</h3>
 <div class="legend">
     <span class="green">X survey coordinate</span>
     <span class="yellow">+ projected</span>
-    <span class="yellow">○ 1 ft radius</span>
+    <span class="yellow">○ 1 ft radius</span>{tag_legend}
     &nbsp; | &nbsp; gap between markers and visible target = ortho positioning error
 </div>
 <div class="grid">
@@ -1119,12 +1509,15 @@ points coincide with high-uncertainty regions.</p>
     td:first-child {{ text-align: left; }}
     .summary td:first-child {{ font-weight: bold; }}
     .summary th[colspan] {{ text-align: center; }}
+    .detail th[colspan] {{ text-align: center; }}
+    .section-header {{ text-align: left; background: #3a3a3a; font-size: 13px; padding: 6px 10px; }}
     .detail a {{ color: #6cf; }}
     .detail-with-map {{ display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }}
     .detail-with-map table {{ flex-shrink: 0; }}
     .legend {{ font-size: 13px; margin-bottom: 16px; color: #aaa; }}
     .green {{ color: #0f0; }}
     .yellow {{ color: #ff0; }}
+    .red {{ color: #dc0000; }}
     .grid {{ display: flex; flex-wrap: wrap; gap: 12px; }}
     .card {{ background: #2a2a2a; border-radius: 6px; overflow: hidden; }}
     .card img {{ display: block; }}
@@ -1381,6 +1774,31 @@ def main() -> None:
         default=0.5,
         help="Minimum dH in feet to trigger suspect flag (default: 0.5).",
     )
+    parser.add_argument(
+        "--json",
+        default=None,
+        metavar="result.json",
+        help="Write full RMSE result data to a JSON file.",
+    )
+    parser.add_argument(
+        "--ortho-tags",
+        default=None,
+        metavar="tagged_ortho.txt",
+        help="Tagged ortho file from GCPEditorPro for ortho RMSE computation. "
+             "Requires --ortho (for GeoTransform). Only 'tagged' rows are used.",
+    )
+    parser.add_argument(
+        "--emit-ortho-tags",
+        action="store_true",
+        help="Emit ortho crops + tagging file for GCPEditorPro. "
+             "Requires --ortho. Outputs {ortho_stem}-crops/ and {ortho_stem}.txt.",
+    )
+    parser.add_argument(
+        "--thumb-radius",
+        type=float,
+        default=0.5,
+        help="Thumbnail zoom radius in metres for ortho tagging crops (default: 0.5).",
+    )
     args = parser.parse_args()
 
     if args.test:
@@ -1394,8 +1812,18 @@ def main() -> None:
         args.reconstruction, args.gcp_list, args.chk_list, args.crs,
     )
     print_summary(result)
-    json.dump(result, sys.stdout, indent=2)
-    print()  # trailing newline
+
+    if args.json:
+        from pathlib import Path
+        Path(args.json).write_text(json.dumps(result, indent=2) + "\n")
+        print(f"\nJSON result → {args.json}", file=sys.stderr)
+
+    # Compute ortho RMSE if --ortho-tags provided
+    ortho_rmse_result = None
+    if args.ortho_tags:
+        if not args.ortho:
+            parser.error("--ortho-tags requires --ortho.")
+        ortho_rmse_result = compute_ortho_rmse(args.ortho_tags, args.ortho)
 
     if args.html:
         generate_html_report(
@@ -1407,6 +1835,18 @@ def main() -> None:
             upscale=args.upscale,
             suspect_ratio=args.suspect_ratio,
             suspect_floor_ft=args.suspect_floor,
+            ortho_rmse=ortho_rmse_result,
+            ortho_tags_path=args.ortho_tags,
+        )
+
+    if args.emit_ortho_tags:
+        if not args.ortho:
+            parser.error("--emit-ortho-tags requires --ortho.")
+        emit_ortho_tagging(
+            result,
+            ortho_path=args.ortho,
+            crop_radius=args.crop_radius,
+            thumb_radius=args.thumb_radius,
         )
 
 

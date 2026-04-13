@@ -27,6 +27,8 @@ flowchart TD
     launch_odm(["s3 sync & terraform apply"])
     odm(["odm-bootstrap.sh"])
     rmse(["rmse.py"])
+    report["rmse.html"]
+    gcpeditor_ortho(["GCPEditorPro"])
     uncertainty(["ortho_uncertainty.py"])
     drone[/"Drone"\]
     images[["images/*.JPG"]]
@@ -35,9 +37,10 @@ flowchart TD
     tin
     contours
     orthophoto[["orthophoto.original.tif"]]
+    orthophoto_txt[["orthophoto.original.txt"]]
+    orthophoto_txt_tagged[["orthophoto.original_tagged.txt"]]
     uncertainty_tif[["uncertainty_overlay.tif"]]
     packager(["package.py"])
-    report["rmse.html"]
     model["reconstruction.topocentric.json"]
     customer[\"Customer"/]
     qgis_cloud(["QGIS review"])
@@ -88,9 +91,12 @@ flowchart TD
         style ODM fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
         cameras
         rmse
+        report
+        orthophoto_txt
+        orthophoto_txt_tagged
+        gcpeditor_ortho
         uncertainty
         uncertainty_tif
-        report
         packager
         qgis_cloud
     end
@@ -127,6 +133,9 @@ flowchart TD
     odm --> tin
     odm --> cameras
     rmse --> report
+    rmse --> orthophoto_txt
+    orthophoto --> gcpeditor_ortho
+    orthophoto_txt --> gcpeditor_ortho --> orthophoto_txt_tagged --> rmse
     tin -.-> qgis_cloud
     tin -.-> packager
     contours -.-> qgis_cloud
