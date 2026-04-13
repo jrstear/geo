@@ -39,6 +39,7 @@ flowchart TD
     orthophoto[["orthophoto.original.tif"]]
     orthophoto_txt[["orthophoto.original.txt"]]
     orthophoto_txt_tagged[["orthophoto.original_tagged.txt"]]
+    orthophoto_crops[["orthophoto.original-crops/"]]
     uncertainty_tif[["uncertainty_overlay.tif"]]
     packager(["package.py"])
     model["reconstruction.topocentric.json"]
@@ -94,6 +95,7 @@ flowchart TD
         report
         orthophoto_txt
         orthophoto_txt_tagged
+        orthophoto_crops
         gcpeditor_ortho
         uncertainty
         uncertainty_tif
@@ -116,7 +118,7 @@ flowchart TD
     pretag --> gcpeditor
     gcpeditor --> tagged
     tagged --> split
-    tagged -.-> gcpeditor
+    tagged -.-> |refine| gcpeditor
     transform_yaml --> split
     transform_yaml --> sight
     split --> gcp_list
@@ -125,16 +127,17 @@ flowchart TD
     split --> targets_design
     gcp_list --> launch_odm
     odm --> model
-    cameras -.-> launch_odm
-    cameras -.-> sight
+    cameras -.-> |recycle| launch_odm
+    cameras -.-> |recycle| sight
     odm --> undistorted
     odm --> orthophoto
     odm --> pointcloud
     odm --> tin
     odm --> cameras
-    rmse --> report
-    rmse --> orthophoto_txt
-    orthophoto --> gcpeditor_ortho
+    rmse --> |2| report
+    rmse --> |1| orthophoto_txt
+    rmse --> |1| orthophoto_crops
+    orthophoto_crops --> gcpeditor_ortho
     orthophoto_txt --> gcpeditor_ortho --> orthophoto_txt_tagged --> rmse
     tin -.-> qgis_cloud
     tin -.-> packager
@@ -172,7 +175,8 @@ Dotted edges signify a) recycled or iterative (eg cameras.json and {job}\_tagged
 
 ## CRS notes
 
-Subgraphs in the workflow diagram show distinct coordinate systems, here are some related comments.
+The tools do not assume multiple CRS, but do flexibly handle them if needed, often automatically.  Subgraphs in the workflow diagram show sample multi-CRS flow,
+here are some related comments.
 
 | CRS | Use | Notes |
 |-----|-----|-------|
@@ -401,17 +405,23 @@ terraform apply -var="project={PROJECT}" -var="notify_email=your@email.com"
 
 ### 6. Verify accuracy with rmse.py
 
-After the pipeline completes, sync the reconstruction down and run the check:
+#### 6a. Reconstruction accuracy
+
+After the pipeline completes, sync the reconstruction and orthophoto down and run
+the reconstruction accuracy check:
 
 ```bash
-# Sync opensfm outputs from S3
-aws s3 sync s3://{BUCKET}/{PROJECT}/opensfm/ \
-    {job}/opensfm/
+# Sync outputs from S3
+aws s3 sync s3://{BUCKET}/{PROJECT}/opensfm/ {job}/opensfm/
+aws s3 sync s3://{BUCKET}/{PROJECT}/odm_orthophoto/ {job}/odm_orthophoto/
 
 conda run -n geo python rmse.py \
     {job}/opensfm/reconstruction.topocentric.json \
     {job}/gcp_list.txt \
-    {job}/chk_list.txt
+    {job}/chk_list.txt \
+    --ortho {job}/odm_orthophoto/odm_orthophoto.original.tif \
+    --emit-ortho-tags \
+    --html {job}/rmse-recon.html
 ```
 
 rmse.py triangulates each GCP/CHK target from camera rays in the reconstruction,
@@ -419,6 +429,15 @@ converts the topocentric position to the survey CRS via proper geodetic conversi
 (ENU → ECEF → lat/lon → projected CRS, matching OpenSFM's `TopocentricConverter`),
 and compares to the survey coordinates.  No similarity transform is fitted — the
 proper geodetic conversion handles UTM grid convergence and scale factor correctly.
+
+The HTML report includes summary tables (GCP + CHK), per-point residuals sorted
+worst-first with an overview map, outlier detection, and annotated ortho crops
+showing survey coordinates vs target positions
+([example](https://jrstear.github.io/geo-samples/examples/rmse_report.html)).
+
+`--emit-ortho-tags` also outputs ortho crop images and a tagging file for step 6b:
+- `{job}/odm_orthophoto/odm_orthophoto.original-crops/` — one JPEG per target
+- `{job}/odm_orthophoto/odm_orthophoto.original.txt` — GCPEditorPro-format tagging file
 
 **Why `reconstruction.topocentric.json`:**
 
@@ -429,32 +448,6 @@ refined to fit the survey control.  This is the "original" reconstruction before
 reconstruction.  rmse.py needs the topocentric version because it performs its own
 geodetic conversion for accuracy assessment.
 
-**Two types of accuracy:**
-
-rmse.py reports **reconstruction accuracy** — how well the 3D reconstruction places
-targets relative to their survey coordinates.  This is the accuracy of the camera
-geometry and GCP constraints.
-
-The **orthophoto accuracy** (where features appear in the deliverable) includes
-additional error from DSM-based orthorectification.  Vegetation, DSM interpolation,
-and off-nadir camera angles can shift features in the ortho by more than the
-reconstruction accuracy would suggest.  Add `--html` and `--ortho` to generate a
-visual accuracy report with annotated ortho crops:
-
-```bash
-conda run -n geo python rmse.py \
-    {job}/opensfm/reconstruction.topocentric.json \
-    {job}/gcp_list.txt \
-    {job}/chk_list.txt \
-    --html {job}/rmse_report.html \
-    --ortho {job}/odm_orthophoto/odm_orthophoto.original.tif
-```
-
-The HTML report includes summary tables (GCP + CHK), per-point residuals sorted
-worst-first with an overview map, outlier detection, and annotated ortho crops
-showing survey coordinates vs target positions
-([example](https://jrstear.github.io/geo-samples/examples/rmse_report.html)).
-
 Expected reconstruction accuracy (250 ft AGL, RTK, GCPs well-distributed):
 
 | Component | Expected |
@@ -463,25 +456,46 @@ Expected reconstruction accuracy (250 ft AGL, RTK, GCPs well-distributed):
 | CHK RMS_H | 0.08–0.15 ft (independent) |
 | CHK RMS_Z | 0.3–0.7 ft |
 
-CHK residuals are the independent accuracy metric.  Orthophoto accuracy may be
-0.3–1.0 ft larger depending on vegetation and camera angles at each target.
+#### 6b. Orthophoto accuracy (optional but recommended)
 
-If you have run `ortho_uncertainty.py` (see diagram) to produce a per-pixel uncertainty
-overlay TIF, pass it via `--uncertainty` to embed it at the end of the HTML report:
+Reconstruction accuracy measures the internal geometric quality of the camera
+solution, but the orthophoto deliverable may have additional positioning error from
+DSM-based orthorectification — vegetation, DSM interpolation, and off-nadir camera
+angles can shift features in the ortho beyond what reconstruction residuals suggest.
+
+ASPRS Positional Accuracy Standards (2015) recommend assessing accuracy at the
+deliverable level, not just at the reconstruction level.  This step measures where
+targets actually appear in the orthophoto relative to their survey coordinates.
+
+1. Load the ortho tagging file from step 6a into GCPEditorPro (same fork as step 3),
+   with the crops folder as the image source:
+   - Load **`{job}/odm_orthophoto/odm_orthophoto.original.txt`**
+   - Load image folder **`{job}/odm_orthophoto/odm_orthophoto.original-crops/`**
+   - Each target appears once (one crop image). Tag the target center in each crop.
+   - Download → saves as **`odm_orthophoto.original_tagged.txt`**
+
+2. Re-run rmse.py with the tagged ortho positions:
 
 ```bash
 conda run -n geo python rmse.py \
     {job}/opensfm/reconstruction.topocentric.json \
     {job}/gcp_list.txt \
     {job}/chk_list.txt \
-    --html {job}/rmse_report.html \
     --ortho {job}/odm_orthophoto/odm_orthophoto.original.tif \
-    --uncertainty {job}/uncertainty_overlay.tif
+    --ortho-tags {job}/odm_orthophoto/odm_orthophoto.original_tagged.txt \
+    --html {job}/rmse.html
 ```
 
-This combines the point-wise residual report with a spatial view of where the
-reconstruction is least confident — useful for spotting regions where the orthophoto
-accuracy is likely to depart most from the CHK residual statistics.
+The report now includes both reconstruction and orthophoto accuracy side by side —
+summary table with Reconstruction and Orthophoto sections, per-point table with
+ortho dH column, and annotated crops showing the survey coordinate (green X),
+reconstruction projection (yellow +), and ortho-tagged position (red crosshair).
+
+Orthophoto accuracy is typically 0.3–1.0 ft larger than reconstruction accuracy
+depending on vegetation and camera angles at each target.
+
+If you have run `ortho_uncertainty.py` (see diagram) to produce a per-pixel uncertainty
+overlay TIF, pass it via `--uncertainty` to embed it at the end of the HTML report.
 
 ### 7. Package
 
