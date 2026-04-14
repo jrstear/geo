@@ -119,8 +119,8 @@ flowchart TD
     gcpeditor --> tagged
     tagged --> split
     tagged -.-> |refine| gcpeditor
-    transform_yaml --> split
     transform_yaml --> sight
+    transform_yaml --> split
     split --> gcp_list
     split --> chk_list
     split --> targets
@@ -143,13 +143,13 @@ flowchart TD
     tin -.-> packager
     contours -.-> qgis_cloud
     contours -.-> packager
+    orthophoto --> uncertainty
     orthophoto --> qgis_cloud
     orthophoto --> rmse
     chk_list --> rmse
     gcp_list --> rmse
     orthophoto --> packager
     qgis_cloud -.-> packager
-    orthophoto --> uncertainty
     model --> uncertainty
     model --> rmse
     uncertainty --> uncertainty_tif
