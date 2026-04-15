@@ -404,7 +404,11 @@ terraform apply -var="project={PROJECT}" -var="notify_email=your@email.com"
 
 ### 6. Verify accuracy with rmse.py
 
-#### 6a. Reconstruction accuracy
+Both 6a and 6b are optional but both are recommended.  6a requires a reconstruction
+(ODM); 6b works with any orthophoto (ODM, Pix4D, or other).  Either can be run
+independently — you can skip 6a and do ortho-only accuracy assessment with 6b.
+
+#### 6a. Reconstruction accuracy (optional, recommended — ODM only)
 
 After the pipeline completes, sync the reconstruction and orthophoto down and run
 the reconstruction accuracy check:
@@ -455,9 +459,9 @@ Expected reconstruction accuracy (250 ft AGL, RTK, GCPs well-distributed):
 | CHK RMS_H | 0.08–0.15 ft (independent) |
 | CHK RMS_Z | 0.3–0.7 ft |
 
-#### 6b. Orthophoto accuracy (optional but recommended)
+#### 6b. Orthophoto accuracy (optional, recommended — works with any orthophoto)
 
-Reconstruction accuracy measures the internal geometric quality of the camera
+Reconstruction accuracy (6a) measures the internal geometric quality of the camera
 solution, but the orthophoto deliverable may have additional positioning error from
 DSM-based orthorectification — vegetation, DSM interpolation, and off-nadir camera
 angles can shift features in the ortho beyond what reconstruction residuals suggest.
@@ -465,6 +469,11 @@ angles can shift features in the ortho beyond what reconstruction residuals sugg
 ASPRS Positional Accuracy Standards (2015) recommend assessing accuracy at the
 deliverable level, not just at the reconstruction level.  This step measures where
 targets actually appear in the orthophoto relative to their survey coordinates.
+
+**This step works with any orthophoto** — ODM, Pix4D, or other.  When no
+reconstruction is available, rmse.py runs in ortho-only mode.
+
+**If 6a was run** (reconstruction available), use the crops and tagging file from 6a:
 
 1. Load the ortho tagging file from step 6a into GCPEditorPro (same fork as step 3),
    with the crops folder as the image source:
@@ -485,10 +494,34 @@ conda run -n geo python rmse.py \
     --html {job}/rmse.html
 ```
 
-The report now includes both reconstruction and orthophoto accuracy side by side —
+The report includes both reconstruction and orthophoto accuracy side by side —
 summary table with Reconstruction and Orthophoto sections, per-point table with
 ortho dH column, and annotated crops showing the survey coordinate (green X),
 reconstruction projection (yellow +), and ortho-tagged position (red crosshair).
+
+**If 6a was NOT run** (no reconstruction — e.g. Pix4D orthophoto), first emit
+ortho crops for tagging, then compute ortho RMSE:
+
+```bash
+# Step 1: emit crops (ortho must be in the same CRS as gcp/chk files)
+conda run -n geo python rmse.py \
+    --ortho {job}/odm_orthophoto/ortho.tif \
+    --gcp {job}/gcp_list.txt \
+    --chk {job}/chk_list.txt \
+    --emit-ortho-tags
+
+# Step 2: tag in GCPEditorPro, then compute ortho RMSE
+conda run -n geo python rmse.py \
+    --ortho {job}/odm_orthophoto/ortho.tif \
+    --gcp {job}/gcp_list.txt \
+    --chk {job}/chk_list.txt \
+    --ortho-tags {job}/odm_orthophoto/ortho_tagged.txt \
+    --html {job}/rmse.html
+```
+
+Note: in ortho-only mode, the orthophoto CRS must match the gcp/chk file CRS.
+If they differ (e.g. Pix4D ortho in a different projection), use `gdalwarp -t_srs`
+to reproject the ortho first.
 
 Orthophoto accuracy is typically 0.3–1.0 ft larger than reconstruction accuracy
 depending on vegetation and camera angles at each target.

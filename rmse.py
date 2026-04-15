@@ -704,7 +704,8 @@ def _crop_ortho(ds, cx: float, cy: float, crop_radius_m: float = 5.0):
 def _annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
                    dx_m: float, dy_m: float,
                    px_size: float, label: str,
-                   dh_m: float, dz_m: float, d3d_m: float,
+                   dh_m: Optional[float], dz_m: Optional[float],
+                   d3d_m: Optional[float],
                    group: str, upscale: int = 4,
                    tag_px: Optional[Tuple[float, float]] = None,
                    ortho_dh_m: Optional[float] = None) -> np.ndarray:
@@ -712,6 +713,7 @@ def _annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
 
     tag_px: optional (crop_x, crop_y) from ortho tagging — drawn as crosshair reticle.
     ortho_dh_m: optional ortho dH in metres — shown on third text line.
+    dh_m/dz_m/d3d_m: reconstruction residuals — None in ortho-only mode.
     """
     import cv2
     h, w = img.shape[:2]
@@ -724,17 +726,18 @@ def _annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
     cv2.line(out, (cxs - xlen, cys - xlen), (cxs + xlen, cys + xlen), (0, 255, 0), 2, cv2.LINE_AA)
     cv2.line(out, (cxs - xlen, cys + xlen), (cxs + xlen, cys - xlen), (0, 255, 0), 2, cv2.LINE_AA)
 
-    # Yellow +: projected/triangulated position
-    proj_x = int(cxs + dx_m / px_size * upscale)
-    proj_y = int(cys - dy_m / px_size * upscale)
-    cl = 14
-    cv2.line(out, (proj_x - cl, proj_y), (proj_x + cl, proj_y), (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.line(out, (proj_x, proj_y - cl), (proj_x, proj_y + cl), (0, 255, 255), 2, cv2.LINE_AA)
+    # Yellow +: projected/triangulated position (only when reconstruction available)
+    if dh_m is not None and (dx_m != 0 or dy_m != 0):
+        proj_x = int(cxs + dx_m / px_size * upscale)
+        proj_y = int(cys - dy_m / px_size * upscale)
+        cl = 14
+        cv2.line(out, (proj_x - cl, proj_y), (proj_x + cl, proj_y), (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.line(out, (proj_x, proj_y - cl), (proj_x, proj_y + cl), (0, 255, 255), 2, cv2.LINE_AA)
 
-    # Yellow circle: 1 ft radius centered on projected
-    one_ft_px = int(round(FT_TO_M / px_size * upscale))
-    if one_ft_px > 2:
-        cv2.circle(out, (proj_x, proj_y), one_ft_px, (0, 255, 255), 1, cv2.LINE_AA)
+        # Yellow circle: 1 ft radius centered on projected
+        one_ft_px = int(round(FT_TO_M / px_size * upscale))
+        if one_ft_px > 2:
+            cv2.circle(out, (proj_x, proj_y), one_ft_px, (0, 255, 255), 1, cv2.LINE_AA)
 
     # Red crosshair reticle: ortho-tagged position (matching GCPEditorPro crosshair)
     if tag_px is not None:
@@ -751,13 +754,12 @@ def _annotate_crop(img: np.ndarray, cx_px: int, cy_px: int,
         cv2.line(out, (tx, ty + gap), (tx, ty + arm), red, 1, cv2.LINE_AA)
 
     # Text overlay
-    dh_ft = dh_m * M_TO_FT
-    dz_ft = dz_m * M_TO_FT
-    d3d_ft = d3d_m * M_TO_FT
-    lines = [
-        f"{label} ({group})",
-        f"Reconstruction: dH={dh_ft:+.3f}  dZ={dz_ft:+.3f}  d3D={d3d_ft:.3f} ft",
-    ]
+    lines = [f"{label} ({group})"]
+    if dh_m is not None:
+        dh_ft = dh_m * M_TO_FT
+        dz_ft = dz_m * M_TO_FT
+        d3d_ft = d3d_m * M_TO_FT
+        lines.append(f"Reconstruction: dH={dh_ft:+.3f}  dZ={dz_ft:+.3f}  d3D={d3d_ft:.3f} ft")
     if ortho_dh_m is not None:
         lines.append(f"Orthophoto: dH={ortho_dh_m * M_TO_FT:+.3f} ft")
     for i, line in enumerate(lines):
@@ -1049,6 +1051,7 @@ def generate_html_report(
     """Generate HTML accuracy report with optional ortho crop images."""
 
     has_ortho_rmse = ortho_rmse is not None
+    ortho_only = result.get("ortho_only", False)
 
     # Parse ortho-tagged pixel positions per label (for cyan crosshair overlay)
     ortho_tag_px: Dict[str, Tuple[float, float]] = {}  # label → (crop_px, crop_py)
@@ -1097,20 +1100,25 @@ def generate_html_report(
         all_points.sort(
             key=lambda p: (p["ortho_dH"] is None, -(p["ortho_dH"] or 0)),
         )
-    else:
+    elif not ortho_only:
         all_points.sort(key=lambda p: p["dH"], reverse=True)
 
-    # Suspect flagging
+    # Suspect flagging (uses reconstruction dH when available, ortho dH otherwise)
     suspect_floor_m = suspect_floor_ft * FT_TO_M
     median_dh = 0.0
     suspect_thresh = suspect_floor_m
-    if all_points:
-        dh_vals = sorted(p["dH"] for p in all_points)
+    dh_key = "dH"  # reconstruction residual
+    if ortho_only and has_ortho_rmse:
+        dh_key = None  # use ortho_dH below
+    flaggable = [p for p in all_points if p.get(dh_key or "ortho_dH") is not None]
+    if flaggable:
+        dh_vals = sorted(p.get(dh_key or "ortho_dH") for p in flaggable)
         mid = len(dh_vals) // 2
         median_dh = dh_vals[mid] if len(dh_vals) % 2 else (dh_vals[mid - 1] + dh_vals[mid]) / 2
         suspect_thresh = max(suspect_ratio * median_dh, suspect_floor_m)
         for p in all_points:
-            p["suspect"] = p["dH"] > suspect_thresh
+            v = p.get(dh_key or "ortho_dH")
+            p["suspect"] = v is not None and v > suspect_thresh
 
     # --- Methodology note ---
     ortho_method = ""
@@ -1120,7 +1128,16 @@ def generate_html_report(
 and compared to GNSS survey coordinates. The residual (dH) is the
 horizontal distance between the tagged orthophoto position and the survey coordinate.</p>"""
 
-    method_html = f"""<div class="method">
+    if ortho_only:
+        method_html = f"""<div class="method">
+{ortho_method if ortho_method else
+'<p><b>Orthophoto accuracy:</b> No reconstruction available. Accuracy is measured by '
+'comparing tagged orthophoto positions against GNSS survey coordinates.</p>'}
+<p><b>GCP</b> (Ground Control Points) are survey targets used for georeferencing.
+<b>CHK</b> (Check Points) are independent targets used for accuracy assessment.</p>
+</div>"""
+    else:
+        method_html = f"""<div class="method">
 <p><b>Reconstruction accuracy:</b> For each target, the tagged pixel positions
 across multiple camera images are triangulated through the reconstruction's camera
 models to produce a 3D position. This is converted to the survey CRS via proper
@@ -1148,14 +1165,15 @@ are an independent measure of accuracy.</p>
         return f"{v * M_TO_FT:.4f}" if to_ft else f"{v:.4f}"
 
     summary_rows = ""
-    # Reconstruction section
-    summary_rows += '<tr><th colspan="5" class="section-header">Reconstruction</th></tr>\n'
-    for name, key in [("RMS_H", "rms_h"), ("RMS_Z", "rms_z"), ("RMS_3D", "rms_3d"),
-                      ("mean_dZ", "mean_dz"), ("std_dZ", "std_dz")]:
-        gv, cv = gcp.get(key), chk.get(key)
-        summary_rows += (f"<tr><td>{name}</td>"
-                         f"<td>{_fmt_val(gv)}</td><td>{_fmt_val(gv, True)}</td>"
-                         f"<td>{_fmt_val(cv)}</td><td>{_fmt_val(cv, True)}</td></tr>\n")
+    # Reconstruction section (skip in ortho-only mode)
+    if not ortho_only:
+        summary_rows += '<tr><th colspan="5" class="section-header">Reconstruction</th></tr>\n'
+        for name, key in [("RMS_H", "rms_h"), ("RMS_Z", "rms_z"), ("RMS_3D", "rms_3d"),
+                          ("mean_dZ", "mean_dz"), ("std_dZ", "std_dz")]:
+            gv, cv = gcp.get(key), chk.get(key)
+            summary_rows += (f"<tr><td>{name}</td>"
+                             f"<td>{_fmt_val(gv)}</td><td>{_fmt_val(gv, True)}</td>"
+                             f"<td>{_fmt_val(cv)}</td><td>{_fmt_val(cv, True)}</td></tr>\n")
 
     # Orthophoto section (only when ortho-tags present)
     if has_ortho_rmse:
@@ -1213,8 +1231,10 @@ are an independent measure of accuracy.</p>
                     overview[:, :, b] = ds.GetRasterBand(b + 1).ReadAsArray(
                         0, 0, ow, oh, buf_xsize=sw, buf_ysize=sh)
                 overview = cv2.cvtColor(overview, cv2.COLOR_RGB2BGR)
-                print(f"  Overview map ({sw}x{sh}) in {time.time()-t_ov:.1f}s"
-                      f" (use --ortho with a COG for faster overview)",
+                elapsed_ov = time.time() - t_ov
+                is_cog = ds.GetRasterBand(1).GetOverviewCount() > 0
+                hint = "" if is_cog else " (use --ortho with a COG for faster overview)"
+                print(f"  Overview map ({sw}x{sh}) in {elapsed_ov:.1f}s{hint}",
                       file=sys.stderr)
 
                 # Draw each point with color mapped to dH (green=best → red=worst)
@@ -1225,8 +1245,8 @@ are an independent measure of accuracy.</p>
 
                 # Compute dH range for color mapping
                 # Color gradient based on ortho dH when available, else recon dH
-                if has_ortho_rmse:
-                    dh_vals_for_color = [p["ortho_dH"] for p in all_points if p["ortho_dH"] is not None]
+                if has_ortho_rmse or ortho_only:
+                    dh_vals_for_color = [p["ortho_dH"] for p in all_points if p.get("ortho_dH") is not None]
                 else:
                     dh_vals_for_color = [p["dH"] for p in all_points]
                 dh_min = min(dh_vals_for_color) if dh_vals_for_color else 0
@@ -1249,8 +1269,14 @@ are an independent measure of accuracy.</p>
 
                 # Store CSS colors for use in the detail table later.
                 for p in all_points:
-                    color_val = p["ortho_dH"] if (has_ortho_rmse and p["ortho_dH"] is not None) else p["dH"]
-                    p["_color_css"] = _dh_color_css(color_val)
+                    if has_ortho_rmse or ortho_only:
+                        color_val = p.get("ortho_dH")
+                    else:
+                        color_val = p.get("dH")
+                    if color_val is not None:
+                        p["_color_css"] = _dh_color_css(color_val)
+                    else:
+                        p["_color_css"] = "#888"
 
                 for p in all_points:
                     label = p["label"]
@@ -1260,7 +1286,12 @@ are an independent measure of accuracy.</p>
                     if not (0 <= px < sw and 0 <= py < sh):
                         continue
 
-                    color_val = p["ortho_dH"] if (has_ortho_rmse and p["ortho_dH"] is not None) else p["dH"]
+                    if has_ortho_rmse or ortho_only:
+                        color_val = p.get("ortho_dH")
+                    else:
+                        color_val = p.get("dH")
+                    if color_val is None:
+                        color_val = 0
                     color = _dh_color_bgr(color_val)
                     if p["group"] == "GCP":
                         # Filled 5-pointed star matching ★ in the table
@@ -1305,9 +1336,6 @@ are an independent measure of accuracy.</p>
     # --- Per-point detail table (with overview map to the right) ---
     detail_rows = ""
     for p in all_points:
-        dh_ft = p["dH"] * M_TO_FT
-        dz_ft = p["dZ"] * M_TO_FT
-        d3d_ft = p["d3D"] * M_TO_FT
         color_css = p.get("_color_css", "#888")
         marker_char = "★" if p["group"] == "GCP" else "●"
         marker_html = f' <span style="color:{color_css}">{marker_char}</span>'
@@ -1316,28 +1344,42 @@ are an independent measure of accuracy.</p>
 
         # Ortho dH column
         ortho_dh_val = p.get("ortho_dH")
-        if has_ortho_rmse:
+
+        if ortho_only:
+            # Ortho-only mode: show only ortho dH
             if ortho_dh_val is not None:
                 ortho_dh_ft = ortho_dh_val * M_TO_FT
                 ortho_cell = f"{ortho_dh_ft:+.4f}{marker_html}"
             else:
                 ortho_cell = "—"
-            # When ortho present, icons go in ortho column, not recon column
-            recon_dh_cell = f"{dh_ft:+.4f}"
+            row = (f'<tr><td>{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
+                   f'<td>{ortho_cell}</td></tr>\n')
         else:
-            # No ortho: icons stay in recon dH column
-            recon_dh_cell = f"{dh_ft:+.4f}{marker_html}"
+            dh_ft = p["dH"] * M_TO_FT
+            dz_ft = p["dZ"] * M_TO_FT
+            d3d_ft = p["d3D"] * M_TO_FT
+            if has_ortho_rmse:
+                if ortho_dh_val is not None:
+                    ortho_dh_ft = ortho_dh_val * M_TO_FT
+                    ortho_cell = f"{ortho_dh_ft:+.4f}{marker_html}"
+                else:
+                    ortho_cell = "—"
+                recon_dh_cell = f"{dh_ft:+.4f}"
+            else:
+                recon_dh_cell = f"{dh_ft:+.4f}{marker_html}"
 
-        row = (f'<tr><td>{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
-               f'<td>{p["n_images"]}</td>'
-               f'<td>{recon_dh_cell}</td><td>{dz_ft:+.4f}</td>'
-               f'<td>{d3d_ft:.4f}</td>')
-        if has_ortho_rmse:
-            row += f'<td>{ortho_cell}</td>'
-        row += '</tr>\n'
+            row = (f'<tr><td>{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
+                   f'<td>{p["n_images"]}</td>'
+                   f'<td>{recon_dh_cell}</td><td>{dz_ft:+.4f}</td>'
+                   f'<td>{d3d_ft:.4f}</td>')
+            if has_ortho_rmse:
+                row += f'<td>{ortho_cell}</td>'
+            row += '</tr>\n'
         detail_rows += row
 
-    if has_ortho_rmse:
+    if ortho_only:
+        detail_header = """<tr><th>Label</th><th>Group</th><th>Ortho dH (ft)</th></tr>"""
+    elif has_ortho_rmse:
         detail_header = """<tr><th></th><th></th><th></th><th colspan="3">Reconstruction</th><th>Orthophoto</th></tr>
 <tr><th>Label</th><th>Group</th><th>Tagged<br/>Images</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th><th>dH (ft)</th></tr>"""
     else:
@@ -1358,11 +1400,16 @@ are an independent measure of accuracy.</p>
     )
     if suspects:
         suspect_rows = ""
-        for p in sorted(suspects, key=lambda x: x["dH"], reverse=True):
-            ratio = p["dH"] / median_dh if median_dh > 0 else 0
+        for p in sorted(suspects,
+                        key=lambda x: x.get("dH") or x.get("ortho_dH") or 0,
+                        reverse=True):
+            dh_val = p.get("dH") if not ortho_only else p.get("ortho_dH")
+            if dh_val is None:
+                continue
+            ratio = dh_val / median_dh if median_dh > 0 else 0
             suspect_rows += (
                 f'<tr><td>{p["label"]}</td><td>{p["group"]}</td>'
-                f'<td>{p["dH"] * M_TO_FT:.3f}</td>'
+                f'<td>{dh_val * M_TO_FT:.3f}</td>'
                 f'<td>{ratio:.0f}×</td>'
                 f'<td>Verify pixel tagging — possible mis-tag, wrong target, '
                 f'or base station confusion.</td></tr>\n')
@@ -1404,9 +1451,9 @@ All points are within the threshold.</p>"""
             img, px_sz, cx_px, cy_px, _xoff, _yoff = crop_result
             annotated = _annotate_crop(
                 img, cx_px, cy_px,
-                dx_m=p["dX"], dy_m=p["dY"],
+                dx_m=p.get("dX", 0), dy_m=p.get("dY", 0),
                 px_size=px_sz, label=label,
-                dh_m=p["dH"], dz_m=p["dZ"], d3d_m=p["d3D"],
+                dh_m=p.get("dH"), dz_m=p.get("dZ"), d3d_m=p.get("d3D"),
                 group=p["group"], upscale=upscale,
                 tag_px=ortho_tag_px.get(label),
                 ortho_dh_m=ortho_dh_by_label.get(label),
@@ -1703,6 +1750,38 @@ def run_synthetic_test() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Ortho-only helpers
+# ---------------------------------------------------------------------------
+
+
+def _result_from_point_files(
+    gcp_path: Optional[str],
+    chk_path: Optional[str],
+) -> dict:
+    """Build a minimal result dict from gcp/chk point files (no reconstruction).
+
+    Provides just enough structure (survey_x/y/z, label, group) for
+    emit_ortho_tagging() and generate_html_report() to work without
+    a reconstruction.  Points have no reconstruction residuals (dH/dZ/d3D).
+    """
+    result = {"gcp": {"points": [], "n": 0}, "chk": {"points": [], "n": 0},
+              "ortho_only": True}
+    for path, key in [(gcp_path, "gcp"), (chk_path, "chk")]:
+        if not path:
+            continue
+        _, coords, _ = parse_points(path)
+        for label, (sx, sy, sz) in coords.items():
+            result[key]["points"].append({
+                "label": label,
+                "survey_x": sx,
+                "survey_y": sy,
+                "survey_z": sz,
+            })
+        result[key]["n"] = len(result[key]["points"])
+    return result
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -1725,6 +1804,18 @@ def main() -> None:
         "chk_list", nargs="?",
         metavar="chk_list.txt",
         help="CHK-* rows (from transform.py split); independent accuracy assessment",
+    )
+    parser.add_argument(
+        "--gcp",
+        default=None,
+        metavar="gcp_list.txt",
+        help="GCP point file (named alternative to positional gcp_list).",
+    )
+    parser.add_argument(
+        "--chk",
+        default=None,
+        metavar="chk_list.txt",
+        help="CHK point file (named alternative to positional chk_list).",
     )
     parser.add_argument(
         "--crs",
@@ -1809,18 +1900,39 @@ def main() -> None:
         ok = run_synthetic_test()
         sys.exit(0 if ok else 1)
 
-    if not args.reconstruction or not args.gcp_list or not args.chk_list:
-        parser.error("reconstruction, gcp_list, and chk_list are required unless --test is used.")
+    # Merge named --gcp/--chk with positional args (named takes precedence)
+    args.gcp_list = args.gcp or args.gcp_list
+    args.chk_list = args.chk or args.chk_list
 
-    result = compute_rmse(
-        args.reconstruction, args.gcp_list, args.chk_list, args.crs,
-    )
-    print_summary(result)
+    # Determine whether we're in ortho-only mode (no reconstruction)
+    ortho_only = not args.reconstruction
+    if ortho_only:
+        if not args.ortho:
+            parser.error("--ortho is required when reconstruction is omitted.")
+        if not args.gcp_list and not args.chk_list:
+            parser.error("at least one of --gcp or --chk is required.")
+        if not args.ortho_tags and not args.emit_ortho_tags:
+            parser.error("--ortho-tags or --emit-ortho-tags is required when reconstruction is omitted.")
+    else:
+        if not args.gcp_list or not args.chk_list:
+            parser.error("reconstruction, gcp_list, and chk_list are required unless --test is used.")
 
-    if args.json:
-        from pathlib import Path
-        Path(args.json).write_text(json.dumps(result, indent=2) + "\n")
-        print(f"\nJSON result → {args.json}", file=sys.stderr)
+    # Full reconstruction RMSE (when reconstruction is provided)
+    result = None
+    if not ortho_only:
+        result = compute_rmse(
+            args.reconstruction, args.gcp_list, args.chk_list, args.crs,
+        )
+        print_summary(result)
+
+        if args.json:
+            from pathlib import Path
+            Path(args.json).write_text(json.dumps(result, indent=2) + "\n")
+            print(f"\nJSON result → {args.json}", file=sys.stderr)
+
+    # Build minimal result from point files for ortho-only mode
+    if result is None and (args.emit_ortho_tags or args.ortho_tags or args.html):
+        result = _result_from_point_files(args.gcp_list, args.chk_list)
 
     # Compute ortho RMSE if --ortho-tags provided
     ortho_rmse_result = None
@@ -1830,6 +1942,8 @@ def main() -> None:
         ortho_rmse_result = compute_ortho_rmse(args.ortho_tags, args.ortho)
 
     if args.html:
+        if result is None:
+            parser.error("--html requires reconstruction or --ortho-tags.")
         generate_html_report(
             result,
             output_path=args.html,
