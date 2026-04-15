@@ -172,6 +172,22 @@ def crs_axis_unit(epsg: str) -> str:
         return ""
 
 
+def _get_ortho_crs(ds) -> str:
+    """Return 'AUTHORITY:CODE' (e.g. 'EPSG:8762') from a GDAL dataset, or ''."""
+    from osgeo import osr
+    srs = osr.SpatialReference(wkt=ds.GetProjection())
+    authority = srs.GetAuthorityName(None)
+    code = srs.GetAuthorityCode(None)
+    return f"{authority}:{code}" if authority and code else ""
+
+
+def _crs_transformer(from_crs: str, to_crs: str):
+    """Return a pyproj Transformer from_crs→to_crs, or None if CRS match or missing."""
+    if not from_crs or not to_crs or from_crs == to_crs:
+        return None
+    return Transformer.from_crs(from_crs, to_crs, always_xy=True)
+
+
 # ---------------------------------------------------------------------------
 # reconstruction.json parsing
 # ---------------------------------------------------------------------------
@@ -592,6 +608,7 @@ def compute_rmse(
         "chk": _group_stats(chk_points),
         "geotransform_source": "geodetic (ENU→ECEF→LLA→proj)",
         "obs_counts": obs_counts,
+        "survey_crs": crs,
     }
 
 
@@ -813,12 +830,15 @@ def emit_ortho_tagging(
     gt = ds.GetGeoTransform()
     px_size = abs(gt[1])
 
-    # CRS from the GDAL dataset
-    from osgeo import osr
-    srs = osr.SpatialReference(wkt=ds.GetProjection())
-    authority = srs.GetAuthorityName(None)
-    code = srs.GetAuthorityCode(None)
-    crs_header = f"{authority}:{code}" if authority and code else ds.GetProjection()
+    # CRS: use survey CRS for the tagging file header (coords are in survey CRS).
+    # Build a transformer to reproject survey→ortho for pixel lookup if they differ.
+    ortho_crs = _get_ortho_crs(ds)
+    survey_crs = result.get("survey_crs", "")
+    crs_header = survey_crs or ortho_crs or ds.GetProjection()
+    xfm_to_ortho = _crs_transformer(survey_crs, ortho_crs)
+    if xfm_to_ortho:
+        print(f"  Reprojecting survey coords {survey_crs} → ortho {ortho_crs}",
+              file=sys.stderr)
 
     # Collect all GCP + CHK points from the result
     all_points = []
@@ -836,7 +856,10 @@ def emit_ortho_tagging(
         label = p["label"]
         sx, sy = p["survey_x"], p["survey_y"]
 
-        crop_result = _crop_ortho(ds, sx, sy, crop_radius)
+        # Reproject survey coords to ortho CRS for pixel lookup
+        ox, oy = (xfm_to_ortho.transform(sx, sy) if xfm_to_ortho else (sx, sy))
+
+        crop_result = _crop_ortho(ds, ox, oy, crop_radius)
         if crop_result is None:
             print(f"  WARNING: crop failed for {label}, skipping", file=sys.stderr)
             continue
@@ -917,15 +940,22 @@ def compute_ortho_rmse(
         ortho_stem = tags_stem
     crops_dir = Path(ortho_tags_path).parent / f"{ortho_stem}-crops"
 
-    # Read GeoTransform from the ortho
+    # Read GeoTransform and CRS from the ortho
     ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
     if ds is None:
         raise FileNotFoundError(f"Cannot open orthophoto: {ortho_path}")
     gt = ds.GetGeoTransform()
+    ortho_crs = _get_ortho_crs(ds)
     ds = None
 
-    # Parse the ortho-tags file
+    # Parse the ortho-tags file (header CRS = survey CRS)
     crs_header, coords, obs = parse_points(ortho_tags_path)
+
+    # Build transformer: ortho CRS → survey CRS (for pixel-derived coords)
+    xfm_to_survey = _crs_transformer(ortho_crs, crs_header)
+    if xfm_to_survey:
+        print(f"  Reprojecting ortho {ortho_crs} → survey {crs_header}",
+              file=sys.stderr)
 
     # Read confidence from raw file (parse_points doesn't return it)
     confidences: Dict[str, Dict[str, str]] = {}  # label → {image → confidence}
@@ -983,19 +1013,25 @@ def compute_ortho_rmse(
         full_x = x_off + tag_px
         full_y = y_off + tag_py
 
-        # Convert full-ortho pixel → UTM (metres)
-        utm_x = gt[0] + full_x * gt[1]
-        utm_y = gt[3] + full_y * gt[5]
+        # Convert full-ortho pixel → ortho CRS coords
+        ortho_x = gt[0] + full_x * gt[1]
+        ortho_y = gt[3] + full_y * gt[5]
 
-        # Survey coordinates from the file
+        # Reproject to survey CRS if needed
+        if xfm_to_survey:
+            ortho_x, ortho_y = xfm_to_survey.transform(ortho_x, ortho_y)
+
+        # Survey coordinates from the file (both now in survey CRS)
         sx, sy, sz = coords[label]
 
-        # Convert survey coords to metres if needed
+        # Convert to metres for RMSE computation
         sx_m = sx * FT_TO_M if uses_feet else sx
         sy_m = sy * FT_TO_M if uses_feet else sy
+        ox_m = ortho_x * FT_TO_M if uses_feet else ortho_x
+        oy_m = ortho_y * FT_TO_M if uses_feet else ortho_y
 
-        dX = utm_x - sx_m
-        dY = utm_y - sy_m
+        dX = ox_m - sx_m
+        dY = oy_m - sy_m
         dH = math.sqrt(dX ** 2 + dY ** 2)
 
         point = {
@@ -1237,6 +1273,11 @@ are an independent measure of accuracy.</p>
                 print(f"  Overview map ({sw}x{sh}) in {elapsed_ov:.1f}s{hint}",
                       file=sys.stderr)
 
+                # Reproject survey coords → ortho CRS for pixel lookup
+                _survey_crs_ov = result.get("survey_crs", "")
+                _ortho_crs_ov = _get_ortho_crs(ds)
+                _xfm_overview = _crs_transformer(_survey_crs_ov, _ortho_crs_ov)
+
                 # Draw each point with color mapped to dH (green=best → red=worst)
                 # and marker shape distinguishing GCP (star) from CHK (circle).
                 placed_labels = []  # [(x, y, w, h), ...] for collision detection
@@ -1281,8 +1322,10 @@ are an independent measure of accuracy.</p>
                 for p in all_points:
                     label = p["label"]
                     sx, sy = p["survey_x"], p["survey_y"]
-                    px = int((sx - gt[0]) / gt[1] / scale)
-                    py = int((sy - gt[3]) / gt[5] / scale)
+                    ox, oy = (_xfm_overview.transform(sx, sy) if _xfm_overview
+                              else (sx, sy))
+                    px = int((ox - gt[0]) / gt[1] / scale)
+                    py = int((oy - gt[3]) / gt[5] / scale)
                     if not (0 <= px < sw and 0 <= py < sh):
                         continue
 
@@ -1437,6 +1480,13 @@ All points are within the threshold.</p>"""
         from concurrent.futures import ThreadPoolExecutor
         import threading
 
+        # Build CRS transformer for survey→ortho reprojection if needed
+        _ds_tmp = gdal.Open(ortho_path, gdal.GA_ReadOnly)
+        _ortho_crs = _get_ortho_crs(_ds_tmp) if _ds_tmp else ""
+        _ds_tmp = None
+        _survey_crs = result.get("survey_crs", "")
+        _xfm_to_ortho = _crs_transformer(_survey_crs, _ortho_crs)
+
         # Each thread opens its own GDAL handle (thread-local)
         _tls = threading.local()
 
@@ -1445,7 +1495,10 @@ All points are within the threshold.</p>"""
                 _tls.ds = gdal.Open(ortho_path, gdal.GA_ReadOnly)
             label = p["label"]
             sx, sy = p["survey_x"], p["survey_y"]
-            crop_result = _crop_ortho(_tls.ds, sx, sy, crop_radius)
+            # Reproject survey coords to ortho CRS for pixel lookup
+            ox, oy = (_xfm_to_ortho.transform(sx, sy) if _xfm_to_ortho
+                       else (sx, sy))
+            crop_result = _crop_ortho(_tls.ds, ox, oy, crop_radius)
             if crop_result is None:
                 return None
             img, px_sz, cx_px, cy_px, _xoff, _yoff = crop_result
@@ -1765,11 +1818,13 @@ def _result_from_point_files(
     a reconstruction.  Points have no reconstruction residuals (dH/dZ/d3D).
     """
     result = {"gcp": {"points": [], "n": 0}, "chk": {"points": [], "n": 0},
-              "ortho_only": True}
+              "ortho_only": True, "survey_crs": ""}
     for path, key in [(gcp_path, "gcp"), (chk_path, "chk")]:
         if not path:
             continue
-        _, coords, _ = parse_points(path)
+        crs_header, coords, _ = parse_points(path)
+        if crs_header and not result["survey_crs"]:
+            result["survey_crs"] = crs_header
         for label, (sx, sy, sz) in coords.items():
             result[key]["points"].append({
                 "label": label,
