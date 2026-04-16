@@ -481,13 +481,6 @@ resource "aws_s3_object" "odm_progress" {
   etag   = filemd5("${path.module}/scripts/odm-progress.sh")
 }
 
-resource "aws_s3_object" "true_ortho" {
-  bucket = var.bucket_name
-  key    = "${local.scripts_s3_prefix}/true_ortho.py"
-  source = "${path.module}/../../experimental/true_ortho.py"
-  etag   = filemd5("${path.module}/../../experimental/true_ortho.py")
-}
-
 # ── EC2 Spot instance ──────────────────────────────────────────────────────────
 
 resource "aws_instance" "odm" {
@@ -559,7 +552,7 @@ resource "aws_instance" "odm" {
     # To update without terraform apply:
     #   aws s3 cp infra/ec2/scripts/odm-run.sh s3://${var.bucket_name}/${local.scripts_s3_prefix}/ --profile personal
     #   ssh ec2-user@IP 'sudo aws s3 cp s3://${var.bucket_name}/${local.scripts_s3_prefix}/odm-run.sh /usr/local/bin/ --region ${var.region}'
-    for script in odm-run.sh odm-bootstrap.sh spot-watcher.sh odm-monitor.sh odm-progress.sh true_ortho.py; do
+    for script in odm-run.sh odm-bootstrap.sh spot-watcher.sh odm-monitor.sh odm-progress.sh; do
       aws s3 cp "s3://${var.bucket_name}/${local.scripts_s3_prefix}/$script" \
         "/usr/local/bin/$script" --region "${var.region}"
     done

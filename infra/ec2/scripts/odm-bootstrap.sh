@@ -40,7 +40,7 @@ set_phase() {
   local phase="$1"
   mkdir -p "${PROM_DIR}"
   cat > "${PHASE_FILE}" << PROM
-# HELP odm_pipeline_phase Current pipeline phase (1=pulling, 2=patching, 3=syncing, 4=running, 5=true_ortho, 8=complete, 9=failed)
+# HELP odm_pipeline_phase Current pipeline phase (1=pulling, 2=patching, 3=syncing, 4=running, 8=complete, 9=failed)
 # TYPE odm_pipeline_phase gauge
 odm_pipeline_phase{project="${PROJECT}"} ${phase}
 # HELP odm_pipeline_phase_start_time Unix timestamp when this phase began
