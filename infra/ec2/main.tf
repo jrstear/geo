@@ -89,11 +89,13 @@ variable "project" {
 
 variable "instance_type" {
   description = "EC2 instance type."
-  default     = "r5.4xlarge"
-  # Spot pricing in us-west-2 (~70% discount vs on-demand):
-  #   r5.4xlarge  ~$0.24/hr  16 vCPU  128 GB  ← default; good for medium quality
-  #   r5.8xlarge  ~$0.48/hr  32 vCPU  256 GB  ← high quality / large datasets
-  #   m5.4xlarge  ~$0.18/hr  16 vCPU   64 GB  ← lighter jobs
+  default     = "c5.4xlarge"
+  # On-demand pricing in us-west-2:
+  #   c5.4xlarge  $0.68/hr  16 vCPU   32 GB  ← default (geo-muml); 3.6 GHz turbo; right-sized
+  #   m5.4xlarge  $0.77/hr  16 vCPU   64 GB  ← if memory headroom needed (>20 GB peak)
+  #   r5.4xlarge  $1.008/hr 16 vCPU  128 GB  ← only for ultra-quality or very large datasets
+  #   c5.9xlarge  $1.53/hr  36 vCPU   72 GB  ← more parallel cores (geo-8fg stage switching)
+  # Sized from aztec10/aztec11 telemetry: peak mem 20 GB, CPU p95 93%, CPU p50 29%.
 }
 
 variable "use_spot" {
