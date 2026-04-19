@@ -89,13 +89,17 @@ variable "project" {
 
 variable "instance_type" {
   description = "EC2 instance type."
-  default     = "c5.4xlarge"
+  default     = "r5.4xlarge"
   # On-demand pricing in us-west-2:
-  #   c5.4xlarge  $0.68/hr  16 vCPU   32 GB  ← default (geo-muml); 3.6 GHz turbo; right-sized
-  #   m5.4xlarge  $0.77/hr  16 vCPU   64 GB  ← if memory headroom needed (>20 GB peak)
-  #   r5.4xlarge  $1.008/hr 16 vCPU  128 GB  ← only for ultra-quality or very large datasets
+  #   r5.4xlarge  $1.008/hr 16 vCPU  128 GB  ← default; peak memory on aztec-scale is ~110 GB
+  #                                             (texturing/DEM/ortho stages in late pipeline)
+  #   r5.2xlarge  $0.504/hr  8 vCPU   64 GB  ← too small — would OOM on texturing/DEM
+  #   m5.4xlarge  $0.77/hr  16 vCPU   64 GB  ← too small for aztec-scale; may work on small jobs
+  #   c5.4xlarge  $0.68/hr  16 vCPU   32 GB  ← will OOM on aztec-scale (only ~32 GB RAM)
   #   c5.9xlarge  $1.53/hr  36 vCPU   72 GB  ← more parallel cores (geo-8fg stage switching)
-  # Sized from aztec10/aztec11 telemetry: peak mem 20 GB, CPU p95 93%, CPU p50 29%.
+  # Sizing source: aztec10/aztec11 Grafana telemetry over FULL 8h pipeline window.
+  # Memory peaks late (texturing/DEM/ortho), not during SfM. An earlier recommendation
+  # based on a truncated 2.5h window suggested c5.4xlarge — this was wrong and reverted.
 }
 
 variable "use_spot" {
