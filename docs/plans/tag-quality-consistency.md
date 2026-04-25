@@ -159,32 +159,65 @@ should land here.
 
 ---
 
-## Multi-line trail (`--emit-trail`)
+## Estimate trail sidecar (`--emit-trail`)
 
-Orthogonal flag from `--iterative`. When set, sight.py emits multiple lines
-per (image, label) tuple recording the chain — but **only when iterative
-actually fired for that tuple**. Tuples where Pass 0 succeeded stay 1-line.
+Orthogonal flag from `--iterative`. When set, sight.py writes a separate
+`{job}_trail.txt` sidecar file recording the full chain for tuples where
+iterative actually fired. The main `{job}.txt` is unchanged — it still
+contains exactly one row per (image, label) tuple, just with new column-8
+label values (`tri_proj`, `tri_color`) in addition to the existing
+`projection`/`color`.
 
-| Pass 0 result | Lines emitted (with `--emit-trail`) |
+The sidecar uses the **same row format as `{job}.txt`** (tab-separated, EPSG
+header, eight columns). Any tool that parses `{job}.txt` parses the sidecar.
+One row per (image, label, source) for trail-worthy tuples; tuples where
+Pass 0 `color` succeeded need not appear (the main file already has the
+best — and only — estimate). Within a tuple's rows in the sidecar, ordering
+is best-first: `tri_color` > `tri_proj` > `projection`.
+
+| Pass 0 result | Sidecar rows for this tuple |
 |---|---|
-| color found                              | `color` (1 line) |
-| Pass 1 + Pass 2 promoted to tri_color    | `tri_color`, `tri_proj`, `projection` (3 lines) |
-| Pass 1 succeeded, Pass 2 didn't promote  | `tri_proj`, `projection` (2 lines) |
-| Pass 1 unable (no triangulation)         | `projection` (1 line) |
+| color found                              | (none — main file has the only useful estimate) |
+| Pass 1 + Pass 2 promoted to tri_color    | `tri_color`, `tri_proj`, `projection` |
+| Pass 1 succeeded, Pass 2 didn't promote  | `tri_proj`, `projection` |
+| Pass 1 unable (no triangulation)         | (none — main file has the only estimate, label `projection`) |
 
-Within a tuple, lines sort best-first: `tri_color` > `tri_proj` > `projection`.
-Global file ordering is unchanged (target-major then image-major by tagging
-value); multi-lines for a single tuple cluster together.
+The main `{job}.txt` always contains the best row per tuple. Diagnostic
+tools that want the trail read both files and join by (image, label).
 
-**Universal contract** for any tool that doesn't understand multi-line:
-"first line wins" — read the highest-precedence line per (image, label) and
-ignore the rest.
+### Why a sidecar instead of multi-line in the main file
 
-When tagging happens (in GCPEditorPro), a `tagged` row is inserted at
-precedence-earliest position. Untagging removes that row, leaving the auto
-trail intact — untag becomes reversible to sight.py's output.
+The original plan was to allow multiple rows per (image, label) in the main
+`{job}.txt` and `{job}_tagged.txt` files, with a "first line wins" rule for
+tools that didn't understand the new format. That model carried real
+diagnostic value (per-tuple trail visible end-to-end) but pushed format
+changes into every tool that touched the file:
 
-Precedence end-to-end: `tagged > tri_color > color > tri_proj > projection`.
+- `transform.py split` would need dedupe-by-tuple logic.
+- `rmse.py` would need to consume multi-line input.
+- **GCPEditorPro** would need a data-model migration from
+  `Map<(image,label), pixel>` to `Map<(image,label), List<pixel>>`,
+  redefined save/load semantics, round-trip tests, and UI changes.
+
+That last item was the most expensive and highest-risk change in the epic.
+
+The sidecar approach captures the same diagnostic value at a fraction of
+the cost:
+
+- `transform.py split` reads `{job}_tagged.txt` exactly as today.
+- `rmse.py` optionally reads `{job}_trail.txt` for the per-target delta
+  table; everything else is unchanged.
+- GCPEditorPro never sees the sidecar. No data-model migration.
+
+What's lost: untag-reversibility in GCPEditorPro (a hypothetical property
+of the multi-line model that doesn't exist today anyway, so we just don't
+gain it), and single-canonical-file semantics (but `transform.yaml`
+already establishes a sidecar pattern in this codebase).
+
+Migrating sidecar contents into the main file later is straightforward
+if it ever becomes desirable — the format is already identical. Starting
+sidecar-only is a cheap reversible decision; starting multi-line-in-main
+is an expensive irreversible one.
 
 ---
 
@@ -257,21 +290,24 @@ Beads in execution order:
 1. **geo-z7xw** — sight.py iterative refinement (Pass 1 + Pass 2)
 2. **geo-9fzr** — sight.py internal consistency report (parallel with #1)
 3. **geo-nu8f** — MVP gate: validate iterative lift on aztec7 + redrocks
-4. **geo-l941** — sight.py `--emit-trail` multi-line output
-5. **geo-ef0i** — `transform.py split` multi-line aware (parallel with #6)
-6. **geo-m8h9** — `rmse.py` trail-aware HTML report
-7. **geo-gr1i** — Stage-2 gate: validate trail value end-to-end
-8. **geo-mlev** — GCPEditorPro multi-line data model + round-trip
-9. **geo-v4tu** — Pre-ODM bad-tag detector
+4. **geo-l941** — sight.py `--emit-trail` sidecar output
+5. **geo-m8h9** — `rmse.py` reads sidecar for per-target delta table
+6. **geo-gr1i** — Stage-2 gate: validate sidecar value
+7. **geo-v4tu** — Pre-ODM bad-tag detector
+
+Two beads from the original plan have been closed as superseded by the
+sidecar approach: `geo-ef0i` (`transform.py split` multi-line awareness — no
+longer needed since the main file format is unchanged) and `geo-mlev`
+(GCPEditorPro multi-line data model — no longer needed since GCPEditorPro
+never sees the sidecar).
 
 Dependency graph:
 
 ```
 geo-z7xw ─┐
-          ├─→ geo-nu8f ─→ geo-l941 ─┬─→ geo-ef0i ─┐
-geo-9fzr ─┘                         └─→ geo-m8h9 ─┴─→ geo-gr1i ─→ geo-mlev
-                                    │
-                                    └────→ geo-v4tu  (also depends on geo-z7xw)
+          ├─→ geo-nu8f ─→ geo-l941 ─→ geo-m8h9 ─→ geo-gr1i
+geo-9fzr ─┘                  │
+                             └────→ geo-v4tu  (also depends on geo-z7xw)
 ```
 
 ### MVP gate (geo-nu8f) acceptance criteria
@@ -288,17 +324,17 @@ are gated on this passing.
 
 ### Stage-2 gate (geo-gr1i) acceptance criteria
 
-- For known-suspect targets in aztec7, the trail in `rmse.py` output
-  distinguishes "user clicked near `tri_color`" (sight's fault) from "user
-  clicked far from all estimates" (user error)
+- For known-suspect targets in aztec7, the sidecar-driven trail in `rmse.py`
+  output distinguishes "user clicked near `tri_color`" (sight's fault) from
+  "user clicked far from all estimates" (user error)
 - Across many tagged points, `tagged - tri_color` delta is consistently
   smaller than `tagged - projection` delta (i.e., iterative refinement is
   measurably helpful at deliverable level)
-- File-size cost is acceptable (target: <2× current `{job}_tagged.txt`)
+- Sidecar file size and storage cost are acceptable in practice
 
-If these do not hold, ship what's built but do not invest in the GCPEditorPro
-multi-line round-trip. The pre-ODM bad-tag detector still runs from the
-single-line output.
+If these do not hold, ship what's built; the sidecar simply isn't enabled by
+default. The pre-ODM bad-tag detector (`geo-v4tu`) and main-pipeline behavior
+are unaffected since they don't depend on the sidecar's diagnostic value.
 
 ---
 
@@ -314,12 +350,15 @@ single-line output.
 - **Iterative convergence** — Pass 3 (re-triangulate including tri_color
   rays) is opt-in. Whether to default it on depends on whether the residual
   almost always drops or sometimes oscillates. Validate empirically.
-- **GCPEditorPro round-trip semantics** — when a user untags a pin in the
-  multi-line model, the auto trail beneath persists. Existing single-line
-  files have no auto trail; an untagged row simply has no `tagged` marker.
-  The two behaviors should be consistent: untag in either model leaves the
-  highest-precedence non-tagged row as the displayed estimate.
-- **Backwards compatibility** — single-line `{job}_tagged.txt` files from
-  pre-trail runs must continue to flow through `transform.py split` and
-  `rmse.py` unchanged. The trail-aware code paths activate only on detection
-  of multi-line input.
+- **Sidecar contract** — `{job}_trail.txt` is generated by sight.py and not
+  edited downstream. Tools join with the main file by (image, label) keys.
+  If a user manually edits the main file in a way that breaks key alignment,
+  the join silently produces incomplete trails. Mitigation: documented
+  contract; sidecar regeneration is a single sight.py rerun away.
+- **Backwards compatibility** — runs without `--emit-trail` produce no
+  sidecar, and `rmse.py` / the bad-tag detector simply skip trail
+  diagnostics in that case. Pre-trail jobs continue to work unchanged.
+- **Future merge of sidecar into main file** — if the sidecar approach
+  proves valuable enough to be worth the integration cost, the same trail
+  data could later be merged into a multi-line `{job}.txt` and the sidecar
+  retired. This document keeps that door open but does not commit to it.
