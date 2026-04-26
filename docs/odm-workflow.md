@@ -363,6 +363,37 @@ conda run -n geo python transform.py split \
 tagged targets labeled `GCP-NNN` or `CHK-NNN`, untagged targets labeled with bare
 monument ID.  Load as a point layer over the orthophoto to verify target placement.
 
+### 4.5. Pre-ODM tag-quality check (recommended)
+
+```bash
+conda run -n geo python check_tags.py \
+    {job}/{job}.txt \
+    {job}/{job}_tagged.txt \
+    --report {job}/check_tags.tsv
+```
+
+`check_tags.py` compares the user's confirmed pixel tags against
+sight.py's color-refined estimates and ranks targets by suspicion — a
+catastrophic mistake (e.g. user clicked a base station instead of the
+target, as happened with CHK-14 and CHK-18 in the aztec7 study) lands
+near the top of the list above the default `--gate-score 0.7`. The
+script exits non-zero if any target exceeds the gate, so it can be
+wired into an orchestration guard before launching ODM.
+
+The detector ignores projection-source tags' pixel offsets (which are
+expected to be 50–200 px from estimate due to per-camera EXIF noise)
+and focuses on disagreement among `color`/`tri_color` tags. Two distinct
+flag patterns appear:
+
+- **Few or no anchors with high consensus offset**: sight.py's color
+  refinement found the wrong feature; the user is tagging correctly
+  but disagrees with the estimate. Review confirms tags are right.
+- **Anchors plus high-residual outlier tags**: a subset of tags
+  diverge from the consensus — likely the catastrophic-mistagging case.
+
+See `docs/plans/tag-quality-consistency.md` for algorithm details and
+validation results.
+
 ### 5. Launch ODM on EC2
 
 ```bash

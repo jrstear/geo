@@ -171,6 +171,65 @@ both produce residuals in the same range.
 
 ---
 
+## Pre-ODM bad-tag detector — outcome (geo-v4tu, 2026-04-25)
+
+`check_tags.py` ships at the repo root as a standalone CLI that runs
+between GCPEditorPro tagging and the EC2 ODM launch.  The algorithm
+restricts inconsistency detection to **color/tri_color tags only**,
+because projection-source tags have an expected pixel offset distribution
+driven by per-camera EXIF noise that is unrelated to whether the user
+tagged the right feature.
+
+### Score formula
+
+```
+color_suspect_frac = (color tags whose residual from anchor consensus > SUSPECT_PX) / n_color
+                     × 2.0     [primary signal — disagreement among color tags]
+low_color_anchor   = max(0, 0.3 - frac_anchor_of_color) × 3.33
+                                [fires when few/no color tags match estimate]
+high_consensus     = min(1, max(0, |consensus_offset| - 20) / 80)
+                                [fires when *all* color tags consistently differ
+                                 from sight by > 20 px — sight wrong, not user]
+score              = color_suspect_frac + low_color_anchor + high_consensus
+```
+
+Default gate score is 0.7.  Higher = more suspect.
+
+### Validation on aztec7
+
+Running on the known-bad tagging file (`aztec_tagged-with14and18.txt`,
+where CHK-14 and CHK-18 were mistagged as the base station):
+
+| rank | label | score | n_tagged | n_color | anchors | comment |
+|-----:|-------|------:|---------:|--------:|--------:|---------|
+| 1 | GCP-121     | 4.00 | 17 |  4 | 0 | sight color refinement found wrong feature |
+| 2 | CHK-105     | 4.00 | 21 |  5 | 0 | (same) |
+| 3 | CHK-127     | 4.00 | 16 |  5 | 0 | (same) |
+| 4 | CHK-124     | 2.41 | 14 |  6 | 2 | (same) |
+| 5 | CHK-130-3   | 1.27 | 16 | 11 | 4 | mixed color hits |
+| **6** | **CHK-18** | **1.09** | **16** | **11** | **5** | **known bad — caught** |
+| 7 | CHK-130     | 0.89 | 19 |  9 | 5 | mixed color hits |
+| **8** | **CHK-14** | **0.80** | **10** |  **5** | **3** | **known bad — caught** |
+| 9 | GCP-116     | 0.62 | 18 | 13 | 9 | minor inconsistency |
+| 10+ | (others) | <0.5 | various | various | various | low or zero |
+
+**Both known-bad targets are caught above the default gate.** The same
+top-4 sight-color-refinement issues (GCP-121, CHK-105, CHK-127, CHK-124)
+appear in every aztec dataset run — they are legitimate review candidates,
+not false positives.  13 of 43 targets in the bad file score 0.00.
+
+On the corrected `aztec_tagged.txt`, where CHK-14 and CHK-18 were
+un-tagged after the original mistake was discovered, those rows no
+longer appear in the analysis (no tagged data).  Same top-4
+sight-issues fire; no new false positives appear.
+
+### Workflow
+
+`check_tags.py` runs between step 4 (`transform.py split`) and step 5
+(launch ODM on EC2) in the canonical workflow.  It exits non-zero when
+any target exceeds the gate, so it can be wired into a guard in any
+orchestration script.
+
 ## Confidence labels (four)
 
 Sight.py output column 8 today contains `projection` or `color`. After
@@ -373,7 +432,7 @@ Beads in original execution order, with current status reflecting the
 4. **geo-l941** — sight.py `--emit-trail` sidecar output — **DEFERRED**, contingent on iterative becoming broadly useful
 5. **geo-m8h9** — `rmse.py` reads sidecar for per-target delta table — **DEFERRED**, same contingency
 6. **geo-gr1i** — Stage-2 gate: validate sidecar value — **DEFERRED**, same contingency
-7. **geo-v4tu** — Pre-ODM bad-tag detector — **NEXT**, promoted to active priority
+7. **geo-v4tu** — Pre-ODM bad-tag detector — **DONE**, ships as `check_tags.py` at repo root
 
 Two beads from the original plan were closed earlier as superseded by the
 sidecar approach: `geo-ef0i` (`transform.py split` multi-line awareness — no
