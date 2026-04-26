@@ -135,7 +135,13 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
                 if g['easting'] is None or g['northing'] is None:
                     continue
                 crs_src = g['cs_name'] or fallback_crs or ''
-                epsg = _cs_name_to_epsg(crs_src) if crs_src else (fallback_crs or None)
+                # Try cs_name resolution first; fall back to --crs override if
+                # the cs_name string is non-empty but unrecognised by
+                # _cs_name_to_epsg (e.g. NAD27-era datums or vertical-suffixed
+                # compound names that pyproj's name lookup misses).
+                epsg = _cs_name_to_epsg(crs_src) if crs_src else None
+                if not epsg:
+                    epsg = fallback_crs or None
                 if not epsg:
                     continue
                 if epsg not in _xfm_cache:
@@ -178,7 +184,9 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
             _vshift_ok: Optional[bool] = None   # None = untried
             for g in needs_ellip:
                 crs_src = g['cs_name'] or fallback_crs or ''
-                epsg = _cs_name_to_epsg(crs_src) if crs_src else (fallback_crs or None)
+                epsg = _cs_name_to_epsg(crs_src) if crs_src else None
+                if not epsg:
+                    epsg = fallback_crs or None
                 # Get linear unit factor (metres per CRS unit)
                 if epsg not in _unit_cache:
                     try:
@@ -1847,6 +1855,13 @@ if __name__ == '__main__':
     if _yaml_path:
         try:
             # Minimal YAML reader — matches transformer.py's write_yaml format
+            def _strip_inline_comment(s: str) -> str:
+                # Strip trailing "# ..." comment, but only when '#' is preceded
+                # by whitespace, so values containing a literal '#' aren't
+                # corrupted.  Quoted values keep their quotes via .strip('"').
+                _i = s.find(' #')
+                return (s[:_i] if _i >= 0 else s).strip().strip('"')
+
             _transform: dict = {}
             _section = None
             for _raw in _yaml_path.read_text(encoding='utf-8').splitlines():
@@ -1856,10 +1871,10 @@ if __name__ == '__main__':
                 if _line.startswith('  '):
                     if _section:
                         _k, _, _v = _line.strip().partition(': ')
-                        _transform.setdefault(_section, {})[_k] = _v.strip().strip('"')
+                        _transform.setdefault(_section, {})[_k] = _strip_inline_comment(_v)
                 else:
                     _k, _, _v = _line.partition(': ')
-                    _v = _v.strip().strip('"')
+                    _v = _strip_inline_comment(_v)
                     if not _v:
                         _section = _k.rstrip(':'); _transform[_section] = {}
                     else:
