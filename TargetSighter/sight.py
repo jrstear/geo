@@ -638,6 +638,326 @@ def project_pixel_mode_b(gcp: dict,
 
 
 # ---------------------------------------------------------------------------
+# Iterative refinement: triangulate target 3D from color rays, re-project
+# to projection-only images, optionally re-run color refinement using the
+# improved seed. Produces four confidence labels: projection / tri_proj /
+# color / tri_color. See docs/plans/tag-quality-consistency.md.
+# ---------------------------------------------------------------------------
+
+def _triangulate_target(target_gcp: dict,
+                        color_obs: List[Tuple[str, dict, dict]],
+                        cameras_by_wh: Optional[dict] = None
+                        ) -> Optional[dict]:
+    """
+    Find the 3D point that, when forward-projected through each color
+    observation's EXIF camera, best matches the color-refined pixel.
+
+    color_obs: list of (fname, est_dict_with_px_py, exif_dict).
+    Returns dict with refined lat/lon/ellip_alt_m + per-image residuals,
+    or None if optimisation cannot run (fewer than 3 obs, missing scipy,
+    no surveyed alt, or solver failure).
+
+    Optimisation is in (dE, dN, dU) metres relative to the surveyed point;
+    gives a well-scaled problem for least_squares.  Uses the existing
+    forward projection (project_pixel_mode_a) so distortion handling
+    matches the rest of the pipeline.
+    """
+    if len(color_obs) < 3:
+        return None
+    surv_lat = target_gcp.get('lat')
+    surv_lon = target_gcp.get('lon')
+    surv_alt = target_gcp.get('ellip_alt_m')
+    if surv_lat is None or surv_lon is None or surv_alt is None:
+        return None
+    try:
+        from scipy.optimize import least_squares  # type: ignore
+    except ImportError:
+        return None
+
+    cos_lat = math.cos(math.radians(surv_lat))
+    if abs(cos_lat) < 1e-9:
+        return None
+
+    def _residuals(delta_enu):
+        dE, dN, dU = float(delta_enu[0]), float(delta_enu[1]), float(delta_enu[2])
+        gcp_p = dict(target_gcp)
+        gcp_p['lat'] = surv_lat + dN / METERS_PER_DEG_LAT
+        gcp_p['lon'] = surv_lon + dE / (METERS_PER_DEG_LAT * cos_lat)
+        gcp_p['ellip_alt_m'] = surv_alt + dU
+        out: List[float] = []
+        for _fname, est, exif in color_obs:
+            cam_model = None
+            if cameras_by_wh:
+                cam_model = cameras_by_wh.get((exif.get('img_w'), exif.get('img_h')))
+            proj = project_pixel_mode_a(exif, gcp_p, cam_model)
+            if proj is None:
+                # Out-of-frame penalty.  Large but finite so the solver can still progress.
+                out.extend([1e4, 1e4])
+            else:
+                out.append(proj[0] - est['px'])
+                out.append(proj[1] - est['py'])
+        return out
+
+    try:
+        res = least_squares(_residuals, x0=[0.0, 0.0, 0.0],
+                            method='lm', max_nfev=200)
+    except Exception:
+        return None
+    if not getattr(res, 'success', False):
+        return None
+
+    # Per-image residual magnitudes at the solution
+    final = res.fun
+    per_img: List[Tuple[str, float]] = []
+    for i, (fname, _est, _exif) in enumerate(color_obs):
+        rx = final[2 * i]
+        ry = final[2 * i + 1]
+        per_img.append((fname, math.hypot(rx, ry)))
+    if not per_img:
+        return None
+
+    return {
+        'lat':           surv_lat + float(res.x[1]) / METERS_PER_DEG_LAT,
+        'lon':           surv_lon + float(res.x[0]) / (METERS_PER_DEG_LAT * cos_lat),
+        'ellip_alt_m':   surv_alt + float(res.x[2]),
+        'per_img':       per_img,
+        'max_resid_px':  max(d for _, d in per_img),
+        'mean_resid_px': sum(d for _, d in per_img) / len(per_img),
+        'surv_disagree_m': math.sqrt(float(res.x[0])**2 + float(res.x[1])**2 + float(res.x[2])**2),
+        'n_used':        len(color_obs),
+    }
+
+
+def _triangulate_robust(target_gcp: dict,
+                        color_obs: List[Tuple[str, dict, dict]],
+                        cameras_by_wh: Optional[dict] = None,
+                        eps_resid_px: float = 20.0,
+                        max_drops: int = 2
+                        ) -> Optional[dict]:
+    """
+    Triangulate, then drop the worst-fitting observation up to *max_drops* times
+    if the max per-image residual still exceeds *eps_resid_px*.  Each drop
+    requires that >=3 observations remain.  Returns the best result obtained,
+    along with a 'dropped' list of fnames.
+    """
+    obs = list(color_obs)
+    dropped: List[str] = []
+    best = _triangulate_target(target_gcp, obs, cameras_by_wh=cameras_by_wh)
+    if best is None:
+        return None
+    drops = 0
+    while best['max_resid_px'] > eps_resid_px and drops < max_drops and len(obs) > 3:
+        worst_fname = max(best['per_img'], key=lambda t: t[1])[0]
+        obs = [(f, e, x) for (f, e, x) in obs if f != worst_fname]
+        dropped.append(worst_fname)
+        drops += 1
+        new_res = _triangulate_target(target_gcp, obs, cameras_by_wh=cameras_by_wh)
+        if new_res is None:
+            break
+        best = new_res
+    best['dropped'] = dropped
+    return best
+
+
+def _iterative_refine(
+        estimates: Dict[str, Dict[str, dict]],
+        gcp_by_label: Dict[str, dict],
+        exif_map: Dict[str, dict],
+        cameras_by_wh: Optional[dict] = None,
+        *,
+        min_color_hits: int = 3,
+        eps_resid_px: float = 120.0,
+        eps_surv_m: float = 15.0,
+        max_outlier_drops: int = 2,
+        threads: int = 0,
+        report_path: Optional[Path] = None,
+) -> Dict[str, Dict[str, dict]]:
+    """
+    Pass 1: For each target with >= min_color_hits 'color' refinements, triangulate
+    a refined 3D position from the color rays.  Sanity gate: max per-image residual
+    < eps_resid_px AND |triangulated - surveyed| < eps_surv_m.  When the gate
+    passes, re-project the refined 3D through EXIF for projection-only images of
+    the same target and label them 'tri_proj' (px/py replaced).
+
+    Pass 2: Re-run color refinement on tri_proj images using the new pixel as
+    the seed.  On success, label 'tri_color' and store the refined pixel.
+
+    Sanity-gate failures are reported as suspect targets but do not modify any
+    estimates.  Mutates *estimates* in place; returns the same dict.
+
+    Per-target metrics (n_color, triangulation residual, survey disagreement,
+    n_promoted_tri_proj, n_promoted_tri_color, gate flag) are printed at end of
+    run; if *report_path* is provided, also written there as TSV.
+    """
+    try:
+        from . import coloredX as _refine_module  # type: ignore
+    except (ImportError, ValueError):
+        try:
+            import coloredX as _refine_module  # type: ignore
+        except ImportError:
+            _refine_module = None  # type: ignore
+
+    print("Iterative refinement (Pass 1: triangulate color rays + Pass 2: re-refine)...")
+
+    per_target_report: List[dict] = []
+
+    # Determine deterministic order — iterate over labels currently in estimates
+    labels = list(estimates.keys())
+
+    for label in labels:
+        # Skip near-duplicate labels (same convention as coloredX)
+        if label.startswith('DUP-') or re.search(r'-dup\d*$', label):
+            continue
+        gcp = gcp_by_label.get(label)
+        if gcp is None:
+            continue
+        img_map = estimates.get(label) or {}
+
+        # Collect color observations: those with confidence == 'color'
+        color_obs: List[Tuple[str, dict, dict]] = []
+        proj_only_fnames: List[str] = []
+        for fname, est in img_map.items():
+            exif = exif_map.get(fname)
+            if exif is None:
+                continue
+            if est.get('confidence') == 'color':
+                color_obs.append((fname, est, exif))
+            else:
+                proj_only_fnames.append(fname)
+
+        record = {
+            'label':            label,
+            'n_color':          len(color_obs),
+            'n_proj_only':      len(proj_only_fnames),
+            'tri_resid_max_px': None,
+            'surv_disagree_m':  None,
+            'gate':             'skipped',
+            'n_dropped':        0,
+            'n_promoted_proj':  0,
+            'n_promoted_color': 0,
+        }
+
+        if len(color_obs) < min_color_hits:
+            record['gate'] = 'skipped'  # not enough color hits
+            per_target_report.append(record)
+            continue
+
+        tri = _triangulate_robust(
+            gcp, color_obs, cameras_by_wh=cameras_by_wh,
+            eps_resid_px=eps_resid_px, max_drops=max_outlier_drops,
+        )
+        if tri is None:
+            record['gate'] = 'failed'
+            per_target_report.append(record)
+            continue
+
+        record['tri_resid_max_px'] = tri['max_resid_px']
+        record['surv_disagree_m']  = tri['surv_disagree_m']
+        record['n_dropped']        = len(tri.get('dropped', []))
+
+        # Sanity gates
+        if tri['max_resid_px'] > eps_resid_px:
+            record['gate'] = 'COLOR_INCONSISTENT'
+            per_target_report.append(record)
+            continue
+        if tri['surv_disagree_m'] > eps_surv_m:
+            record['gate'] = 'SURVEY_DISAGREES'
+            per_target_report.append(record)
+            continue
+
+        # Gate passed → Pass 1: re-project through EXIF for projection-only images
+        refined_gcp = dict(gcp)
+        refined_gcp['lat']         = tri['lat']
+        refined_gcp['lon']         = tri['lon']
+        refined_gcp['ellip_alt_m'] = tri['ellip_alt_m']
+
+        promoted_to_tri_proj: List[str] = []
+        for fname in proj_only_fnames:
+            exif = exif_map.get(fname)
+            if exif is None:
+                continue
+            cam_model = None
+            if cameras_by_wh:
+                cam_model = cameras_by_wh.get((exif.get('img_w'), exif.get('img_h')))
+            proj = project_pixel_mode_a(exif, refined_gcp, cam_model)
+            if proj is None:
+                continue
+            est = img_map[fname]
+            est['_pre_iter_px'] = est['px']
+            est['_pre_iter_py'] = est['py']
+            est['px']         = float(proj[0])
+            est['py']         = float(proj[1])
+            est['confidence'] = 'tri_proj'
+            promoted_to_tri_proj.append(fname)
+
+        record['n_promoted_proj']  = len(promoted_to_tri_proj)
+
+        # Pass 2: re-run color refinement on the new tri_proj seeds
+        promoted_to_tri_color: List[str] = []
+        if _refine_module is not None and promoted_to_tri_proj:
+            for fname in promoted_to_tri_proj:
+                exif = exif_map.get(fname) or {}
+                path = exif.get('path')
+                if not path:
+                    continue
+                est = img_map[fname]
+                gsd = _refine_module._compute_gsd(exif)
+                result = _refine_module._refine_single(path, est['px'], est['py'], gsd_m=gsd)
+                if result is not None:
+                    est['px']          = float(result['px'])
+                    est['py']          = float(result['py'])
+                    est['confidence']  = 'tri_color'
+                    if result.get('marker_bbox') is not None:
+                        est['marker_bbox'] = result['marker_bbox']
+                    promoted_to_tri_color.append(fname)
+
+        record['n_promoted_color'] = len(promoted_to_tri_color)
+        record['gate'] = 'PASS'
+        per_target_report.append(record)
+
+    # Print summary
+    n_total = len(per_target_report)
+    n_pass = sum(1 for r in per_target_report if r['gate'] == 'PASS')
+    n_susp = sum(1 for r in per_target_report if r['gate'] in ('COLOR_INCONSISTENT', 'SURVEY_DISAGREES'))
+    n_skip = sum(1 for r in per_target_report if r['gate'] == 'skipped')
+    n_fail = sum(1 for r in per_target_report if r['gate'] == 'failed')
+    n_promoted_proj  = sum(r['n_promoted_proj']  for r in per_target_report)
+    n_promoted_color = sum(r['n_promoted_color'] for r in per_target_report)
+    print(f"  {n_total} target(s) examined: "
+          f"{n_pass} pass, {n_susp} suspect, {n_skip} skipped (<{min_color_hits} color hits), {n_fail} failed.")
+    print(f"  Promoted {n_promoted_proj} image(s) projection→tri_proj; "
+          f"{n_promoted_color} of those further promoted tri_proj→tri_color.")
+
+    suspects = [r for r in per_target_report
+                if r['gate'] in ('COLOR_INCONSISTENT', 'SURVEY_DISAGREES')]
+    if suspects:
+        print(f"  Suspect targets (review carefully before tagging):")
+        for r in suspects:
+            tri_r = f"{r['tri_resid_max_px']:.1f} px" if r['tri_resid_max_px'] is not None else '—'
+            sdis  = f"{r['surv_disagree_m']:.2f} m" if r['surv_disagree_m'] is not None else '—'
+            print(f"    {r['label']:14s}  n_color={r['n_color']:2d}  "
+                  f"max_resid={tri_r:>10s}  survey_disagree={sdis:>8s}  "
+                  f"flag={r['gate']}")
+
+    if report_path is not None:
+        try:
+            with open(report_path, 'w') as f:
+                f.write("label\tn_color\tn_proj_only\ttri_resid_max_px\tsurv_disagree_m\t"
+                        "n_dropped\tn_promoted_proj\tn_promoted_color\tgate\n")
+                for r in per_target_report:
+                    tri_r = f"{r['tri_resid_max_px']:.3f}" if r['tri_resid_max_px'] is not None else ''
+                    sdis  = f"{r['surv_disagree_m']:.4f}" if r['surv_disagree_m'] is not None else ''
+                    f.write(f"{r['label']}\t{r['n_color']}\t{r['n_proj_only']}\t"
+                            f"{tri_r}\t{sdis}\t{r['n_dropped']}\t"
+                            f"{r['n_promoted_proj']}\t{r['n_promoted_color']}\t{r['gate']}\n")
+            print(f"  Wrote consistency report: {report_path}")
+        except Exception as _e:
+            print(f"  WARNING: could not write consistency report ({_e})")
+
+    return estimates
+
+
+# ---------------------------------------------------------------------------
 # B3 — Pipeline Runner + Output Writers
 # ---------------------------------------------------------------------------
 
@@ -1228,7 +1548,11 @@ def run_pipeline(images_dir: str,
                  fallback_crs: Optional[str] = None,
                  nadir_weight: float = 0.2,
                  reproject_to: Optional[str] = None,
-                 cameras_by_wh: Optional[dict] = None) -> Tuple[str, dict]:
+                 cameras_by_wh: Optional[dict] = None,
+                 iterative: bool = False,
+                 iter_eps_resid_px: float = 120.0,
+                 iter_eps_surv_m: float = 15.0,
+                 consistency_report_path: Optional[Path] = None) -> Tuple[str, dict]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -1387,6 +1711,23 @@ def run_pipeline(images_dir: str,
             refine_limit=refine_limit,
         )
 
+    # B3.5 — Iterative refinement (optional): triangulate target 3D from color
+    # rays, re-project to projection-only images, optionally re-run color
+    # refinement on the better seed. Produces 'tri_proj' and 'tri_color' labels.
+    if iterative:
+        # Rebuild gcp_by_label with post-classification labels (g['label'] was
+        # renamed in-place by _classify_gcps so the original gcp_by_label built
+        # at line ~1281 has stale keys).
+        gcp_by_label_post = {g['label']: g for g in gcps}
+        estimates = _iterative_refine(
+            estimates, gcp_by_label_post, exif_map,
+            cameras_by_wh=cameras_by_wh,
+            eps_resid_px=iter_eps_resid_px,
+            eps_surv_m=iter_eps_surv_m,
+            threads=threads,
+            report_path=consistency_report_path,
+        )
+
     # B3 — Write outputs
     gcp_txt = _write_gcp_list(
         gcps, estimates,
@@ -1468,6 +1809,26 @@ if __name__ == '__main__':
                              'replaces the EXIF-derived pinhole model with the calibrated '
                              'focal length, principal point, and radial/tangential distortion '
                              'coefficients for improved initial pixel projections.')
+    parser.add_argument('--iterative', action='store_true',
+                        help='After color refinement, triangulate target 3D from color '
+                             'rays and re-project to projection-only images (tri_proj). '
+                             'Then re-run color refinement on the new seeds (tri_color). '
+                             'Pre-tagging suspect-target flags fall out as a side product.')
+    parser.add_argument('--iter-eps-resid-px', type=float, default=120.0,
+                        help='Sanity threshold: max per-image triangulation residual '
+                             'in pixels for the gate to pass (default 120). Bounded by '
+                             'EXIF camera-pose noise — per-image noise of ~50-100 px is '
+                             'normal even when color refinement is correct.')
+    parser.add_argument('--iter-eps-surv-m', type=float, default=15.0,
+                        help='Sanity threshold: max distance (metres) between triangulated '
+                             '3D and the surveyed coordinate for the gate to pass '
+                             '(default 15). Bounded by EXIF GPS noise — drones without RTK '
+                             'often have multi-metre GPS drift, so the optimizer-found 3D '
+                             'will absorb that noise.')
+    parser.add_argument('--consistency-report', default=None, metavar='FILE',
+                        help='If set with --iterative, write per-target metrics '
+                             '(triangulation residual, survey disagreement, gate flag) '
+                             'to this TSV file alongside the printed summary.')
     args = parser.parse_args()
 
     # --- transform.yaml integration ---
@@ -1564,6 +1925,12 @@ if __name__ == '__main__':
         # Ensure output dir exists before writing any output files
         Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
+        _consistency_path = (
+            (Path(args.out_dir) / args.consistency_report)
+            if args.consistency_report and not Path(args.consistency_report).is_absolute()
+            else (Path(args.consistency_report) if args.consistency_report else None)
+        )
+
         gcp_txt, estimates = run_pipeline(
                 images_dir=args.image_dir,
                 survey_csv_path=args.survey_csv,
@@ -1583,6 +1950,10 @@ if __name__ == '__main__':
                 nadir_weight=args.nadir_weight,
                 reproject_to=_odm_crs,
                 cameras_by_wh=_cameras_by_wh,
+                iterative=args.iterative,
+                iter_eps_resid_px=args.iter_eps_resid_px,
+                iter_eps_surv_m=args.iter_eps_surv_m,
+                consistency_report_path=_consistency_path,
             )
 
         out_dir = Path(args.out_dir)

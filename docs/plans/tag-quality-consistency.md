@@ -92,6 +92,85 @@ detector ranks a review queue rather than auto-rejecting.
 
 ---
 
+## Empirical validation (2026-04-25, geo-nu8f)
+
+After implementing the iterative refinement (geo-z7xw) and consistency
+report (geo-9fzr), an end-to-end validation was run on aztec12 images
+(1385 images, 49 targets) using `aztec11_tagged.txt` as ground truth.
+Result: **mixed**. The implementation works as designed but the lift on
+this dataset is smaller than the planning hypothesis assumed.
+
+### Per-source residual to tagged truth (lenient gates 120 px / 15 m)
+
+| source     | n   | median | use case |
+|------------|-----|--------|----------|
+| `color`      | 490 | **1.6 px** | gold standard when refinement succeeds |
+| `tri_color`  | 42  | 114 px     | mixed — sub-pixel for ~4 targets, 100–300 px for others |
+| `tri_proj`   | 4   | 172 px     | essentially same as `projection` |
+| `projection` | 139 | 177 px     | baseline — raw EXIF projection of surveyed_xyz |
+
+### Per-target outcomes
+
+- **Clean wins** (CHK-101, CHK-103, CHK-119, GCP-126): tri_color lands
+  sub-pixel against tagged truth — exactly the design goal.
+- **Modest wins** (CHK-114): tri_proj 121 px vs projection 167 px — real
+  ~30 % reduction in the seed-to-truth gap, but small in absolute terms.
+- **Failures** (CHK-130): tri_proj 216 px vs projection 142 px — *worse*
+  than the baseline because one outlier color hit poisoned the
+  triangulation. The consistency gate did not catch it (max residual was
+  72 px after one outlier drop, comfortably below the 120 px threshold).
+
+### CHK-18 result
+
+Did **not** fire `SURVEY_DISAGREES`. Color refinement on aztec12 found the
+actual marker; survey disagreement was 8 m (normal EXIF noise).
+The original CHK-18 problem was a **user tagging error**, not a sight.py
+color-refinement error — the user clicked the base station instead of the
+target. That class of error is what the post-tagging bad-tag detector
+(geo-v4tu) is designed for, not the sight-time iterative refinement.
+
+### Why the lift is smaller than predicted
+
+Per-camera EXIF GPS+IMU noise is the dominant contributor to projection
+error in this dataset (~50–100 px per camera, independent across images).
+Triangulation absorbs surveyed_xyz error (which is small for an RTK
+survey) but cannot reduce per-camera EXIF noise. Re-projecting a
+triangulated 3D through camera B still inherits camera B's pose error.
+The planning hypothesis assumed surveyed_xyz error and pose error were
+comparable; on aztec12 (RTK-surveyed, consumer drone EXIF), pose error
+dominates by an order of magnitude.
+
+### Why strict gates also fail
+
+Setting `--iter-eps-resid-px 30` rejected **all 46 targets** as suspect.
+The EXIF noise floor (~50–100 px per camera) makes <30 px residuals
+unattainable on real data. Loose gates admit too many bad targets;
+strict gates reject every target. Single-statistic gating cannot
+distinguish "honest EXIF noise" from "outlier-driven misfit" because
+both produce residuals in the same range.
+
+### Decision
+
+- Iterative refinement (geo-z7xw) and the consistency report (geo-9fzr)
+  ship as `--iterative` / `--consistency-report` opt-in flags.
+  **Default behavior is unchanged** (no flag = no iterative pass).
+- The pre-ODM bad-tag detector (geo-v4tu) is the higher-leverage path
+  for catching user-tagging errors that motivate the epic. Promote it
+  to next priority.
+- The trail-sidecar work (geo-l941, geo-m8h9, geo-gr1i) is contingent
+  on iterative becoming reliably useful — defer until the algorithm
+  has a stronger outlier-robustness scheme. Possible improvements
+  worth a future bead:
+    - RANSAC-style aggressive outlier dropping until residual converges
+    - Cross-image color-signature consistency check before accepting a
+      color hit as a triangulation ray
+    - Use of SfM-refined poses (when a reconstruction is available) for
+      sharper triangulation
+- The triangulation-math consolidation with rmse.py (geo-i733) is also
+  deferred — there's no urgency until iterative is broadly useful.
+
+---
+
 ## Confidence labels (four)
 
 Sight.py output column 8 today contains `projection` or `color`. After
@@ -285,29 +364,33 @@ Each stage's job is to reduce the work for the next. None replace each other.
 
 ## Implementation sequence
 
-Beads in execution order:
+Beads in original execution order, with current status reflecting the
+2026-04-25 validation findings:
 
-1. **geo-z7xw** — sight.py iterative refinement (Pass 1 + Pass 2)
-2. **geo-9fzr** — sight.py internal consistency report (parallel with #1)
-3. **geo-nu8f** — MVP gate: validate iterative lift on aztec7 + redrocks
-4. **geo-l941** — sight.py `--emit-trail` sidecar output
-5. **geo-m8h9** — `rmse.py` reads sidecar for per-target delta table
-6. **geo-gr1i** — Stage-2 gate: validate sidecar value
-7. **geo-v4tu** — Pre-ODM bad-tag detector
+1. **geo-z7xw** — sight.py iterative refinement (Pass 1 + Pass 2) — **DONE**, opt-in via `--iterative`
+2. **geo-9fzr** — sight.py internal consistency report — **DONE** (bundled with #1), opt-in via `--consistency-report`
+3. **geo-nu8f** — MVP gate — **DONE**, mixed result documented above; recommendation is to pivot to v4tu
+4. **geo-l941** — sight.py `--emit-trail` sidecar output — **DEFERRED**, contingent on iterative becoming broadly useful
+5. **geo-m8h9** — `rmse.py` reads sidecar for per-target delta table — **DEFERRED**, same contingency
+6. **geo-gr1i** — Stage-2 gate: validate sidecar value — **DEFERRED**, same contingency
+7. **geo-v4tu** — Pre-ODM bad-tag detector — **NEXT**, promoted to active priority
 
-Two beads from the original plan have been closed as superseded by the
+Two beads from the original plan were closed earlier as superseded by the
 sidecar approach: `geo-ef0i` (`transform.py split` multi-line awareness — no
 longer needed since the main file format is unchanged) and `geo-mlev`
 (GCPEditorPro multi-line data model — no longer needed since GCPEditorPro
 never sees the sidecar).
 
-Dependency graph:
+One follow-on bead exists for triangulation-math consolidation with
+rmse.py: **geo-i733** (P3, deferred until iterative is broadly useful).
+
+Updated dependency graph (deferred beads dimmed):
 
 ```
-geo-z7xw ─┐
-          ├─→ geo-nu8f ─→ geo-l941 ─→ geo-m8h9 ─→ geo-gr1i
+geo-z7xw ─┐                                                   (deferred)
+          ├─→ geo-nu8f ─→ ⟦geo-l941 ─→ geo-m8h9 ─→ geo-gr1i⟧
 geo-9fzr ─┘                  │
-                             └────→ geo-v4tu  (also depends on geo-z7xw)
+                             └────→ geo-v4tu  ← NEXT
 ```
 
 ### MVP gate (geo-nu8f) acceptance criteria
