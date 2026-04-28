@@ -57,7 +57,10 @@ terraform {
     aws = { source = "hashicorp/aws", version = "~> 5.0" }
     tls = { source = "hashicorp/tls", version = "~> 4.0" }
   }
-  backend "local" {}
+  # Backend is configured by the caller:
+  #   - direct `terraform init` in this dir → defaults to local backend (state alongside main.tf)
+  #   - via terragrunt template (infra/terragrunt/ec2/) → terragrunt generates backend.tf
+  #     pointing at the per-job state file in {job_dir}/ec2/terraform.tfstate
 }
 
 provider "aws" {
@@ -85,6 +88,25 @@ variable "project" {
       opensfm/ odm_orthophoto/ etc. ← written on completion
   EOD
   default = "PROJECT"  # always override: -var="project=bsn/sitename"
+}
+
+variable "job_name" {
+  description = <<-EOD
+    Required suffix appended to globally-named AWS resources (IAM role,
+    instance profile, security group, key pair, SNS topic, EventBridge rules,
+    S3 scripts prefix) so multiple ODM jobs can run concurrently without
+    name collisions.
+
+    Driven from the Terragrunt template (infra/terragrunt/ec2/) via the
+    ODM_JOB_NAME env var.  Direct `terraform apply` usage must pass
+    -var="job_name=..." explicitly.
+  EOD
+  type        = string
+
+  validation {
+    condition     = length(var.job_name) > 0
+    error_message = "job_name must be non-empty (e.g. \"aztec13\"). Required to prevent global resource-name collisions across concurrent jobs."
+  }
 }
 
 variable "instance_type" {
@@ -185,6 +207,10 @@ variable "grafana_stack_url" {
 # ── Locals ─────────────────────────────────────────────────────────────────────
 
 locals {
+  # Suffix applied to globally-named AWS resources to enable concurrent jobs.
+  # var.job_name is required (validated non-empty) so the leading dash is safe.
+  ws_suffix = "-${var.job_name}"
+
   s3_base   = "s3://${var.bucket_name}/${var.project}"
   s3_images = "${local.s3_base}/images"
   s3_gcp    = "${local.s3_base}/gcp_list.txt"
@@ -194,7 +220,10 @@ locals {
   # --max-concurrency is set per-stage by odm-run.sh.
   odm_flags = "--pc-quality medium --feature-quality high --orthophoto-resolution 5 --dtm --dsm --dem-resolution 5 --cog --build-overviews"
 
-  scripts_s3_prefix = "odm-scripts"
+  # Per-job script prefix so concurrent jobs don't race on aws_s3_object
+  # resources. Each job uploads its own copy of the scripts under its own
+  # S3 prefix; destroy of one job's stack doesn't remove another's scripts.
+  scripts_s3_prefix = "odm-scripts${local.ws_suffix}"
 }
 
 # ── SSH Key ────────────────────────────────────────────────────────────────────
@@ -205,7 +234,7 @@ resource "tls_private_key" "odm" {
 }
 
 resource "aws_key_pair" "odm" {
-  key_name   = "geo-odm-ec2"
+  key_name   = "geo-odm-ec2${local.ws_suffix}"
   public_key = tls_private_key.odm.public_key_openssh
   tags       = { Project = "geo" }
 }
@@ -223,7 +252,7 @@ data "aws_iam_policy_document" "ec2_assume" {
 }
 
 resource "aws_iam_role" "odm" {
-  name               = "geo-odm-ec2-role"
+  name               = "geo-odm-ec2-role${local.ws_suffix}"
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
   tags               = { Project = "geo" }
 }
@@ -316,14 +345,14 @@ resource "aws_iam_role_policy" "odm_ecr" {
 }
 
 resource "aws_iam_instance_profile" "odm" {
-  name = "geo-odm-ec2-profile"
+  name = "geo-odm-ec2-profile${local.ws_suffix}"
   role = aws_iam_role.odm.name
 }
 
 # ── Security group ─────────────────────────────────────────────────────────────
 
 resource "aws_security_group" "odm" {
-  name        = "geo-odm-ec2-sg"
+  name        = "geo-odm-ec2-sg${local.ws_suffix}"
   description = "SSH ingress + all egress for ODM EC2 run"
 
   ingress {
@@ -361,7 +390,7 @@ data "aws_ami" "al2023" {
 # ── SNS alerts ─────────────────────────────────────────────────────────────────
 
 resource "aws_sns_topic" "odm_alerts" {
-  name = "geo-odm-alerts"
+  name = "geo-odm-alerts${local.ws_suffix}"
   tags = { Project = "geo" }
 }
 
@@ -410,7 +439,7 @@ resource "aws_sns_topic_subscription" "sms" {
 # ── EventBridge alerts ─────────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_event_rule" "spot_interruption" {
-  name        = "geo-odm-spot-interruption"
+  name        = "geo-odm-spot-interruption${local.ws_suffix}"
   description = "Spot interruption warning for geo-odm instance"
   event_pattern = jsonencode({
     source        = ["aws.ec2"]
@@ -427,7 +456,7 @@ resource "aws_cloudwatch_event_target" "spot_interruption_sns" {
 }
 
 resource "aws_cloudwatch_event_rule" "instance_state" {
-  name        = "geo-odm-instance-state"
+  name        = "geo-odm-instance-state${local.ws_suffix}"
   description = "geo-odm instance stopped or terminated"
   event_pattern = jsonencode({
     source        = ["aws.ec2"]

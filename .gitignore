@@ -239,3 +239,10 @@ docs/details/odm-output-options.md
 .beads/daemon-*.log.gz
 infra/ec2/bigger
 .gitattributes
+
+# Terraform / Terragrunt local artifacts (kept out of git; per-machine state)
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/.terragrunt-cache/
