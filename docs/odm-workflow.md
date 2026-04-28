@@ -24,7 +24,7 @@ flowchart TD
     chk_list["chk_list.txt"]
     targets["{job}_targets.csv"]
     targets_design["{job}_targets_design.csv"]
-    launch_odm(["s3 sync & terraform apply"])
+    launch_odm(["s3 sync & terragrunt apply"])
     odm(["odm-bootstrap.sh"])
     rmse(["rmse.py"])
     report["rmse.html"]
@@ -396,25 +396,38 @@ validation results.
 
 ### 5. Launch ODM on EC2
 
+Each job gets its own per-job EC2 stack via the Terragrunt template at
+`infra/terragrunt/ec2/`, so multiple ODM jobs can run concurrently without
+resource-name collisions or state-file overlap (see geo-elmk).
+
 ```bash
 # Upload images (one-time; skip if already in S3)
 aws s3 sync {job}/images/ \
-    s3://{BUCKET}/{PROJECT}/images/
+    s3://{BUCKET}/{job}/images/
 
 # Upload control file
 aws s3 cp {job}/gcp_list.txt \
-    s3://{BUCKET}/{PROJECT}/gcp_list.txt
+    s3://{BUCKET}/{job}/gcp_list.txt
 
-# Launch EC2 instance — pipeline starts automatically on boot
-cd ~/git/geo/infra/ec2
-terraform apply \
-    -var="project={PROJECT}" \
-    -var="notify_email=your@email.com"
+# Materialize the per-job terragrunt dir + launch
+mkdir -p {job}/ec2
+cp $GEO_HOME/infra/terragrunt/ec2/terragrunt.hcl {job}/ec2/
+
+cd {job}/ec2
+export GEO_HOME=$HOME/git/geo                 # required: source path for the module
+export ODM_PROJECT={job}                       # S3 prefix (e.g. aztec13)
+export ODM_JOB_NAME={job}                      # AWS resource-name suffix
+export ODM_NOTIFY_EMAIL=you@example.com
+# optional: ODM_INSTANCE_TYPE, ODM_EBS_SIZE_GB, ODM_USE_SPOT, ODM_IMAGE,
+#           GRAFANA_*, ODM_BUCKET, ODM_REGION
+terragrunt apply
 ```
 
-`{PROJECT}` is the S3 path prefix, typically `{client}/{job}` (e.g.
-`acme/myjob`).  `{job}` is the local job directory name used throughout
-the earlier steps.
+`{job}` is the local job directory name (e.g. `aztec13`), reused as the S3
+prefix and the suffix on globally-named AWS resources (IAM role, instance
+profile, security group, key pair, SNS topic, EventBridge rules, S3
+scripts prefix).  Older jobs under `bsn/aztec11/` etc. still work via
+explicit `ODM_PROJECT=bsn/aztec11` override.
 
 You will receive SNS emails as each stage completes, and on spot
 interruption/resume events. The instance cancels its own spot request
@@ -428,10 +441,14 @@ Recommended ODM flags (set in `main.tf` `local.odm_flags`):
 **To destroy and resume on a fresh instance** (e.g. to pick up updated scripts/policies):
 
 ```bash
-terraform destroy   # outputs already synced to S3 after each stage
-terraform apply -var="project={PROJECT}" -var="notify_email=your@email.com"
-# new instance syncs from S3 and resumes from the next incomplete stage
+cd {job}/ec2
+terragrunt destroy        # outputs already synced to S3 after each stage
+rm -rf .terragrunt-cache terraform.tfstate*   # auto-cleanup
+terragrunt apply           # new instance syncs from S3 and resumes from the next incomplete stage
 ```
+
+Odium drives this flow automatically (`ec2_launch`, `ec2_status`, `ec2_ssh`,
+`ec2_destroy`); the snippet above is the manual equivalent.
 
 ### 6. Verify accuracy with rmse.py
 
@@ -446,8 +463,8 @@ the reconstruction accuracy check:
 
 ```bash
 # Sync outputs from S3
-aws s3 sync s3://{BUCKET}/{PROJECT}/opensfm/ {job}/opensfm/
-aws s3 sync s3://{BUCKET}/{PROJECT}/odm_orthophoto/ {job}/odm_orthophoto/
+aws s3 sync s3://{BUCKET}/{job}/opensfm/ {job}/opensfm/
+aws s3 sync s3://{BUCKET}/{job}/odm_orthophoto/ {job}/odm_orthophoto/
 
 conda run -n geo python rmse.py \
     {job}/opensfm/reconstruction.topocentric.json \
@@ -564,9 +581,9 @@ overlay TIF, pass it via `--uncertainty` to embed it at the end of the HTML repo
 
 ```bash
 # Sync deliverables from S3
-aws s3 sync s3://{BUCKET}/{PROJECT}/odm_orthophoto/ \
+aws s3 sync s3://{BUCKET}/{job}/odm_orthophoto/ \
     {job}/odm_orthophoto/
-aws s3 sync s3://{BUCKET}/{PROJECT}/odm_report/ \
+aws s3 sync s3://{BUCKET}/{job}/odm_report/ \
     {job}/odm_report/
 
 # Package for customer delivery (reproject + shift to design grid + tile/COG)
