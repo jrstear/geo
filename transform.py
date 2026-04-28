@@ -28,7 +28,7 @@ transform.yaml — written by dc, read by split (and sight.py and package.py --t
 ---------------------------------------------------------------------------
 job: <job_name>
 field_crs: EPSG:XXXX      # Emlid RS3 output CRS; also the GCPEditorPro header CRS
-odm_crs: EPSG:32613       # ODM gcp/chk input CRS (always UTM 13N metres)
+odm_crs: EPSG:XXXX        # ODM gcp/chk input CRS (metric counterpart of delivery_crs)
 delivery_crs: EPSG:XXXX   # State-plane CRS for QGIS review and delivery (auto-detected)
 design_grid:
   shift_x: <float>        # ft: add to state-plane E to get design-grid E
@@ -59,14 +59,14 @@ from pathlib import Path
 from typing import Optional
 
 FT_TO_M = 0.3048006096012192   # US survey foot (exact 1200/3937)
-ODM_CRS  = "EPSG:32613"        # UTM 13N metres — always used for ODM
+ODM_CRS_FALLBACK = "EPSG:32613"  # UTM 13N metres — used when metric counterpart lookup fails
 
 # FIPS State Plane zone → EPSG (feet units, NAD83(2011) or NSRS2007 variants)
 # Keys: FIPS code.  Values: dict keyed on datum string found in C8NM line.
 FIPS_TO_EPSG: dict[int, dict[str, int]] = {
-    3001: {"NAD83(2011)": 6527, "default": 3619},  # NM East
+    3001: {"NAD83(2011)": 6531, "default": 3620},  # NM East
     3002: {"NAD83(2011)": 6529, "default": 3618},  # NM Central
-    3003: {"NAD83(2011)": 6528, "default": 3617},  # NM West
+    3003: {"NAD83(2011)": 6533, "default": 3622},  # NM West
     # Extend as new job sites are encountered
 }
 
@@ -147,6 +147,40 @@ def read_yaml(path: Path) -> dict:
                 section = None
                 data[key] = val
     return data
+
+
+# ---------------------------------------------------------------------------
+# CRS helpers
+# ---------------------------------------------------------------------------
+
+def metric_counterpart(epsg_str: str) -> Optional[str]:
+    """Return the metric variant of a state-plane CRS by stripping the ftUS
+    suffix from the CRS name and looking up the result in the EPSG database.
+    Returns the input unchanged if it is already metric, or None if no metric
+    variant can be found."""
+    try:
+        from pyproj import CRS
+    except ImportError:
+        return None
+    try:
+        crs = CRS.from_user_input(epsg_str)
+    except Exception:
+        return None
+    unit = crs.axis_info[0].unit_name.lower() if crs.axis_info else ""
+    if "metre" in unit or "meter" in unit:
+        return epsg_str
+    metric_name = re.sub(r"\s*\((US survey foot|ftUS|ft|US foot)\)\s*",
+                         "", crs.name, flags=re.IGNORECASE).strip()
+    if metric_name == crs.name:
+        return None
+    try:
+        m = CRS.from_user_input(metric_name)
+        code = m.to_epsg()
+        if code is not None:
+            return f"EPSG:{code}"
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -687,11 +721,23 @@ def cmd_dc(args) -> int:
     print(f"  → {csv_path.name}  (state-plane {delivery_crs}, ft; for Emlid localization)")
     print(f"  → {design_csv_path.name}  (design-grid ft; for QGIS design review)")
 
+    # ODM CRS = metric counterpart of the survey CRS (e.g. EPSG:6529 ftUS → 6528 m).
+    # Falls back to UTM 13N if the lookup fails (unknown CRS or pyproj missing).
+    odm_crs = metric_counterpart(delivery_crs)
+    if odm_crs is None:
+        odm_crs = ODM_CRS_FALLBACK
+        print(f"WARNING: could not resolve metric counterpart of {delivery_crs}; "
+              f"falling back to {odm_crs}.")
+    elif odm_crs.upper() == delivery_crs.upper():
+        print(f"ODM CRS: {odm_crs} (delivery CRS is already metric)")
+    else:
+        print(f"ODM CRS: {odm_crs} (metric counterpart of {delivery_crs})")
+
     # Write transform.yaml
     transform = {
         "job":          job_name,
         "field_crs":    delivery_crs,   # Emlid uses same zone; override if different
-        "odm_crs":      ODM_CRS,
+        "odm_crs":      odm_crs,
         "delivery_crs": delivery_crs,
         "design_grid": {
             "shift_x":              shift_x,
@@ -974,8 +1020,8 @@ def main() -> int:
                          "for tagged rows, empty for untagged)")
     gp.add_argument("--transform-yaml", default=None, metavar="FILE",
                     help="Path to transform.yaml (auto-located in input dir or cwd if omitted)")
-    gp.add_argument("--target-crs", default=ODM_CRS, metavar="EPSG:XXXX",
-                    help=f"Output CRS (default: {ODM_CRS}); overridden by transform.yaml odm_crs")
+    gp.add_argument("--target-crs", default=ODM_CRS_FALLBACK, metavar="EPSG:XXXX",
+                    help=f"Output CRS (default: {ODM_CRS_FALLBACK}); overridden by transform.yaml odm_crs")
     gp.add_argument("--out-dir", default=None, help="Output directory (default: same as input)")
 
     args = p.parse_args()
