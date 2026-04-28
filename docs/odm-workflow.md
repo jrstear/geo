@@ -70,7 +70,7 @@ flowchart TD
         images
     end
 
-    subgraph "ODM eg EPSG:32613"
+    subgraph "ODM eg EPSG:6528"
         pretag
         sight
         gcpeditor
@@ -179,18 +179,26 @@ The tools do not assume multiple CRS, but do flexibly handle them if needed, oft
 
 | CRS | Use | Notes |
 |-----|-----|-------|
-| **EPSG:32613** (WGS 84 / UTM 13N, metres) | ODM control + RMSE check files | **Always use this for ODM** |
-| **EPSG:6529** (NAD83(2011) NM Central, ftUS) | Field survey, Emlid native output, internal analysis | Convert before ODM |
+| **EPSG:6528** (NAD83(2011) NM Central, metres) | ODM control + RMSE check files | Metric counterpart of the survey CRS — auto-derived |
+| **EPSG:6529** (NAD83(2011) NM Central, ftUS) | Field survey, Emlid native output, internal analysis | Convert to metric (6528) before ODM |
 
 **Note on EPSG:3618 vs 6529:** Both are NAD83 NM Central in US survey feet for the same zone.
 The difference is the realization year (1986 vs 2011); horizontal coordinates differ by only
 a fraction of a foot regionally and are interchangeable for this workflow.  We use 6529
 throughout because it is the Emlid native output.
 
-**Why EPSG:32613 for ODM?**  EPSG:6529 is 2D — it defines XY units (US survey
+**Why a metric CRS for ODM?**  EPSG:6529 is 2D — it defines XY units (US survey
 feet) but not vertical units.  ODM assumes Z is in metres for any 2D CRS,
-causing a ~3.28× Z scale error when Z is in feet.  EPSG:32613 is unambiguous:
-all axes in metres.  `transform.py` and `sight.py` handle the conversion automatically.
+causing a ~3.28× Z scale error when Z is in feet.  Switching to the **metric
+counterpart of the survey CRS** (e.g. 6529 ftUS → 6528 m) is unambiguous —
+all axes in metres — while keeping the projection unchanged so there is no
+horizontal reprojection step and no UTM grid-convergence/scale-factor
+contribution to RMSE.  `transform.py dc` derives this automatically by
+stripping the `(ftUS)` suffix from the auto-detected delivery CRS name and
+re-resolving via pyproj; the result is written to `transform.yaml` as
+`odm_crs` and consumed by `sight.py` and `transform.py split`.  When the
+survey CRS is already metric or no metric counterpart exists, it falls back
+to EPSG:32613 (UTM 13N).
 
 ---
 
@@ -264,10 +272,10 @@ conda run -n geo python TargetSighter/sight.py \
     {job}/images/
 # If transform.yaml is present in {job}/, sight.py auto-loads it:
 #   field_crs → used as fallback CRS for the survey CSV
-#   odm_crs   → target CRS for {job}.txt (EPSG:32613)
+#   odm_crs   → target CRS for {job}.txt (metric counterpart of survey CRS, e.g. EPSG:6528)
 #   job name  → used as output filename ({job}.txt)
 # Without transform.yaml, pass explicitly: --crs EPSG:XXXX --out-name "{job}"
-# → {job}/{job}.txt         (all survey points, EPSG:32613, for GCPEditorPro)
+# → {job}/{job}.txt         (all survey points, ODM metric CRS, for GCPEditorPro)
 # → {job}/marks_design.csv  (Pix4D parallel workflow — not used in ODM path)
 ```
 
@@ -352,10 +360,10 @@ coverage for the least effort.
 conda run -n geo python transform.py split \
     {job}/{job}_tagged.txt \
     --out-dir {job}/
-# Reads {job}/transform.yaml automatically
-# → {job}/gcp_list.txt            (GCP- tagged tuples, EPSG:32613; for ODM)
-# → {job}/chk_list.txt            (CHK- tagged tuples, EPSG:32613; for rmse.py)
-# → {job}/{job}_targets.csv       (one row/target, EPSG:32613; for QGIS review)
+# Reads {job}/transform.yaml automatically (uses odm_crs from it, e.g. EPSG:6528)
+# → {job}/gcp_list.txt            (GCP- tagged tuples, ODM metric CRS; for ODM)
+# → {job}/chk_list.txt            (CHK- tagged tuples, ODM metric CRS; for rmse.py)
+# → {job}/{job}_targets.csv       (one row/target, ODM metric CRS; for QGIS review)
 # → {job}/{job}_targets_design.csv (one row/target, design-grid; for customer QGIS)
 ```
 

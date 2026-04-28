@@ -34,19 +34,27 @@ Coordinate representation (how a location is expressed)
 └── Projected — flat plane, linear units
     ├── UTM Zone 13N — metres
     │   └── EPSG:32613/WGS 84/UTM zone 13N e.g. (237,992 m E, 4 085,125 m N)
-    │       ODM control files, rmse_calc, gdalwarp intermediate.
-    │       Central meridian 105 °W.  Covers ~103–111 °W.
+    │       Fallback ODM CRS when no metric counterpart of the survey CRS
+    │       is available.  Central meridian 105 °W.  Covers ~103–111 °W.
     │
-    └── New Mexico Central (LCC) — US survey feet
-        ├── EPSG:6529   NAD83(2011)   e.g. (1,147,722 ft E, 2,144,276 ft N)
-        │   Emlid RS3 native output ("Easting" / "Northing" columns).
-        │   CS name in Emlid CSV: "NAD83(2011) / New Mexico Central (ftUS) (5)"
+    └── New Mexico Central (LCC)
+        ├── US survey feet
+        │   ├── EPSG:6529   NAD83(2011)   e.g. (1,147,722 ft E, 2,144,276 ft N)
+        │   │   Emlid RS3 native output ("Easting" / "Northing" columns).
+        │   │   CS name in Emlid CSV: "NAD83(2011) / New Mexico Central (ftUS) (5)"
+        │   │
+        │   └── EPSG:3618   NAD83(NSRS2007)
+        │       Customer control monuments after offset removal, QGIS review layer,
+        │       reprojected orthophoto for review and delivery.
+        │       *** For this site, EPSG:6529 and EPSG:3618 give the same numbers
+        │           to within centimetres.  Treat them as interchangeable. ***
         │
-        └── EPSG:3618   NAD83(NSRS2007)
-            Customer control monuments after offset removal, QGIS review layer,
-            reprojected orthophoto for review and delivery.
-            *** For this site, EPSG:6529 and EPSG:3618 give the same numbers
-                to within centimetres.  Treat them as interchangeable. ***
+        └── Metres
+            └── EPSG:6528   NAD83(2011)   e.g. (349,824 m E, 653,580 m N)
+                Default ODM CRS for NM Central jobs — the metric counterpart of
+                EPSG:6529, derived automatically by `transform.py dc`.  Same
+                projection as 6529, so the conversion is a pure foot-to-metre
+                scale with no horizontal reprojection.
 
 Special: Customer Design Grid
     Not an EPSG code.  It is EPSG:3618 with a constant translation applied:
@@ -61,7 +69,8 @@ Special: Customer Design Grid
 | Numbers look like | Units | What it is |
 |---|---|---|
 | −107.9, 36.9 | degrees | Geographic WGS84/NAD83 (EPSG:4326) — Emlid Lat/Lon cols |
-| 237,000 – 260,000 E, 4,080,000 – 4,100,000 N | metres | UTM 13N EPSG:32613 — ODM files |
+| 340,000 – 365,000 E, 645,000 – 660,000 N | metres | NM Central state plane EPSG:6528 — ODM files (default) |
+| 237,000 – 260,000 E, 4,080,000 – 4,100,000 N | metres | UTM 13N EPSG:32613 — ODM files (fallback only) |
 | 1,100,000 – 1,200,000 E, 2,120,000 – 2,170,000 N | US survey ft | NM Central state plane EPSG:6529/3618 — Emlid E/N cols, DC-corrected points |
 | 2,600,000 – 2,750,000 E, 2,140,000 – 2,170,000 N | US survey ft | Customer design grid (raw .dc) — NOT state plane |
 ---
@@ -113,20 +122,30 @@ Emlid is in the same coordinate system as the DC file.
 | `{job}.csv` (filtered Emlid survey) | EPSG:6529 | Input to `sight.py` |
 | `{job}.txt` (output of `sight.py`) | EPSG:6529 | GCPEditorPro input |
 | `{job}_confirmed.txt` (GCPEditorPro export) | EPSG:6529 | Z is NAVD88 feet |
-| `transform.yaml` (output of `transform.py dc`) | — | CRS and shift params for the job |
-| `gcp_list.txt` (output of `transform.py split`) | **EPSG:32613** | X/Y metres, Z ellipsoidal metres |
-| `chk_list.txt` (output of `transform.py split`) | **EPSG:32613** | Same as above |
+| `transform.yaml` (output of `transform.py dc`) | — | CRS and shift params for the job (incl. `odm_crs`) |
+| `gcp_list.txt` (output of `transform.py split`) | **EPSG:6528** (NM Central) | X/Y metres, Z ellipsoidal metres — `odm_crs` from transform.yaml |
+| `chk_list.txt` (output of `transform.py split`) | **EPSG:6528** (NM Central) | Same as above |
 
 `transform.py split` performs three conversions in one step:
-1. EPSG:6529 (ft) → EPSG:32613 (m) via pyproj (source CRS read from `transform.yaml`)
+1. EPSG:6529 (ft) → `odm_crs` (m) via pyproj — source CRS read from the file
+   header, target CRS from `transform.yaml`.  For NM Central this is
+   EPSG:6529 → EPSG:6528, a pure foot-to-metre scale (no horizontal
+   reprojection, since the projection is unchanged).
 2. NAVD88 orthometric height (ft) → ellipsoidal height (m)
 3. Splits GCP- and CHK- prefixed points into separate files
 
-**Why EPSG:32613 for ODM?**  The NM Central CRS (EPSG:3618/6529) defines only
-horizontal units (US survey feet) and leaves vertical units ambiguous.  ODM
-assumes Z is in metres for any 2D CRS, causing a ~3.28× vertical scale error when
-Z is in feet.  EPSG:32613 is a 3D CRS: all three axes are in metres with no
-ambiguity.
+**Why a metric CRS for ODM?**  The state-plane CRS (EPSG:3618/6529) defines
+only horizontal units (US survey feet) and leaves vertical units ambiguous.
+ODM assumes Z is in metres for any 2D CRS, causing a ~3.28× vertical scale
+error when Z is in feet.  Switching to the **metric counterpart of the
+survey CRS** (e.g. 6529 ftUS → 6528 m) is unambiguous — all axes in metres
+— while keeping the projection unchanged so there is no horizontal
+reprojection step and no UTM grid-convergence/scale-factor contribution to
+RMSE.  `transform.py dc` derives this automatically by stripping the
+`(ftUS)` suffix from the auto-detected delivery CRS name and re-resolving
+via pyproj; the result is written to `transform.yaml` as `odm_crs`.  When
+the survey CRS is already metric or no metric counterpart can be found, it
+falls back to EPSG:32613 (UTM 13N).
 
 ---
 
@@ -134,10 +153,10 @@ ambiguity.
 
 | Item | CRS | Notes |
 |---|---|---|
-| `gcp_list.txt` | EPSG:32613 | Passed to ODM |
-| `opensfm/reconstruction.json` | ODM local frame | local_X = UTM_E − ref_UTM_E (metre offsets from UTM origin) |
-| `odm_orthophoto/odm_orthophoto.original.tif` | EPSG:32613 | Real output; `.tif` alone is a stub |
-| `odm_georeferencing/coords.txt` | — | Contains UTM origin used by reconstruction.json |
+| `gcp_list.txt` | EPSG:6528 (NM Central, m) | Passed to ODM — CRS from transform.yaml `odm_crs` |
+| `opensfm/reconstruction.json` | ODM local frame | local_X = projected_E − ref_E (metre offsets from the projected-CRS origin chosen by ODM) |
+| `odm_orthophoto/odm_orthophoto.original.tif` | EPSG:6528 (NM Central, m) | Matches the `gcp_list.txt` CRS; `.tif` alone is a stub |
+| `odm_georeferencing/coords.txt` | — | Contains the metric projected origin used by reconstruction.json |
 
 > **Note on `odm_orthophoto.tif` vs `.original.tif`**: when `--optimize-disk-space`
 > is used, ODM replaces the working `.tif` with a 429 KB stub.  Always use
@@ -149,14 +168,15 @@ ambiguity.
 
 | Item | CRS | Notes |
 |---|---|---|
-| `chk_list.txt` | EPSG:32613 | Ground truth X/Y/Z |
-| `reconstruction.json` positions | ODM local frame → EPSG:32613 via `ref_UTM + local_offset` | `rmse_calc.py` handles this conversion |
+| `chk_list.txt` | EPSG:6528 (NM Central, m) | Ground truth X/Y/Z |
+| `reconstruction.json` positions | ODM local frame → ODM CRS via `ref + local_offset` | `rmse_calc.py` handles this conversion |
 | RMSE output | metres | Compare to GSD (~0.03 m at 250 ft AGL) |
 
-The conversion from ODM local frame to EPSG:32613 is a direct addition:
-`UTM_E = ref_UTM_E + local_X`, **not** a flat-earth ENU formula.  See
-`accuracy_study/rmse_calc.py` for details and `stratus/aztec3/rmse_results.md`
-for the bug that was fixed when the flat-earth formula was used.
+The conversion from ODM local frame to the projected ODM CRS is a direct
+addition: `projected_E = ref_E + local_X`, **not** a flat-earth ENU formula.
+See `accuracy_study/rmse_calc.py` for details and
+`stratus/aztec3/rmse_results.md` for the bug that was fixed when the
+flat-earth formula was used.
 
 ---
 
@@ -187,10 +207,10 @@ display without on-the-fly reprojection overhead.
 {job}.csv Easting/Northing  (EPSG:6529 ft  ≈  EPSG:3618)
     ↓ sight.py + GCPEditorPro
 {job}_confirmed.txt  (EPSG:6529 ft, NAVD88 Z ft)
-    ↓ transform.py split  [project + geoid; reads transform.yaml for field_crs]
-gcp_list.txt / chk_list.txt  (EPSG:32613 m, ellipsoidal Z m)
+    ↓ transform.py split  [project + geoid; reads transform.yaml for field_crs and odm_crs]
+gcp_list.txt / chk_list.txt  (EPSG:6528 m — NM Central metric, ellipsoidal Z m)
     ↓ ODM
-odm_orthophoto.original.tif  (EPSG:32613 m)
+odm_orthophoto.original.tif  (EPSG:6528 m)
     ↓ packager/reproject_deliverable.py  [gdalwarp, pixel resample]
 odm_orthophoto.original_3618.tif  (EPSG:3618 ft)  ← QGIS review
     ↓ package.py --shift-x +1546702.929 --shift-y -3567.471
@@ -206,7 +226,7 @@ deliverable orthophoto  (Customer design grid ft)  ← customer delivery
 | `F100340_*_points.csv` | Delimited Text | `easting_ft` | `northing_ft` | EPSG:3618 |
 | Emlid `*.csv` | Delimited Text | `Easting` | `Northing` | EPSG:6529 |
 | `odm_orthophoto.original_3618_cog.tif` | Raster | — | — | embedded (EPSG:3618) |
-| `aztec_control.txt` / `gcp_list.txt` | Delimited Text | col 1 (X m) | col 2 (Y m) | EPSG:32613 |
+| `aztec_control.txt` / `gcp_list.txt` | Delimited Text | col 1 (X m) | col 2 (Y m) | EPSG:6528 (or whatever `odm_crs` is in transform.yaml) |
 
 **Project CRS**: set to EPSG:3618 for review sessions.  All layers except the
 ODM control files are already in EPSG:3618/6529 (identical numbers); the COG
