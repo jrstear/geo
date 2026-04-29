@@ -443,7 +443,7 @@ and shuts down when the pipeline finishes.
 
 Recommended ODM flags (set in `main.tf` `local.odm_flags`):
 ```
---pc-quality medium --feature-quality high --orthophoto-resolution 5 --dtm --dsm --dem-resolution 5 --cog --build-overviews
+--pc-quality medium --feature-quality high --orthophoto-resolution 5 --dtm --dem-resolution 5 --cog --build-overviews --contours --contours-interval 0.3048
 ```
 
 **To destroy and resume on a fresh instance** (e.g. to pick up updated scripts/policies):
