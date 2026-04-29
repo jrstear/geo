@@ -32,10 +32,7 @@ flowchart TD
     uncertainty(["ortho_uncertainty.py"])
     drone[/"Drone"\]
     images[["images/*.JPG"]]
-    undistorted[["undistorted images"]]
     pointcloud[["odm_georeferenced_model.laz"]]
-    dtm[["dtm.tif"]]
-    dsm[["dsm.tif"]]
     contours_gpkg[["dtm_contours.gpkg"]]
     tin[["{job}-TIN.xml (LandXML)"]]
     contours[["{job}-contour_lines.dxf"]]
@@ -87,11 +84,8 @@ flowchart TD
             odm
             orthophoto
             pointcloud
-            dtm
-            dsm
             contours_gpkg
             model
-            undistorted
         end
         tin
         contours
@@ -135,11 +129,8 @@ flowchart TD
     odm --> model
     cameras -.-> |recycle| launch_odm
     cameras -.-> |recycle| sight
-    odm --> undistorted
     odm --> orthophoto
     odm --> pointcloud
-    odm --> dtm
-    odm --> dsm
     odm --> contours_gpkg
     odm --> cameras
     rmse --> |2| report
