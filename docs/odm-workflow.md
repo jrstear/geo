@@ -32,15 +32,16 @@ flowchart TD
     uncertainty(["ortho_uncertainty.py"])
     drone[/"Drone"\]
     images[["images/*.JPG"]]
-    pointcloud[["odm_georeferenced_model.laz"]]
-    contours_gpkg[["dtm_contours.gpkg"]]
-    tin[["{job}-TIN.xml (LandXML)"]]
-    contours[["{job}-contour_lines.dxf"]]
-    orthophoto[["orthophoto.original.tif"]]
-    orthophoto_txt[["orthophoto.original.txt"]]
-    orthophoto_txt_tagged[["orthophoto.original_tagged.txt"]]
+    pointcloud["odm_georeferenced_model.laz"]
+    contours_gpkg["dtm_contours.gpkg"]
+    packager_contours(["package.py"])
+    tin["{job}-TIN.xml (LandXML)"]
+    contours["{job}-contour_lines.dxf"]
+    orthophoto["orthophoto.original.tif"]
+    orthophoto_txt["orthophoto.original.txt"]
+    orthophoto_txt_tagged["orthophoto.original_tagged.txt"]
     orthophoto_crops[["orthophoto.original-crops/"]]
-    uncertainty_tif[["uncertainty_overlay.tif"]]
+    uncertainty_tif["uncertainty_overlay.tif"]
     packager(["package.py"])
     model["reconstruction.topocentric.json"]
     customer[\"Customer"/]
@@ -88,7 +89,9 @@ flowchart TD
             model
         end
         tin
-        contours
+        contours_gpkg
+	packager_contours
+	contours
         style ODM fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
         cameras
         rmse
@@ -140,7 +143,8 @@ flowchart TD
     orthophoto_txt --> gcpeditor_ortho --> orthophoto_txt_tagged --> rmse
     tin -.-> qgis_cloud
     tin -.-> packager
-    contours -.-> qgis_cloud
+    contours_gpkg --> packager_contours --> contours
+    contours --> qgis_cloud
     orthophoto --> uncertainty
     orthophoto --> qgis_cloud
     orthophoto --> rmse
@@ -152,8 +156,7 @@ flowchart TD
     model --> rmse
     uncertainty --> uncertainty_tif
     pointcloud -.-> tin
-    contours_gpkg -.-> packager
-    packager -.-> contours
+    contours --> packager
     uncertainty_tif --> qgis_cloud
     transform_yaml --> packager
     packager --> deliverables
