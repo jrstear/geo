@@ -285,16 +285,19 @@ if /usr/local/bin/odm-run.sh; then
   set_phase 8  # complete
 
   # Cancel the spot request so AWS doesn't relaunch a new instance after shutdown.
+  # No-op for on-demand instances (metadata returns nothing).
   SPOT_REQUEST_ID=$(curl -s http://169.254.169.254/latest/meta-data/spot/spot-instance-request-id 2>/dev/null || true)
+  SHUTDOWN_NOTE="Shutting down."
   if [ -n "${SPOT_REQUEST_ID}" ]; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Cancelling spot request ${SPOT_REQUEST_ID}"
     aws ec2 cancel-spot-instance-requests \
       --spot-instance-request-ids "${SPOT_REQUEST_ID}" \
       --region "${REGION}" || true
+    SHUTDOWN_NOTE="Spot request cancelled. Shutting down."
   fi
 
   notify "ODM ${PROJECT}" \
-    "Outputs synced to s3://${BUCKET}/${PROJECT}/. Spot request cancelled. Shutting down."
+    "Outputs synced to s3://${BUCKET}/${PROJECT}/. ${SHUTDOWN_NOTE}"
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  Done. Shutting down in 2 minutes."
   /sbin/shutdown -h +2
 else
