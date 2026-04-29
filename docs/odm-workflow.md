@@ -36,6 +36,7 @@ flowchart TD
     pointcloud[["odm_georeferenced_model.laz"]]
     dtm[["dtm.tif"]]
     dsm[["dsm.tif"]]
+    contours_gpkg[["dtm_contours.gpkg"]]
     tin[["{job}-TIN.xml (LandXML)"]]
     contours[["{job}-contour_lines.dxf"]]
     orthophoto[["orthophoto.original.tif"]]
@@ -88,6 +89,7 @@ flowchart TD
             pointcloud
             dtm
             dsm
+            contours_gpkg
             model
             undistorted
         end
@@ -138,6 +140,7 @@ flowchart TD
     odm --> pointcloud
     odm --> dtm
     odm --> dsm
+    odm --> contours_gpkg
     odm --> cameras
     rmse --> |2| report
     rmse --> |1| orthophoto_txt
@@ -147,7 +150,6 @@ flowchart TD
     tin -.-> qgis_cloud
     tin -.-> packager
     contours -.-> qgis_cloud
-    contours -.-> packager
     orthophoto --> uncertainty
     orthophoto --> qgis_cloud
     orthophoto --> rmse
@@ -159,7 +161,8 @@ flowchart TD
     model --> rmse
     uncertainty --> uncertainty_tif
     pointcloud -.-> tin
-    dtm -.-> contours
+    contours_gpkg -.-> packager
+    packager -.-> contours
     uncertainty_tif --> qgis_cloud
     transform_yaml --> packager
     packager --> deliverables
@@ -599,14 +602,35 @@ aws s3 sync s3://{BUCKET}/{job}/odm_orthophoto/ \
     {job}/odm_orthophoto/
 aws s3 sync s3://{BUCKET}/{job}/odm_report/ \
     {job}/odm_report/
+aws s3 sync s3://{BUCKET}/{job}/odm_dem/ \
+    {job}/odm_dem/
 
-# Package for customer delivery (reproject + shift to design grid + tile/COG)
+# Orthophoto for customer delivery (reproject + shift to design grid + tile/COG)
 # transform.yaml is auto-loaded from the same directory as the input TIF
 python packager/package.py \
     --tif-file {job}/odm_orthophoto/odm_orthophoto.original.tif \
     --transform-yaml {job}/transform.yaml
+
+# Contour deliverable (geo-btcl): convert ODM's dtm_contours.gpkg to a
+# CAD-importable DXF + .prj sidecar.  --contour-z-from-meters scales the
+# metric Z values to US survey feet (matching Pix4D's deliverable
+# convention).  --contour-t-srs reprojects XY from EPSG:6528 (metres) to
+# the survey CRS in feet (e.g. EPSG:6529 ftUS).  package.py then runs the
+# existing transform_dxf to apply the design-grid shift, producing
+# {gpkg-base}_geo.dxf as the customer-facing deliverable.
+python packager/package.py \
+    --contour-gpkg {job}/odm_dem/dtm_contours.gpkg \
+    --contour-t-srs EPSG:6529 \
+    --contour-z-from-meters \
+    --transform-yaml {job}/transform.yaml
+
 # Or use the GUI via python packager/app.py
 ```
+
+**Existing Pix4D-source DXF path (unchanged):** `--contour-file <path.dxf>`
+takes a DXF that's already in the customer's units and applies only the
+design-grid shift.  Use this when the contour input came from Pix4D, not
+from ODM.
 
 ### 8. Review and deliver
 Use QGIS to review deliverables in cloud and/or design coordinates, deliver when ready.

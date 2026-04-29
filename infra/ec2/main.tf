@@ -218,7 +218,11 @@ locals {
   # --optimize-disk-space intentionally excluded: it deletes undistorted images
   # after openmvs/texturing, preventing resume from orthophoto after interruption.
   # --max-concurrency is set per-stage by odm-run.sh.
-  odm_flags = "--pc-quality medium --feature-quality high --orthophoto-resolution 5 --dtm --dsm --dem-resolution 5 --cog --build-overviews"
+  # --contours / --contours-interval: emit dtm_contours.gpkg as a deliverable
+  #   intermediate. Interval is in DEM units; our DEM is in EPSG:6528 (metres),
+  #   so 0.3048 ≈ 1 US-survey-foot, matching Pix4D's 1-ft contour deliverable.
+  #   package.py converts the gpkg → DXF + .prj sidecar (geo-btcl).
+  odm_flags = "--pc-quality medium --feature-quality high --orthophoto-resolution 5 --dtm --dsm --dem-resolution 5 --cog --build-overviews --contours --contours-interval 0.3048"
 
   # Per-job script prefix so concurrent jobs don't race on aws_s3_object
   # resources. Each job uploads its own copy of the scripts under its own

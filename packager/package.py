@@ -234,6 +234,149 @@ def transform_dxf(input_path, output_path, scale, anchor_x, anchor_y, shift_x, s
     log_fn(f"  DXF done. Transformed {transformed} coordinate values.")
 
 # ------------------------------------------------------------------------------
+# Contour GeoPackage → DXF (ODM --contours output)
+# ------------------------------------------------------------------------------
+
+# US Survey Foot definition: 1 ft = 1200/3937 m exactly.
+# So 1 m = 3937/1200 ft ≈ 3.2808333333333335 US survey feet.
+M_TO_USFT = 3937.0 / 1200.0
+
+def write_prj_sidecar(prj_path, source_path=None, epsg=None, log_fn=print):
+    """Write a .prj sidecar (WKT). Provide either:
+      - source_path: any GDAL/OGR-readable file with a CRS (.gpkg, .tif, ...);
+        WKT is extracted from it.
+      - epsg: an EPSG code string (e.g. "EPSG:6529"); WKT is built from it.
+    DXF files do not carry CRS metadata, so always pass the source GeoPackage
+    or the explicit target EPSG — never pass a DXF.
+
+    Returns True on success, False if no CRS could be resolved.
+    """
+    from osgeo import ogr, osr
+    wkt = None
+    if epsg:
+        srs = osr.SpatialReference()
+        # Accept "EPSG:6529" or just "6529"
+        code = int(epsg.split(":")[-1])
+        if srs.ImportFromEPSG(code) == 0:
+            wkt = srs.ExportToWkt()
+    if not wkt and source_path:
+        ds = ogr.Open(source_path)
+        if ds is not None:
+            layer = ds.GetLayer(0)
+            srs2 = layer.GetSpatialRef() if layer else None
+            if srs2 is not None:
+                wkt = srs2.ExportToWkt()
+        if not wkt:
+            rds = gdal.Open(source_path)
+            if rds is not None:
+                wkt = rds.GetProjection() or None
+    if not wkt:
+        log_fn(f"  ⚠️  no CRS resolved (epsg={epsg!r}, source={source_path!r}); skipping .prj sidecar")
+        return False
+    with open(prj_path, "w") as f:
+        f.write(wkt)
+    log_fn(f"  wrote .prj sidecar: {prj_path}")
+    return True
+
+
+def gpkg_to_dxf(gpkg_path, dxf_path, z_field="elev_min", t_srs=None,
+                z_scale=1.0, log_fn=print):
+    """Convert ODM's contour GeoPackage to AutoCAD DXF.
+
+    ODM's --contours emits {project}/odm_dem/dtm_contours.gpkg with 2D
+    LineStrings whose elevation is stored in attributes (default: elev_min,
+    elev_max — both equal the contour's elevation when -p is not used).
+    This converter:
+
+      1. Runs `ogr2ogr -f DXF -zfield <z_field> -nlt LINESTRINGZ`, which
+         promotes the elevation attribute to polyline Z so the DXF carries
+         3D contours that civil CAD tools can read directly.
+      2. Optionally reprojects XY via -t_srs (for our 6528-metre DEM →
+         e.g. 6529 ftUS for the deliverable).
+      3. Optionally scales all Z values by z_scale (for metres → US-survey-
+         foot, pass M_TO_USFT). Applied as an in-place rewrite of the
+         emitted DXF since ogr2ogr -t_srs only handles XY.
+
+    gpkg_path: path to ODM's dtm_contours.gpkg
+    dxf_path:  output .dxf path
+    z_field:   attribute carrying the contour elevation (default elev_min)
+    t_srs:     target CRS for XY reprojection (e.g. "EPSG:6529"), or None
+    z_scale:   multiplier for Z values (e.g. M_TO_USFT for metres→ftUS)
+    """
+    if not os.path.exists(gpkg_path):
+        raise FileNotFoundError(f"GeoPackage not found: {gpkg_path}")
+
+    cmd = ["ogr2ogr", "-f", "DXF",
+           "-zfield", z_field,
+           "-nlt", "LINESTRINGZ"]
+    if t_srs:
+        cmd += ["-t_srs", t_srs]
+    cmd += [dxf_path, gpkg_path]
+
+    log_fn(f"  Converting GeoPackage → DXF: {os.path.basename(gpkg_path)}")
+    log_fn(f"    cmd: {' '.join(cmd)}")
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"ogr2ogr failed (exit {res.returncode}): {res.stderr}")
+
+    if z_scale != 1.0:
+        scale_dxf_z(dxf_path, dxf_path, z_scale, log_fn)
+
+
+def scale_dxf_z(input_path, output_path, z_scale, log_fn):
+    """Multiply every Z value (DXF group codes 30, 38, 39) by z_scale.
+
+    Used to convert ODM's metric contour Z values to US survey feet
+    after the gpkg→dxf step (ogr2ogr -t_srs only reprojects XY).
+
+    Reads/writes line-pair-by-line-pair, exactly like transform_dxf.
+    Intentionally narrow: does NOT touch X/Y (codes 10/20) — those are
+    handled by transform_dxf for the design-grid shift step.
+    """
+    log_fn(f"  Scaling DXF Z values by {z_scale:.6f}: {os.path.basename(input_path)}")
+    with open(input_path, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+
+    out_lines = []
+    i = 0
+    scaled = 0
+    while i < len(lines) - 1:
+        code_line = lines[i]
+        value_line = lines[i + 1]
+        try:
+            code = int(code_line.strip())
+        except ValueError:
+            out_lines.append(code_line)
+            i += 1
+            continue
+
+        if code in (30, 38, 39):
+            try:
+                z = float(value_line.strip())
+                new_z = z * z_scale
+                orig = value_line.strip()
+                n_dec = len(orig.split(".")[-1]) if "." in orig else 3
+                n_dec = max(n_dec, 3)
+                out_lines.append(code_line)
+                out_lines.append(f"{new_z:.{n_dec}f}\n")
+                scaled += 1
+                i += 2
+                continue
+            except ValueError:
+                pass
+
+        out_lines.append(code_line)
+        out_lines.append(value_line)
+        i += 2
+
+    if i < len(lines):
+        out_lines.append(lines[i])
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.writelines(out_lines)
+    log_fn(f"  Z scaling done. Scaled {scaled} elevation values.")
+
+# ------------------------------------------------------------------------------
 # TIN LandXML Processing
 # ------------------------------------------------------------------------------
 
@@ -442,10 +585,19 @@ def main():
     parser.add_argument("--include_empty_tiles", action="store_true", help="Do not delete empty tiles")
     parser.add_argument("--keep-xml", action="store_true", help="Keep PAM XML sidecar files for valid tiles")
 
-    # ── Contour DXF ────────────────────────────────────────────────────────────
-    parser.add_argument("--contour-file", help="Input .dxf contour file")
+    # ── Contour DXF (Pix4D-source path) ────────────────────────────────────────
+    parser.add_argument("--contour-file", help="Input .dxf contour file (Pix4D-source path)")
     parser.add_argument("--contour-suffix", default="_geo", help="Output suffix for contour DXF (default: _geo)")
     parser.add_argument("--contour-clobber", action="store_true", help="Overwrite existing contour output file")
+
+    # ── Contour GeoPackage (ODM-source path: --contours emits dtm_contours.gpkg)
+    parser.add_argument("--contour-gpkg", help="Input .gpkg contour file from ODM --contours (e.g. odm_dem/dtm_contours.gpkg)")
+    parser.add_argument("--contour-z-field", default="elev_min",
+                        help="Attribute name carrying contour elevation in the gpkg (default: elev_min)")
+    parser.add_argument("--contour-t-srs", default="",
+                        help="Reproject contour XY to this CRS (e.g. EPSG:6529). Empty = keep gpkg CRS.")
+    parser.add_argument("--contour-z-from-meters", action="store_true",
+                        help="Multiply Z values by 1m/0.3048006096... = 3.28083333 (metres → US survey feet). Default off.")
 
     # ── TIN LandXML ────────────────────────────────────────────────────────────
     parser.add_argument("--tin-file", help="Input LandXML .xml TIN file")
@@ -464,7 +616,7 @@ def main():
             print(f"Error: transform.yaml not found: {_yaml_path}")
             sys.exit(1)
     else:
-        _first_input = args.tif_file or args.contour_file or args.tin_file
+        _first_input = args.tif_file or args.contour_file or args.tin_file or args.contour_gpkg
         if _first_input:
             for _c in [os.path.join(os.path.dirname(os.path.abspath(_first_input)), "transform.yaml"),
                        os.path.join(os.getcwd(), "transform.yaml")]:
@@ -515,8 +667,45 @@ def main():
             print(f"WARNING: could not read transform.yaml ({_e}); ignoring")
 
     # Validate: at least one input must be provided
-    if not args.tif_file and not args.contour_file and not args.tin_file:
-        parser.error("At least one of --tif-file, --contour-file, --tin-file must be provided.")
+    if not args.tif_file and not args.contour_file and not args.tin_file and not args.contour_gpkg:
+        parser.error("At least one of --tif-file, --contour-file, --contour-gpkg, --tin-file must be provided.")
+
+    # ── Contour GeoPackage processing (ODM-source path) ─────────────────────────
+    # Convert gpkg → DXF (with Z promoted from elev attribute), optionally
+    # reproject XY, optionally scale Z m→ftUS, write .prj sidecar. Then fall
+    # through to the existing DXF transform path (transform_dxf) for the
+    # design-grid shift step. The existing --contour-file (Pix4D) path below
+    # is unchanged.
+    if args.contour_gpkg:
+        gpkg_in = os.path.abspath(args.contour_gpkg)
+        if not os.path.exists(gpkg_in):
+            print(f"Error: Contour GeoPackage not found: {gpkg_in}")
+            sys.exit(1)
+        # Place the converted DXF alongside the gpkg with the same basename.
+        gpkg_base = os.path.splitext(gpkg_in)[0]
+        contour_dxf = f"{gpkg_base}.dxf"
+        if os.path.exists(contour_dxf) and not args.contour_clobber:
+            print(f"Error: Output already exists: {contour_dxf}")
+            print("Use --contour-clobber to overwrite.")
+            sys.exit(1)
+        elif os.path.exists(contour_dxf):
+            print(f"⚠️  Overwriting existing: {os.path.basename(contour_dxf)}")
+        print(f"📐 Processing contour GeoPackage: {os.path.basename(gpkg_in)}")
+        z_scale = M_TO_USFT if args.contour_z_from_meters else 1.0
+        gpkg_to_dxf(gpkg_in, contour_dxf,
+                    z_field=args.contour_z_field,
+                    t_srs=(args.contour_t_srs or None),
+                    z_scale=z_scale, log_fn=print)
+        # .prj sidecar reflects the DXF's actual XY CRS (post-reprojection if
+        # --contour-t-srs was given, else the gpkg's source CRS).
+        prj_path = f"{gpkg_base}.prj"
+        if args.contour_t_srs:
+            write_prj_sidecar(prj_path, epsg=args.contour_t_srs, log_fn=print)
+        else:
+            write_prj_sidecar(prj_path, source_path=gpkg_in, log_fn=print)
+        # Now treat the converted DXF as the contour input for the existing
+        # design-grid-shift path below.
+        args.contour_file = contour_dxf
 
     # ── Contour DXF processing ──────────────────────────────────────────────────
     if args.contour_file:
