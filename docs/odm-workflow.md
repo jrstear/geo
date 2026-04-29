@@ -33,9 +33,11 @@ flowchart TD
     drone[/"Drone"\]
     images[["images/*.JPG"]]
     undistorted[["undistorted images"]]
-    pointcloud
-    tin
-    contours
+    pointcloud[["odm_georeferenced_model.laz"]]
+    dtm[["dtm.tif"]]
+    dsm[["dsm.tif"]]
+    tin[["{job}-TIN.xml (LandXML)"]]
+    contours[["{job}-contour_lines.dxf"]]
     orthophoto[["orthophoto.original.tif"]]
     orthophoto_txt[["orthophoto.original.txt"]]
     orthophoto_txt_tagged[["orthophoto.original_tagged.txt"]]
@@ -84,11 +86,13 @@ flowchart TD
             odm
             orthophoto
             pointcloud
-            tin
-            contours
+            dtm
+            dsm
             model
             undistorted
         end
+        tin
+        contours
         style ODM fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
         cameras
         rmse
@@ -132,7 +136,8 @@ flowchart TD
     odm --> undistorted
     odm --> orthophoto
     odm --> pointcloud
-    odm --> tin
+    odm --> dtm
+    odm --> dsm
     odm --> cameras
     rmse --> |2| report
     rmse --> |1| orthophoto_txt
@@ -153,7 +158,8 @@ flowchart TD
     model --> uncertainty
     model --> rmse
     uncertainty --> uncertainty_tif
-    pointcloud --> tin --> contours
+    pointcloud -.-> tin
+    dtm -.-> contours
     uncertainty_tif --> qgis_cloud
     transform_yaml --> packager
     packager --> deliverables
