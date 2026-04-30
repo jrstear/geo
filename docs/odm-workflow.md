@@ -16,6 +16,7 @@ flowchart TD
     cameras["cameras.json"]
     sight(["sight.py"])
     marks["{job}_6529_color_marks.csv"]
+    pix4d_targets["{job}_6529_targets.csv"]
     pix4d(["Pix4D Matic"])
     pretag["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
@@ -65,7 +66,8 @@ flowchart TD
         emlid
         all
         marks
-	pix4d
+        pix4d_targets
+        pix4d
     end
 
     subgraph "Drone (WGS84)"
@@ -120,6 +122,7 @@ flowchart TD
     emlid --> all --> sight
     sight --> pretag
     sight --> marks --> pix4d
+    sight --> pix4d_targets --> pix4d
     sight --> targets
     sight --> targets_design
     pretag --> gcpeditor
@@ -282,7 +285,8 @@ conda run -n geo python TargetSighter/sight.py \
 # → {job}/{job}.txt                 (paint targets only — ODM metric CRS, for GCPEditorPro)
 # → {job}/{job}_targets.csv         (all surveyed points incl. monuments — ODM CRS, for QGIS)
 # → {job}/{job}_targets_design.csv  (same, design grid — for customer QGIS)
-# → {job}/{job}_6529_color_marks.csv   (color-confidence marks only, in survey CRS — for Pix4D Matic)
+# → {job}/{job}_6529_targets.csv       (Pix4D import: GCP coords in survey CRS, RTK-preferred dedup)
+# → {job}/{job}_6529_color_marks.csv   (Pix4D import: color-confidence marks only)
 ```
 
 **Monument filter (geo-s074):** sight.py classifies each Emlid row as
@@ -322,21 +326,27 @@ plus a sidecar `{job}_quality_report.tsv`:
    status, Easting/Northing/Elevation RMS, Samples, PDOP. Catches FLOAT
    shots, low sample averaging, and high-DOP geometry.
 
-**Pix4D Matic import workflow.** sight.py also writes
-`{job}_6529_color_marks.csv` — a Pix4D-format marks file
-(`Filename,Label,PixelX,PixelY`) in the **survey CRS**, since Pix4D Matic
-projects typically live in state-plane ftUS rather than design grid
-(verified across aztec/redrocks/ghostrider). Pairs with the existing
-`{job}_6529.csv` GCP coordinate file from `transform.py dc`.
+**Pix4D Matic import bundle.** sight.py emits two files for direct
+Pix4D import:
 
-The `color` in the filename is the default `--pix4d-min-confidence` —
-only sub-pixel-refined marks pass through. Pix4D Matic does not natively
-distinguish imported marks from manually-clicked ones, so the absence of
-an imported mark on a given (image, target) pair becomes the implicit
-"needs your manual review" indicator. Use `--pix4d-min-confidence` to
-relax: `tri_color` (requires `--iterative`) includes triangulation-refined
-sub-pixel marks; `projection` includes every estimate. The confidence
-appears in the filename so multiple versions can coexist.
+- `{job}_6529_targets.csv` — GCP coordinates in survey CRS (state-plane
+  ftUS). All paint targets + monuments. Schema `label,X,Y,Z,type`.
+  Monument dedup prefers Origin=Global RTK shots over Origin=Local
+  imports for the same physical point. `CHK-` / `GCP-` prefixes are
+  *suggestions* — Pix4D Matic lets the user toggle each tie point's
+  GCP/checkpoint role independently after import.
+- `{job}_6529_color_marks.csv` — Pix4D marks file
+  (`Filename,Label,PixelX,PixelY`). The `color` in the filename is the
+  default `--pix4d-min-confidence` — only sub-pixel-refined marks pass
+  through. Pix4D Matic does not natively distinguish imported marks
+  from manually-clicked ones, so the absence of an imported mark on a
+  given (image, target) pair becomes the implicit "needs your manual
+  review" indicator. Use `--pix4d-min-confidence` to relax:
+  `tri_color` (requires `--iterative`) includes triangulation-refined
+  sub-pixel marks; `projection` includes every estimate.
+
+See `docs/plans/sight-to-pix4d-import.md` for the joint review with
+Isaiah, including the NAD83-realization caveat (geo-xzds).
 
 By default, sight.py names the ten most-dispersed targets as GCP and the remainder as CHK, then ranks the targets and their images by tagging value — tagging in order produces the best accuracy for the least effort. Near-duplicate targets (within `--dup-tolerance` metres of another, default 1 m) inherit the role of their closest primary and get a `-dup` suffix (`GCP-104-dup`, `CHK-119-dup2`, ...), and are placed immediately after their primary in the file so they can be reviewed side-by-side. Target names are **recommendations** — the user has final say on role assignment in GCPEditorPro (step 3).
 

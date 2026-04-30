@@ -1283,6 +1283,45 @@ def _write_targets_csv(path: Path, targets: List[dict], monuments: List[dict]) -
             w.writerow([label, f"{x:.4f}", f"{y:.4f}", f"{z:.4f}", kind])
 
 
+def _write_pix4d_gcps_csv(path: Path,
+                           targets: List[dict],
+                           monuments: List[dict],
+                           monument_matches: List[Tuple[dict, Optional[dict], Optional[float]]]) -> int:
+    """Write {job}_{epsg}_targets.csv — Pix4D Matic GCP-import file in survey CRS.
+
+    Schema: label,X,Y,Z,type   (matches existing {job}_targets.csv schema).
+    Coordinates come from the per-gcp survey_easting/survey_northing/survey_elevation
+    fields captured before _reproject_gcps_inplace runs.
+
+    Monument deduplication: each physical monument appears once. Origin=Global
+    rows that matched an Origin=Local row are preferred (RTK shot is the
+    ground-truth verification); the matched Local is dropped. Origin=Local
+    rows without a matching Global are kept as-is.
+
+    All paint targets pass through unfiltered.
+    Returns row count written (excluding header).
+    """
+    matched_local_ids = {id(lr) for _, lr, _ in monument_matches if lr is not None}
+    final_monuments = [m for m in monuments if id(m) not in matched_local_ids]
+
+    rows: List[Tuple[str, dict, str]] = (
+        [(g['label'], g, 'target')   for g in targets] +
+        [(g['label'], g, 'monument') for g in final_monuments]
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    n = 0
+    with open(path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['label', 'X', 'Y', 'Z', 'type'])
+        for label, g, kind in rows:
+            x = g.get('survey_easting');   y = g.get('survey_northing');  z = g.get('survey_elevation')
+            if x is None or y is None or z is None:
+                continue
+            w.writerow([label, f"{x:.4f}", f"{y:.4f}", f"{z:.4f}", kind])
+            n += 1
+    return n
+
+
 def _write_targets_design_csv(path: Path,
                                targets: List[dict],
                                monuments: List[dict],
@@ -1938,7 +1977,8 @@ def run_pipeline(images_dir: str,
                  design_shift_x: Optional[float] = None,
                  design_shift_y: Optional[float] = None,
                  dc_csv_path: Optional[Path] = None,
-                 quality_sidecar_path: Optional[Path] = None) -> Tuple[str, dict, List[dict], List[Tuple]]:
+                 quality_sidecar_path: Optional[Path] = None,
+                 pix4d_targets_csv_path: Optional[Path] = None) -> Tuple[str, dict, List[dict], List[Tuple]]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -1978,6 +2018,14 @@ def run_pipeline(images_dir: str,
           f"{len(monuments)} monument(s) skipped "
           f"({n_local} Origin=Local, {n_match} Origin=Global within {monument_match_m:.1f} m, "
           f"{n_desc} by description keyword)")
+
+    # Capture survey-CRS coords per-gcp before reprojection so the survey-CRS
+    # targets file (geo-qkip) can write them later. After _reproject_gcps_inplace
+    # runs, easting/northing/elevation are in odm_crs.
+    for _g in gcps_all:
+        _g['survey_easting']   = _g.get('easting')
+        _g['survey_northing']  = _g.get('northing')
+        _g['survey_elevation'] = _g.get('elevation')
 
     # geo-40vs: pre-tagging quality checks. Each emits one stdout line on the
     # happy path; stderr summary + sidecar TSV (only written if any flags).
@@ -2164,6 +2212,13 @@ def run_pipeline(images_dir: str,
                                    design_shift_x, design_shift_y)
         print(f"Wrote {targets_design_csv_path}  "
               f"({len(gcps) + len(monuments)} rows, design-grid)")
+
+    # geo-qkip: Pix4D Matic import — survey-CRS GCPs file paired with the
+    # marks file. Monument dedup prefers Origin=Global RTK shot when available.
+    if pix4d_targets_csv_path is not None:
+        n_written = _write_pix4d_gcps_csv(pix4d_targets_csv_path, gcps,
+                                           monuments, monument_matches)
+        print(f"Wrote {pix4d_targets_csv_path}  ({n_written} rows, survey CRS)")
 
     return gcp_txt, estimates, monuments, monument_matches
 
@@ -2403,6 +2458,9 @@ if __name__ == '__main__':
                         if _survey_epsg
                         else f"{_stem}_{args.pix4d_min_confidence}_marks.csv")
         _marks_csv = out_dir / _marks_name
+        _pix4d_targets_csv = (out_dir / f"{_stem}_{_survey_epsg}_targets.csv"
+                               if _survey_epsg
+                               else out_dir / f"{_stem}_pix4d_targets.csv")
 
         # Auto-locate dc-derived {job}_{epsg}.csv next to the survey CSV for
         # the import-discrepancy quality check (geo-40vs Check 2b).
@@ -2460,6 +2518,7 @@ if __name__ == '__main__':
                 design_shift_y=_shift_y,
                 dc_csv_path=_dc_csv,
                 quality_sidecar_path=_quality_sidecar,
+                pix4d_targets_csv_path=_pix4d_targets_csv,
             )
 
         gcp_out = out_dir / args.out_name
