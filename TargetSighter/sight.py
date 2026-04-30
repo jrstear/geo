@@ -97,6 +97,8 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
         col_elev   = _col(['elevation'])
         col_status = _col(['solution status', 'status'])
         col_cs     = _col(['cs name', 'coordinate system'])
+        col_origin = _col(['origin'])
+        col_desc   = _col(['description'])
 
         for row in reader:
             try:
@@ -110,6 +112,8 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
                     'elevation':       float(row[col_elev])  if col_elev  else None,
                     'cs_name':         (row.get(col_cs) or '').strip(),
                     'solution_status': (row.get(col_status) or '').strip().upper() if col_status else '',
+                    'origin':          (row.get(col_origin) or '').strip() if col_origin else '',
+                    'description':     (row.get(col_desc) or '').strip() if col_desc else '',
                 }
             except (ValueError, KeyError, TypeError):
                 continue   # skip malformed rows
@@ -1236,6 +1240,68 @@ def _reproject_gcps_inplace(gcps: List[dict], src_crs: str, dst_crs: str) -> Non
 # Output writers
 # ---------------------------------------------------------------------------
 
+def _write_targets_csv(path: Path, targets: List[dict], monuments: List[dict]) -> None:
+    """Write {job}_targets.csv with all surveyed points + type column.
+
+    Schema: label,X,Y,Z,type   (X/Y/Z in whatever CRS the gcps carry — that is,
+    the reprojected ODM CRS if reproject_to was set, else the survey CRS).
+    Targets carry their classified label (CHK-101, GCP-104, etc.); monuments
+    carry their bare emlid Name (18, 18m, 201, etc.) — no CHK-/GCP- prefix is
+    applied to monuments anywhere in the pipeline (geo-s074).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['label', 'X', 'Y', 'Z', 'type'])
+        rows: List[Tuple[str, dict, str]] = (
+            [(g['label'], g, 'target')   for g in targets] +
+            [(g['label'], g, 'monument') for g in monuments]
+        )
+        for label, g, kind in rows:
+            x = g.get('easting');  y = g.get('northing');  z = g.get('elevation')
+            if x is None or y is None or z is None:
+                continue
+            w.writerow([label, f"{x:.4f}", f"{y:.4f}", f"{z:.4f}", kind])
+
+
+def _write_targets_design_csv(path: Path,
+                               targets: List[dict],
+                               monuments: List[dict],
+                               odm_crs: str,
+                               delivery_crs: str,
+                               shift_x: float,
+                               shift_y: float) -> None:
+    """Write {job}_targets_design.csv — same content as targets.csv but in
+    design-grid coordinates. Uses the shared design_grid_transform helper.
+    """
+    try:
+        from transform import design_grid_transform
+    except ImportError:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from transform import design_grid_transform
+        except ImportError as _e:
+            print(f"WARNING: cannot import transform.design_grid_transform "
+                  f"({_e}); skipped {path.name}", file=sys.stderr)
+            return
+    apply = design_grid_transform(odm_crs, delivery_crs, shift_x, shift_y)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['label', 'X', 'Y', 'Z', 'type'])
+        rows: List[Tuple[str, dict, str]] = (
+            [(g['label'], g, 'target')   for g in targets] +
+            [(g['label'], g, 'monument') for g in monuments]
+        )
+        for label, g, kind in rows:
+            x = g.get('easting');  y = g.get('northing');  z = g.get('elevation')
+            if x is None or y is None or z is None:
+                continue
+            x_d, y_d, z_ft = apply(x, y, z)
+            w.writerow([label, f"{x_d:.3f}", f"{y_d:.3f}", f"{z_ft:.3f}", kind])
+
+
 def _write_gcp_list(gcps: List[dict],
                     estimates: Dict[str, Dict[str, dict]],
                     sort_output: bool = True,
@@ -1419,6 +1485,75 @@ def _compute_estimates_mode_a(
 
 
 # ---------------------------------------------------------------------------
+# Monument classification (geo-s074)
+# ---------------------------------------------------------------------------
+
+MONUMENT_DESC_KEYWORDS: Tuple[str, ...] = (
+    'brass', 'alum cap', 'plastic cap', 'rebar', 'monument', 'ngs',
+    'control pt', 'control peg', 'survey marker', 'survey m',
+)
+
+
+def classify_monuments(gcps: List[dict],
+                       tolerance_m: float = 2.0) -> List[Tuple[dict, Optional[dict], Optional[float]]]:
+    """Mark each gcp as monument or target via three OR'd signals.
+
+    Sets `gcp['is_monument']` in-place. The row is a monument if ANY of:
+        1. Origin == 'Local' (entered/imported customer control coord)
+        2. Origin == 'Global' AND within tolerance_m of any Origin=Local row
+           (the surveyor's RTK shot of an imported monument — same physical
+           point as the import)
+        3. Description contains any of MONUMENT_DESC_KEYWORDS — the brittle
+           safety net for cases where Origin metadata is missing or no
+           Local import exists for a known monument
+
+    Match distance uses lat/lon great-circle to keep tolerance_m unit-clean
+    regardless of survey CRS units. Coords compared after parse_survey_csv
+    has already derived lat/lon from easting/northing where needed.
+
+    Returns matched-pairs list [(global_gcp, local_gcp, dist_m), ...] for
+    rows where Origin=Global matched a Local row — the same data geo-40vs
+    needs to compute localization residuals. Rows classified as monument
+    only via signal 1 or 3 are NOT in the returned list.
+    """
+    locals_ = [g for g in gcps if g.get('origin') == 'Local']
+    matches: List[Tuple[dict, Optional[dict], Optional[float]]] = []
+
+    def _desc_is_monument(d: str) -> bool:
+        if not d:
+            return False
+        d_lower = d.lower()
+        return any(kw in d_lower for kw in MONUMENT_DESC_KEYWORDS)
+
+    for g in gcps:
+        if g.get('origin') == 'Local':
+            g['is_monument'] = True
+            continue
+        if g.get('origin') == 'Global' and g.get('lat') is not None and locals_:
+            best, best_d = None, float('inf')
+            for lr in locals_:
+                if lr.get('lat') is None:
+                    continue
+                # Approximate great-circle: equirect at small distances
+                dlat = (lr['lat'] - g['lat']) * METERS_PER_DEG_LAT
+                dlon = (lr['lon'] - g['lon']) * METERS_PER_DEG_LAT * \
+                       math.cos(math.radians((lr['lat'] + g['lat']) / 2))
+                d = math.hypot(dlat, dlon)
+                if d < best_d:
+                    best_d, best = d, lr
+            if best is not None and best_d <= tolerance_m:
+                g['is_monument'] = True
+                matches.append((g, best, best_d))
+                continue
+        if _desc_is_monument(g.get('description', '')):
+            g['is_monument'] = True
+            continue
+        g['is_monument'] = False
+
+    return matches
+
+
+# ---------------------------------------------------------------------------
 # GCP Classification (geo-12w)
 # ---------------------------------------------------------------------------
 
@@ -1560,7 +1695,13 @@ def run_pipeline(images_dir: str,
                  iterative: bool = False,
                  iter_eps_resid_px: float = 120.0,
                  iter_eps_surv_m: float = 15.0,
-                 consistency_report_path: Optional[Path] = None) -> Tuple[str, dict]:
+                 consistency_report_path: Optional[Path] = None,
+                 monument_match_m: float = 2.0,
+                 targets_csv_path: Optional[Path] = None,
+                 targets_design_csv_path: Optional[Path] = None,
+                 delivery_crs: Optional[str] = None,
+                 design_shift_x: Optional[float] = None,
+                 design_shift_y: Optional[float] = None) -> Tuple[str, dict, List[dict], List[Tuple]]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -1585,15 +1726,28 @@ def run_pipeline(images_dir: str,
     """
     # B1 — Parse inputs
     print("Parsing Emlid CSV...")
-    gcps = parse_survey_csv(survey_csv_path, fallback_crs=fallback_crs)
-    print(f"  {len(gcps)} targets")
+    gcps_all = parse_survey_csv(survey_csv_path, fallback_crs=fallback_crs)
 
-    if reproject_to and gcps:
-        _raw_cs = gcps[0].get('cs_name') or ''
+    # geo-s074: separate control monuments from paint targets so they don't
+    # become tag candidates downstream. Origin=Local OR Origin=Global within
+    # tolerance of a Local row → monument.
+    monument_matches = classify_monuments(gcps_all, tolerance_m=monument_match_m)
+    monuments = [g for g in gcps_all if g.get('is_monument')]
+    gcps = [g for g in gcps_all if not g.get('is_monument')]
+    n_local = sum(1 for g in monuments if g.get('origin') == 'Local')
+    n_match = len(monument_matches)
+    n_desc  = len(monuments) - n_local - n_match
+    print(f"  {len(gcps_all)} survey rows: {len(gcps)} target(s), "
+          f"{len(monuments)} monument(s) skipped "
+          f"({n_local} Origin=Local, {n_match} Origin=Global within {monument_match_m:.1f} m, "
+          f"{n_desc} by description keyword)")
+
+    if reproject_to and gcps_all:
+        _raw_cs = gcps_all[0].get('cs_name') or ''
         src = _cs_name_to_epsg(_raw_cs) or fallback_crs or _raw_cs
         if src and src.upper() != reproject_to.upper():
             try:
-                _reproject_gcps_inplace(gcps, src, reproject_to)
+                _reproject_gcps_inplace(gcps_all, src, reproject_to)
                 print(f"  reprojected coordinates: {src} → {reproject_to}")
             except Exception as _e:
                 print(f"  WARNING: could not reproject {src} → {reproject_to}: {_e}")
@@ -1747,7 +1901,24 @@ def run_pipeline(images_dir: str,
         nadir_weight=nadir_weight,
     )
 
-    return gcp_txt, estimates
+    # geo-s074: write {job}_targets.csv with all surveyed rows + type column
+    # so QGIS sees both monuments and targets without needing the (now leak-
+    # free) tagging pipeline as the source.
+    if targets_csv_path is not None:
+        _write_targets_csv(targets_csv_path, gcps, monuments)
+        print(f"Wrote {targets_csv_path}  ({len(gcps) + len(monuments)} rows: "
+              f"{len(gcps)} target, {len(monuments)} monument)")
+
+    # And the design-grid sibling, when transform.yaml provided enough info.
+    if (targets_design_csv_path is not None and reproject_to and delivery_crs and
+            design_shift_x is not None and design_shift_y is not None):
+        _write_targets_design_csv(targets_design_csv_path, gcps, monuments,
+                                   reproject_to, delivery_crs,
+                                   design_shift_x, design_shift_y)
+        print(f"Wrote {targets_design_csv_path}  "
+              f"({len(gcps) + len(monuments)} rows, design-grid)")
+
+    return gcp_txt, estimates, monuments, monument_matches
 
 
 # ---------------------------------------------------------------------------
@@ -1784,6 +1955,10 @@ if __name__ == '__main__':
                         help='Disable GCP-*/CHK-*/DUP-* label classification (classification runs by default)')
     parser.add_argument('--n-control', type=int, default=10,
                         help='Number of top-priority GCPs to label GCP-*; remainder → CHK-* (default 10)')
+    parser.add_argument('--monument-match-m', type=float, default=2.0,
+                        help='Origin=Global rows within this many metres of any Origin=Local row '
+                             'are classified as monument shots and skipped from the projection / '
+                             'tagging path. Set to 0 to filter Origin=Local only. (default: 2.0)')
     parser.add_argument('--no-coloredX', dest='refine_pixels', action='store_false',
                         help='Disable color-based pixel refinement and marker bounding-box computation '
                              '(refinement runs by default; requires opencv-python and numpy)')
@@ -1948,7 +2123,31 @@ if __name__ == '__main__':
             else (Path(args.consistency_report) if args.consistency_report else None)
         )
 
-        gcp_txt, estimates = run_pipeline(
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Derive {job}_targets.csv + _design.csv path from out_name
+        # (e.g. aztec.txt → aztec_targets.csv, aztec_targets_design.csv).
+        _stem = Path(args.out_name).stem
+        _targets_csv        = out_dir / f"{_stem}_targets.csv"
+        _targets_design_csv = out_dir / f"{_stem}_targets_design.csv"
+
+        # Pull design-grid params from transform.yaml (loaded earlier into
+        # _transform). _design_grid was already extracted; pull delivery_crs
+        # and shifts for the design-grid targets writer.
+        _delivery_crs = _transform.get('delivery_crs') if _yaml_path else None
+        _shift_x = None
+        _shift_y = None
+        if isinstance(_design_grid, dict):
+            try:
+                if _design_grid.get('shift_x') is not None:
+                    _shift_x = float(_design_grid['shift_x'])
+                if _design_grid.get('shift_y') is not None:
+                    _shift_y = float(_design_grid['shift_y'])
+            except (TypeError, ValueError):
+                pass
+
+        gcp_txt, estimates, _monuments, _matches = run_pipeline(
                 images_dir=args.image_dir,
                 survey_csv_path=args.survey_csv,
                 reconstruction_path=args.reconstruction,
@@ -1971,10 +2170,13 @@ if __name__ == '__main__':
                 iter_eps_resid_px=args.iter_eps_resid_px,
                 iter_eps_surv_m=args.iter_eps_surv_m,
                 consistency_report_path=_consistency_path,
+                monument_match_m=args.monument_match_m,
+                targets_csv_path=_targets_csv,
+                targets_design_csv_path=_targets_design_csv,
+                delivery_crs=_delivery_crs,
+                design_shift_x=_shift_x,
+                design_shift_y=_shift_y,
             )
-
-        out_dir = Path(args.out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
 
         gcp_out   = out_dir / args.out_name
         pix4d_out = out_dir / 'marks_design.csv'

@@ -7,10 +7,11 @@ dc   Parse a Trimble .dc file → {job}_{epsg}.csv + {job}_design.csv + transfor
      transform.yaml captures the job's CRS and design-grid shift for downstream use.
 
 split  Split GCPEditorPro {job}_tagged.txt → gcp_list.txt (GCP- tagged, for ODM)
-       + chk_list.txt (CHK- tagged, for rmse_calc.py)
-       + {job}_targets.csv (one row/target, EPSG:32613, tagged=GCP-/CHK- prefix, untagged=bare label)
-       + {job}_targets_design.csv (same, design-grid ft, if transform.yaml present).
+       + chk_list.txt (CHK- tagged, for rmse_calc.py).
        Reads transform.yaml (written by dc) to get survey_crs and odm_crs automatically.
+       The {job}_targets.csv + {job}_targets_design.csv files are now produced by
+       sight.py at sight time (with all surveyed points incl. monuments and a
+       type column); see geo-s074.
 
 Typical sequence
 ----------------
@@ -784,6 +785,27 @@ def _crs_is_feet(epsg_str: str) -> bool:
         return False
 
 
+def design_grid_transform(odm_crs: str, delivery_crs: str,
+                           shift_x: float, shift_y: float):
+    """Return a callable (x, y, z) → (x_d, y_d, z_ft) for design-grid output.
+
+    Pipeline:  ODM CRS (metric) → delivery_crs (state-plane ftUS) → +shift.
+    Z converts metric → US-survey-ft. Scale=1, rotation=0 assumed (matches
+    every transform.yaml emitted to date; revisit when the first
+    Helmert-rotated job appears).
+
+    Used by transform.py split (cmd_split) and sight.py (_write_targets_design_csv)
+    so the design transform lives in one place.
+    """
+    from pyproj import Transformer
+    xfm = Transformer.from_crs(odm_crs, delivery_crs, always_xy=True)
+    def _apply(x: float, y: float, z: float):
+        x_sp, y_sp = xfm.transform(x, y)
+        z_ft = z / FT_TO_M
+        return x_sp + shift_x, y_sp + shift_y, z_ft
+    return _apply
+
+
 def _read_survey_crs(transform: dict) -> Optional[str]:
     """Read survey CRS from transform.yaml, accepting deprecated field_crs key.
 
@@ -802,7 +824,6 @@ def _read_survey_crs(transform: dict) -> Optional[str]:
 
 
 def cmd_split(args) -> int:
-    import csv as _csv
     in_path = Path(args.confirmed)
     if not in_path.exists():
         sys.exit(f"ERROR: file not found: {in_path}")
@@ -836,7 +857,11 @@ def cmd_split(args) -> int:
         print(f"INFO: file header CRS ({file_crs_header}) differs from transform.yaml odm_crs "
               f"({odm_crs}); using file header")
 
-    dst_crs = odm_crs or args.target_crs
+    # Output CRS precedence: --target-crs flag > yaml odm_crs > file header.
+    # Defaulting to src_crs means split is a no-op reprojection in the common
+    # case (sight.py already wrote the file in the ODM CRS), so transform.yaml
+    # is genuinely optional now.
+    dst_crs = args.target_crs or odm_crs or src_crs
     print(f"Input:  {in_path.name}  (CRS: {src_crs})")
     print(f"Output: {dst_crs}")
 
@@ -879,25 +904,16 @@ def cmd_split(args) -> int:
             z *= FT_TO_M
         converted.append([f"{x:.4f}", f"{y:.4f}", f"{z:.4f}"] + fields[3:])
 
-    # Split by label prefix and tagged status
-    # all_targets: label → (fields, is_tagged) — first occurrence wins for XYZ;
-    #              upgraded to tagged=True if any tagged observation found later.
+    # Split by label prefix and tagged status. Untagged rows are dropped
+    # entirely from gcp/chk lists — they don't constrain ODM. The targets
+    # CSVs (formerly written here) now live with sight.py (geo-s074).
     gcp_rows, chk_rows, skipped = [], [], 0
-    all_targets: dict = {}
 
     for fields in converted:
         label = fields[6] if len(fields) > 6 else ""
         is_tagged = len(fields) > 7 and fields[7] == "tagged"
-
-        # Track one entry per target for targets CSV (first occurrence for XYZ)
-        if label not in all_targets:
-            all_targets[label] = (fields, is_tagged)
-        elif is_tagged and not all_targets[label][1]:
-            all_targets[label] = (fields, True)
-
         if not is_tagged:
             continue
-
         if label.startswith("GCP-"):
             gcp_rows.append(fields)
         elif label.startswith("CHK-"):
@@ -915,10 +931,8 @@ def cmd_split(args) -> int:
 
     unique_gcp  = len({f[6] for f in gcp_rows})
     unique_chk  = len({f[6] for f in chk_rows})
-    untagged_ct = sum(1 for _, (_, tagged) in all_targets.items() if not tagged)
     print(f"\n  GCP- points: {unique_gcp} unique, {len(gcp_rows)} observations  → gcp_list.txt")
     print(f"  CHK- points: {unique_chk} unique, {len(chk_rows)} observations  → chk_list.txt")
-    print(f"  Untagged:    {untagged_ct} targets (prefix stripped in targets CSV)")
 
     def _write_odm(path: Path, rows):
         with open(path, "w", encoding="utf-8") as f:
@@ -930,73 +944,6 @@ def cmd_split(args) -> int:
     print()
     _write_odm(out_dir / "gcp_list.txt", gcp_rows)
     _write_odm(out_dir / "chk_list.txt", chk_rows)
-
-    # Derive job name: from transform.yaml, or strip "_tagged" suffix from input stem
-    stem = in_path.stem
-    job_name = transform.get("job") or (stem[:-7] if stem.endswith("_tagged") else stem)
-
-    def _display_label(label: str, is_tagged: bool) -> str:
-        """Keep prefix for tagged targets; strip any XXX- prefix for untagged.
-
-        Note: 'XXX-' here is regex shorthand for 'any uppercase prefix followed
-        by a hyphen' (sight.py assigns GCP-/CHK- prefixes to all targets, plus
-        a legacy DUP- prefix on older files). The regex strips the leading
-        prefix back to bare monument IDs for untagged rows so the QGIS targets
-        layer shows the surveyor's original labels. Not a TODO.
-
-        Trailing '-dup'/'-dup2'/etc. suffixes (the new near-duplicate marker)
-        are NOT stripped, so untagged 'GCP-104-dup' becomes '104-dup' — the
-        duplicate is still visually distinguishable from the primary in QGIS.
-        """
-        if is_tagged:
-            return label
-        return re.sub(r'^[A-Z]+-', '', label)
-
-    # Write {job}_targets.csv — one row per distinct target, EPSG:32613
-    targets_path = out_dir / f"{job_name}_targets.csv"
-    with open(targets_path, "w", encoding="utf-8", newline="") as f:
-        w = _csv.writer(f)
-        w.writerow(["label", "X", "Y", "Z"])
-        for label in sorted(all_targets):
-            fields, is_tagged = all_targets[label]
-            w.writerow([_display_label(label, is_tagged), fields[0], fields[1], fields[2]])
-    print(f"  wrote {targets_path}  ({len(all_targets)} targets)")
-
-    # Write {job}_targets_design.csv — same but in design-grid coordinates
-    delivery_crs = transform.get("delivery_crs")
-    dg = transform.get("design_grid") if isinstance(transform.get("design_grid"), dict) else {}
-    shift_x = dg.get("shift_x")
-    shift_y = dg.get("shift_y")
-
-    if delivery_crs and shift_x is not None and shift_y is not None:
-        try:
-            from pyproj import Transformer as _Transformer
-            xfm_back = _Transformer.from_crs(dst_crs, delivery_crs, always_xy=True)
-            design_path = out_dir / f"{job_name}_targets_design.csv"
-            with open(design_path, "w", encoding="utf-8", newline="") as f:
-                w = _csv.writer(f)
-                w.writerow(["label", "X", "Y", "Z"])
-                for label in sorted(all_targets):
-                    fields, is_tagged = all_targets[label]
-                    try:
-                        x_m, y_m, z_m = float(fields[0]), float(fields[1]), float(fields[2])
-                    except ValueError:
-                        continue
-                    x_sp, y_sp = xfm_back.transform(x_m, y_m)
-                    z_ft = z_m / FT_TO_M
-                    x_d = x_sp + float(shift_x)
-                    y_d = y_sp + float(shift_y)
-                    w.writerow([_display_label(label, is_tagged),
-                                f"{x_d:.3f}", f"{y_d:.3f}", f"{z_ft:.3f}"])
-            print(f"  wrote {design_path}  ({len(all_targets)} targets, design-grid)")
-        except Exception as e:
-            print(f"WARNING: could not write targets_design.csv: {e}", file=sys.stderr)
-    else:
-        missing = []
-        if not delivery_crs:  missing.append("delivery_crs")
-        if shift_x is None:   missing.append("design_grid.shift_x")
-        if shift_y is None:   missing.append("design_grid.shift_y")
-        print(f"  skipped targets_design.csv — transform.yaml missing: {missing}")
 
     gcp_path = out_dir / "gcp_list.txt"
     chk_path = out_dir / "chk_list.txt"
@@ -1036,15 +983,16 @@ def main() -> int:
 
     # --- split subcommand ---
     gp = sub.add_parser("split",
-                        help="Split {job}_tagged.txt → gcp_list.txt + chk_list.txt + "
-                             "{job}_targets.csv + {job}_targets_design.csv")
+                        help="Split {job}_tagged.txt → gcp_list.txt + chk_list.txt "
+                             "(targets CSVs are now produced by sight.py)")
     gp.add_argument("confirmed", metavar="{job}_tagged.txt",
                     help="GCPEditorPro tagged file (tab-separated; col 8 == 'tagged' "
                          "for tagged rows, empty for untagged)")
     gp.add_argument("--transform-yaml", default=None, metavar="FILE",
                     help="Path to transform.yaml (auto-located in input dir or cwd if omitted)")
-    gp.add_argument("--target-crs", default=ODM_CRS_FALLBACK, metavar="EPSG:XXXX",
-                    help=f"Output CRS (default: {ODM_CRS_FALLBACK}); overridden by transform.yaml odm_crs")
+    gp.add_argument("--target-crs", default=None, metavar="EPSG:XXXX",
+                    help="Output CRS. Default: transform.yaml odm_crs if present, "
+                         "else the input file header CRS (no reprojection).")
     gp.add_argument("--out-dir", default=None, help="Output directory (default: same as input)")
 
     args = p.parse_args()

@@ -106,6 +106,7 @@ flowchart TD
         qgis_cloud
     end
 
+    images --> sight
     images --> launch_odm
     launch_odm --> odm
     cust_dc --> extract
@@ -114,21 +115,20 @@ flowchart TD
     extract --> points_design
     points_6529 --> emlid
     drone --> images
-    images --> sight
     emlid --> all --> sight
     sight --> pretag
     sight --> marks
+    sight --> targets
+    sight --> targets_design
     pretag --> gcpeditor
     gcpeditor --> tagged
     tagged --> split
     tagged -.-> |refine| gcpeditor
     transform_yaml --> sight
-    transform_yaml --> split
     split --> gcp_list
     split --> chk_list
-    split --> targets
-    split --> targets_design
     gcp_list --> launch_odm
+    gcp_list --> rmse
     odm --> model
     cameras -.-> |recycle| launch_odm
     cameras -.-> |recycle| sight
@@ -149,7 +149,6 @@ flowchart TD
     orthophoto --> qgis_cloud
     orthophoto --> rmse
     chk_list --> rmse
-    gcp_list --> rmse
     orthophoto --> packager
     qgis_cloud -.-> packager
     model --> uncertainty
@@ -278,9 +277,33 @@ conda run -n geo python TargetSighter/sight.py \
 #   odm_crs   → target CRS for {job}.txt (metric counterpart of survey CRS, e.g. EPSG:6528)
 #   job name  → used as output filename ({job}.txt)
 # Without transform.yaml, pass explicitly: --crs EPSG:XXXX --out-name "{job}"
-# → {job}/{job}.txt         (all survey points, ODM metric CRS, for GCPEditorPro)
-# → {job}/marks_design.csv  (Pix4D parallel workflow — not used in ODM path)
+# → {job}/{job}.txt                 (paint targets only — ODM metric CRS, for GCPEditorPro)
+# → {job}/{job}_targets.csv         (all surveyed points incl. monuments — ODM CRS, for QGIS)
+# → {job}/{job}_targets_design.csv  (same, design grid — for customer QGIS)
+# → {job}/marks_design.csv          (Pix4D parallel workflow — not used in ODM path)
 ```
+
+**Monument filter (geo-s074):** sight.py classifies each Emlid row as
+`target` or `monument` and skips monuments from the projection / tagging
+pipeline so they don't reach GCPEditorPro as tag candidates. A row is a
+monument if any of:
+
+1. `Origin = Local` — the row was entered/imported, not RTK-shot. Typical
+   of customer control coordinates pre-loaded into the rover.
+2. `Origin = Global` within `--monument-match-m` (default 2.0 m) of an
+   Origin=Local row — the surveyor's RTK shot of an imported monument
+   (same physical point as the import). The Local↔Global pair distance
+   is the localization residual.
+3. Description matches a monument keyword — `brass`, `alum cap`,
+   `plastic cap`, `rebar`, `monument`, `ngs`, `control pt`, `control peg`,
+   `survey marker`, `survey m`. Brittle fallback for cases where Origin
+   metadata is missing.
+
+Both `{job}_targets.csv` and `{job}_targets_design.csv` carry a `type`
+column (`target` | `monument`) — load in QGIS with categorized symbology
+on `type` to render the two classes distinctly. Targets carry classified
+labels (`CHK-101`, `GCP-104`); monuments carry their bare Emlid Name (`18`,
+`18m`, `201`).
 
 By default, sight.py names the ten most-dispersed targets as GCP and the remainder as CHK, then ranks the targets and their images by tagging value — tagging in order produces the best accuracy for the least effort. Near-duplicate targets (within `--dup-tolerance` metres of another, default 1 m) inherit the role of their closest primary and get a `-dup` suffix (`GCP-104-dup`, `CHK-119-dup2`, ...), and are placed immediately after their primary in the file so they can be reviewed side-by-side. Target names are **recommendations** — the user has final say on role assignment in GCPEditorPro (step 3).
 
@@ -364,15 +387,14 @@ conda run -n geo python transform.py split \
     {job}/{job}_tagged.txt \
     --out-dir {job}/
 # Reads {job}/transform.yaml automatically (uses odm_crs from it, e.g. EPSG:6528)
-# → {job}/gcp_list.txt            (GCP- tagged tuples, ODM metric CRS; for ODM)
-# → {job}/chk_list.txt            (CHK- tagged tuples, ODM metric CRS; for rmse.py)
-# → {job}/{job}_targets.csv       (one row/target, ODM metric CRS; for QGIS review)
-# → {job}/{job}_targets_design.csv (one row/target, design-grid; for customer QGIS)
+# → {job}/gcp_list.txt    (GCP- tagged tuples, ODM metric CRS; for ODM)
+# → {job}/chk_list.txt    (CHK- tagged tuples, ODM metric CRS; for rmse.py)
 ```
 
-**`{job}_targets.csv`** is the primary QGIS QC layer: one row per surveyed target,
-tagged targets labeled `GCP-NNN` or `CHK-NNN`, untagged targets labeled with bare
-monument ID.  Load as a point layer over the orthophoto to verify target placement.
+`{job}_targets.csv` and `{job}_targets_design.csv` are produced earlier by
+sight.py (step 2) and contain all surveyed points incl. monuments — load
+either in QGIS for visual QC; categorize symbology on the `type` column to
+distinguish targets from monuments.
 
 ### 4.5. Pre-ODM tag-quality check (recommended)
 
