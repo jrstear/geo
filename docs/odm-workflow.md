@@ -305,6 +305,21 @@ on `type` to render the two classes distinctly. Targets carry classified
 labels (`CHK-101`, `GCP-104`); monuments carry their bare Emlid Name (`18`,
 `18m`, `201`).
 
+**Pre-tagging quality checks (geo-40vs).** sight.py runs three checks
+before tagging and prints one stdout line per check; warnings go to stderr
+plus a sidecar `{job}_quality_report.tsv`:
+
+1. **Localization residuals** — Emlid Local ↔ Emlid Global pair distances
+   (the surveyor's RTK shot of imported monuments vs the imported coord).
+   Recovers the Emlid Flow localization residual from the CSV alone.
+2. **Import discrepancies** — `.dc`-derived `{job}_{epsg}.csv` vs Emlid
+   Local rows by point id. Surfaces datum/CRS mismatch between the
+   customer's `.dc` and the surveyor's Emlid imports. Auto-runs only when
+   the dc CSV is present in the same directory.
+3. **RTK quality** — per-row check on Origin=Global targets: Solution
+   status, Easting/Northing/Elevation RMS, Samples, PDOP. Catches FLOAT
+   shots, low sample averaging, and high-DOP geometry.
+
 By default, sight.py names the ten most-dispersed targets as GCP and the remainder as CHK, then ranks the targets and their images by tagging value — tagging in order produces the best accuracy for the least effort. Near-duplicate targets (within `--dup-tolerance` metres of another, default 1 m) inherit the role of their closest primary and get a `-dup` suffix (`GCP-104-dup`, `CHK-119-dup2`, ...), and are placed immediately after their primary in the file so they can be reviewed side-by-side. Target names are **recommendations** — the user has final say on role assignment in GCPEditorPro (step 3).
 
 **How sight.py orders targets** — the sequence is designed to lock down the

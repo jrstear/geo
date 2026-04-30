@@ -18,6 +18,7 @@ import json
 import math
 import re
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 from pathlib import Path
@@ -99,6 +100,18 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
         col_cs     = _col(['cs name', 'coordinate system'])
         col_origin = _col(['origin'])
         col_desc   = _col(['description'])
+        col_eRMS   = _col(['easting rms'])
+        col_nRMS   = _col(['northing rms'])
+        col_elRMS  = _col(['elevation rms'])
+        col_latRMS = _col(['lateral rms'])
+        col_samp   = _col(['samples'])
+        col_pdop   = _col(['pdop'])
+
+        def _opt_float(v):
+            try:
+                return float(v) if v not in (None, '') else None
+            except (TypeError, ValueError):
+                return None
 
         for row in reader:
             try:
@@ -114,6 +127,12 @@ def parse_survey_csv(csv_path: str, fallback_crs: Optional[str] = None) -> List[
                     'solution_status': (row.get(col_status) or '').strip().upper() if col_status else '',
                     'origin':          (row.get(col_origin) or '').strip() if col_origin else '',
                     'description':     (row.get(col_desc) or '').strip() if col_desc else '',
+                    'easting_rms':     _opt_float(row.get(col_eRMS))   if col_eRMS   else None,
+                    'northing_rms':    _opt_float(row.get(col_nRMS))   if col_nRMS   else None,
+                    'elevation_rms':   _opt_float(row.get(col_elRMS))  if col_elRMS  else None,
+                    'lateral_rms':     _opt_float(row.get(col_latRMS)) if col_latRMS else None,
+                    'samples':         _opt_float(row.get(col_samp))   if col_samp   else None,
+                    'pdop':            _opt_float(row.get(col_pdop))   if col_pdop   else None,
                 }
             except (ValueError, KeyError, TypeError):
                 continue   # skip malformed rows
@@ -1554,6 +1573,198 @@ def classify_monuments(gcps: List[dict],
 
 
 # ---------------------------------------------------------------------------
+# Quality checks (geo-40vs)
+# ---------------------------------------------------------------------------
+
+# Default thresholds — chosen from aztec data (max localization residual 0.181 m,
+# max RTK RMS_h on FIX shots ~0.05 ft). Tunable via CLI flags.
+QUALITY_DEFAULTS = {
+    'residual_h_m':      0.15,   # Local↔Global pair distance, metres
+    'residual_z_m':      0.15,   # |ΔZ| in metres
+    'import_h_m':        0.15,   # .dc vs Emlid Local horizontal, metres
+    'import_z_m':        0.15,   # .dc vs Emlid Local vertical, metres
+    'rms_h_crs_units':   0.10,   # Easting/Northing RMS in CRS units (ftUS for typical NM jobs)
+    'rms_v_crs_units':   0.20,   # Elevation RMS in CRS units
+    'samples_min':       5,
+    'pdop_max':          4.0,
+}
+
+
+def _load_dc_csv(path: Path) -> Dict[str, dict]:
+    """Read transform.py-dc-derived {job}_{epsg}.csv and return {id: row}.
+
+    Schema: point_id,easting_ft,northing_ft,elevation_ft,description,point_type
+    Returns dict keyed by point_id (string).
+    """
+    out: Dict[str, dict] = {}
+    with open(path, encoding='utf-8') as f:
+        r = csv.DictReader(f)
+        for row in r:
+            pid = (row.get('point_id') or '').strip()
+            if not pid:
+                continue
+            try:
+                out[pid] = {
+                    'easting':     float(row['easting_ft']),
+                    'northing':    float(row['northing_ft']),
+                    'elevation':   float(row['elevation_ft']),
+                    'description': (row.get('description') or '').strip(),
+                    'point_type':  (row.get('point_type')  or '').strip(),
+                }
+            except (KeyError, ValueError):
+                continue
+    return out
+
+
+def run_quality_checks(targets: List[dict],
+                        monuments: List[dict],
+                        monument_matches: List[Tuple[dict, Optional[dict], Optional[float]]],
+                        dc_csv_path: Optional[Path] = None,
+                        sidecar_path: Optional[Path] = None,
+                        thresholds: Optional[dict] = None) -> int:
+    """Three pre-tagging quality checks; one stdout line per check on happy
+    path; stderr summary + sidecar TSV on any warning.
+
+    Returns the count of warnings across all three checks (zero = clean).
+    """
+    th = {**QUALITY_DEFAULTS, **(thresholds or {})}
+    sidecar: List[Tuple[str, str, str]] = []   # (check, label, message)
+    n_warn = 0
+
+    # CHECK 2a — Emlid Local ↔ Emlid Global localization residuals.
+    if monument_matches:
+        max_h = max(d for _, _, d in monument_matches if d is not None)
+        # ΔZ in CRS units; convert to metres assuming ftUS if elevation_rms etc. are ftUS.
+        max_dz_m = 0.0
+        for g, lr, _ in monument_matches:
+            ge = g.get('elevation');  le = lr.get('elevation') if lr else None
+            if ge is None or le is None: continue
+            # heuristic: if survey CRS is ftUS, elevation is in ft → convert via FT_TO_M
+            dz_m = abs(ge - le) * FT_TO_M
+            max_dz_m = max(max_dz_m, dz_m)
+        flags = []
+        for g, lr, d in monument_matches:
+            triggers = []
+            if d is not None and d > th['residual_h_m']:
+                triggers.append(f"ΔH={d:.3f} m > {th['residual_h_m']:.2f}")
+            ge = g.get('elevation'); le = lr.get('elevation') if lr else None
+            if ge is not None and le is not None:
+                dz_m = abs(ge - le) * FT_TO_M
+                if dz_m > th['residual_z_m']:
+                    triggers.append(f"ΔZ={dz_m:.3f} m > {th['residual_z_m']:.2f}")
+            if triggers:
+                flags.append((g, lr, d, triggers))
+        if flags:
+            n_warn += len(flags)
+            print(f"Localization residuals (Emlid Local↔Global, {len(monument_matches)} pairs): "
+                  f"{len(flags)} EXCEED threshold (max ΔH={max_h:.3f} m, max ΔZ={max_dz_m:.3f} m)",
+                  file=sys.stderr)
+            for g, lr, d, triggers in flags:
+                msg = ', '.join(triggers)
+                sidecar.append(('localization', f"{lr['label']}↔{g['label']}", msg))
+        else:
+            print(f"Localization residuals (Emlid Local↔Global, {len(monument_matches)} pairs): "
+                  f"max ΔH={max_h:.3f} m, max ΔZ={max_dz_m:.3f} m  [OK]")
+    else:
+        print("Localization residuals: no Local↔Global pairs to compare  [SKIP]")
+
+    # CHECK 2b — .dc vs Emlid Local imports (matched by point id).
+    if dc_csv_path is not None and dc_csv_path.exists():
+        dc_rows = _load_dc_csv(dc_csv_path)
+        emlid_local_by_id = {m['label']: m for m in monuments if m.get('origin') == 'Local'}
+        compared, flags2b = [], []
+        max_h, max_dz = 0.0, 0.0
+        for pid, dc in dc_rows.items():
+            em = emlid_local_by_id.get(pid)
+            if em is None:
+                continue
+            # Both sides expected to be in same CRS units (ftUS for typical NM jobs)
+            # since dc CSV is from transform.py dc and emlid is the surveyor's import.
+            # Convert horizontal ΔH to metres for thresholding.
+            de = (em.get('easting',  0.0) or 0.0) - dc['easting']
+            dn = (em.get('northing', 0.0) or 0.0) - dc['northing']
+            dz = (em.get('elevation', 0.0) or 0.0) - dc['elevation']
+            d_h_m = math.hypot(de, dn) * FT_TO_M
+            dz_m  = abs(dz) * FT_TO_M
+            max_h = max(max_h, d_h_m)
+            max_dz = max(max_dz, dz_m)
+            triggers = []
+            if d_h_m  > th['import_h_m']: triggers.append(f"ΔH={d_h_m:.2f} m > {th['import_h_m']:.2f}")
+            if dz_m   > th['import_z_m']: triggers.append(f"ΔZ={dz_m:.2f} m > {th['import_z_m']:.2f}")
+            compared.append(pid)
+            if triggers:
+                flags2b.append((pid, de, dn, dz, ', '.join(triggers)))
+        if compared:
+            if flags2b:
+                n_warn += len(flags2b)
+                print(f"Import discrepancies (.dc vs Emlid Local, {len(compared)} pairs): "
+                      f"{len(flags2b)} EXCEED threshold (max ΔH={max_h:.2f} m, max ΔZ={max_dz:.2f} m)",
+                      file=sys.stderr)
+                for pid, de, dn, dz, msg in flags2b:
+                    sidecar.append(('import', pid,
+                                    f"ΔE={de:+.3f} ft  ΔN={dn:+.3f} ft  ΔZ={dz:+.3f} ft  ({msg})"))
+            else:
+                print(f"Import discrepancies (.dc vs Emlid Local, {len(compared)} pairs): "
+                      f"max ΔH={max_h:.3f} m, max ΔZ={max_dz:.3f} m  [OK]")
+    # else: silent — no dc file, skip the check
+
+    # CHECK 3 — RTK quality on Origin=Global targets.
+    quals: List[Tuple[dict, List[str]]] = []
+    max_rh = 0.0;  max_rv = 0.0;  min_samp = float('inf')
+    n_fix = 0
+    for g in targets:
+        triggers = []
+        solu = (g.get('solution_status') or '').upper()
+        if solu == 'FIX':
+            n_fix += 1
+        elif solu:
+            triggers.append(f"solu={solu}")
+        eRMS = g.get('easting_rms');  nRMS = g.get('northing_rms')
+        elRMS = g.get('elevation_rms'); samp = g.get('samples'); pdop = g.get('pdop')
+        if eRMS is not None: max_rh = max(max_rh, eRMS)
+        if nRMS is not None: max_rh = max(max_rh, nRMS)
+        if elRMS is not None: max_rv = max(max_rv, elRMS)
+        if samp is not None: min_samp = min(min_samp, samp)
+        if eRMS is not None and eRMS > th['rms_h_crs_units']:
+            triggers.append(f"eRMS={eRMS:.3f} > {th['rms_h_crs_units']:.2f}")
+        if nRMS is not None and nRMS > th['rms_h_crs_units']:
+            triggers.append(f"nRMS={nRMS:.3f} > {th['rms_h_crs_units']:.2f}")
+        if elRMS is not None and elRMS > th['rms_v_crs_units']:
+            triggers.append(f"elRMS={elRMS:.3f} > {th['rms_v_crs_units']:.2f}")
+        if samp is not None and samp < th['samples_min']:
+            triggers.append(f"samples={samp:.0f} < {th['samples_min']}")
+        if pdop is not None and pdop > th['pdop_max']:
+            triggers.append(f"PDOP={pdop:.1f} > {th['pdop_max']:.1f}")
+        if triggers:
+            quals.append((g, triggers))
+    n_target = len(targets)
+    min_samp_disp = "n/a" if min_samp == float('inf') else f"{min_samp:.0f}"
+    if quals:
+        n_warn += len(quals)
+        print(f"RTK quality (Origin=Global, {n_target} targets): "
+              f"{len(quals)} target(s) flagged "
+              f"({n_fix}/{n_target} FIX, max RMS_h={max_rh:.3f}, max RMS_v={max_rv:.3f}, "
+              f"min samples={min_samp_disp})", file=sys.stderr)
+        for g, triggers in quals:
+            sidecar.append(('rtk_quality', g['label'], ', '.join(triggers)))
+    else:
+        print(f"RTK quality (Origin=Global, {n_target} targets): "
+              f"{n_fix}/{n_target} FIX, max RMS_h={max_rh:.3f}, max RMS_v={max_rv:.3f}, "
+              f"min samples={min_samp_disp}  [OK]")
+
+    # Sidecar — only written when there are warnings to report.
+    if sidecar and sidecar_path is not None:
+        sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(sidecar_path, 'w') as f:
+            f.write("check\tlabel\tmessage\n")
+            for chk, label, msg in sidecar:
+                f.write(f"{chk}\t{label}\t{msg}\n")
+        print(f"  see {sidecar_path}", file=sys.stderr)
+
+    return n_warn
+
+
+# ---------------------------------------------------------------------------
 # GCP Classification (geo-12w)
 # ---------------------------------------------------------------------------
 
@@ -1701,7 +1912,9 @@ def run_pipeline(images_dir: str,
                  targets_design_csv_path: Optional[Path] = None,
                  delivery_crs: Optional[str] = None,
                  design_shift_x: Optional[float] = None,
-                 design_shift_y: Optional[float] = None) -> Tuple[str, dict, List[dict], List[Tuple]]:
+                 design_shift_y: Optional[float] = None,
+                 dc_csv_path: Optional[Path] = None,
+                 quality_sidecar_path: Optional[Path] = None) -> Tuple[str, dict, List[dict], List[Tuple]]:
     """
     Full pipeline: B1 → B2 → B3.
 
@@ -1741,6 +1954,16 @@ def run_pipeline(images_dir: str,
           f"{len(monuments)} monument(s) skipped "
           f"({n_local} Origin=Local, {n_match} Origin=Global within {monument_match_m:.1f} m, "
           f"{n_desc} by description keyword)")
+
+    # geo-40vs: pre-tagging quality checks. Each emits one stdout line on the
+    # happy path; stderr summary + sidecar TSV (only written if any flags).
+    print("Pre-tagging quality checks:")
+    run_quality_checks(
+        targets=gcps, monuments=monuments,
+        monument_matches=monument_matches,
+        dc_csv_path=dc_csv_path,
+        sidecar_path=quality_sidecar_path,
+    )
 
     if reproject_to and gcps_all:
         _raw_cs = gcps_all[0].get('cs_name') or ''
@@ -2131,6 +2354,17 @@ if __name__ == '__main__':
         _stem = Path(args.out_name).stem
         _targets_csv        = out_dir / f"{_stem}_targets.csv"
         _targets_design_csv = out_dir / f"{_stem}_targets_design.csv"
+        _quality_sidecar    = out_dir / f"{_stem}_quality_report.tsv"
+
+        # Auto-locate dc-derived {job}_{epsg}.csv next to the survey CSV for
+        # the import-discrepancy quality check (geo-40vs Check 2b).
+        _dc_csv = None
+        _survey_dir = Path(args.survey_csv).parent
+        for cand in _survey_dir.glob(f"{_stem}_*.csv"):
+            if 'emlid' in cand.name or 'design' in cand.name or 'targets' in cand.name:
+                continue
+            _dc_csv = cand
+            break
 
         # Pull design-grid params from transform.yaml (loaded earlier into
         # _transform). _design_grid was already extracted; pull delivery_crs
@@ -2176,6 +2410,8 @@ if __name__ == '__main__':
                 delivery_crs=_delivery_crs,
                 design_shift_x=_shift_x,
                 design_shift_y=_shift_y,
+                dc_csv_path=_dc_csv,
+                quality_sidecar_path=_quality_sidecar,
             )
 
         gcp_out   = out_dir / args.out_name
