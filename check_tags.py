@@ -1,75 +1,61 @@
 #!/usr/bin/env python3
 """
-check_tags.py — pre-ODM bad-tag detector.
+check_tags.py — pre-bundle tagging consistency check.
 
-Compares user-confirmed pixel tags in {job}_tagged.txt against sight.py's
-estimates in {job}.txt, ranks targets by suspicion, flags individual tags
-that diverge from the per-target anchor consensus, and exits non-zero if
-any target's suspicion score exceeds a configurable gate.
+Toolchain-agnostic: works on sight.py / GCPEditorPro / ODM tagging output,
+on Pix4D Matic project history (history.p4mpl), and on Pix4D-format marks
+CSVs (Filename,Label,PixelX,PixelY).
 
-Use as a checklist before launching ODM on EC2 — catastrophic per-target
-mistakes (e.g. user clicked a base station instead of the target) typically
-rank at the top of the suspect list and would have produced a failed ODM
-run had they reached it.
+Two checks run, in order:
+
+  1. MARKS-PER-TARGET tier (gate) — mirrors GCPEditorPro's badge thresholds:
+       red   (< 3 marks/target)  → FAIL  exit 1   (insufficient for bundle)
+       amber (3-6 marks/target)  → WARN  pass
+       green (≥ 7 marks/target)  → PASS
+
+     Fairness clamp when total visible images per target is known (sight
+     mode): green threshold drops to min(7, visible) so a target visible in
+     only 4 images can still pass at 4 marks.
+
+  2. TAG-VS-ESTIMATE consensus (reviewer aid; sight mode only) — identifies
+     targets whose user tags are inconsistent with sight's color/tri_color
+     estimates. Informational — does NOT affect exit code. (Earlier
+     iterations of this script gated on a composite suspicion score; that
+     gate proved too noisy and has been retired in favour of the 3-tier
+     mark-count rule above. The consensus table is preserved because it
+     surfaces useful "go look at this target" signal that the simple
+     mark-count rule misses.)
 
 Usage:
-    conda run -n geo python check_tags.py \\
-        {job}.txt {job}_tagged.txt
+    # SIGHT / GCPEditorPro / ODM mode:
+    check_tags.py {job}.txt {job}_tagged.txt
+    check_tags.py {job}_tagged.txt        # auto-locates {job}.txt sibling
 
-    # Optional: write per-target metrics to a TSV alongside stdout
-    conda run -n geo python check_tags.py {job}.txt {job}_tagged.txt \\
-        --report report.tsv
+    # PIX4D mode:
+    check_tags.py path/to/history.p4mpl
+    check_tags.py path/to/{job}_marks.csv  # extracted marks CSV
 
-    # Tune thresholds (defaults derived from aztec analysis):
-    #   --anchor-px N    distance from estimate where a tag is treated as
-    #                    confirming the estimate (default 10 px)
-    #   --suspect-px N   per-tag residual from consensus that flags a tag
-    #                    (default 50 px)
-    #   --min-anchors N  minimum anchors needed to use anchor-based consensus
-    #                    instead of median consensus (default 3)
-    #   --gate-score X   exit code 1 if any target's suspicion score exceeds X
-    #                    (default 0.7; set 0 to never gate)
-
-Inputs are tab-separated with an EPSG header line followed by data rows:
-    geo_x geo_y geo_z px py image_name gcp_label confidence [marker_bbox]
-
-The detector reads:
-    - estimates: rows from {job}.txt, where confidence is 'color',
-      'tri_color', 'tri_proj', or 'projection'
-    - tags:      rows from {job}_tagged.txt with confidence == 'tagged'
-
-Algorithm:
-    For each target with >= 1 tagged row:
-      1. Pair tagged rows with their estimate (by (image, label))
-      2. Compute per-tag pixel offset = tag - estimate
-      3. Identify anchors = tags whose estimate is 'color' or 'tri_color'
-         AND whose |offset| < ANCHOR_PX (the user accepted the high-
-         confidence estimate sub-pixel)
-      4. Consensus offset = mean of anchors (if >= MIN_ANCHORS) else
-         median of all offsets
-      5. Per-tag residual = |offset - consensus|
-      6. Per-target metrics: frac_anchor, n_suspect, max_residual,
-         consensus magnitude, bimodality flag
-      7. Composite suspicion score; rank targets by it
-
-Output:
-    Ranked target table (most suspect first) printed to stdout, with the
-    individual flagged tags listed under each suspect target. Returns
-    non-zero exit code if any target exceeds --gate-score (default 0.7).
-
-Distinct from rmse.py (post-ODM, against reconstruction) and from
-geo-aw0 (also post-ODM, triangulation spread). This runs pre-ODM and
-needs no reconstruction.
+Distinct from:
+  - sight.py pre-tagging quality checks (catch survey-side: FLOAT shots,
+    datum mismatches, control residuals — geo-40vs)
+  - rmse.py (post-bundle, against reconstruction — different stage)
 
 See docs/plans/tag-quality-consistency.md.
 """
 import argparse
+import csv as _csv
 import math
 import statistics
 import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+
+# GCPEditorPro 3-tier thresholds (gcps-map.component.ts):
+#   green ≥ CONFIRMED_GREEN, amber ≥ CONFIRMED_AMBER, red < CONFIRMED_AMBER
+TIER_GREEN_FLOOR = 7
+TIER_AMBER_FLOOR = 3
 
 
 def _load_rows(path: Path) -> Tuple[str, List[dict]]:
@@ -95,6 +81,164 @@ def _load_rows(path: Path) -> Tuple[str, List[dict]]:
             except ValueError:
                 continue
     return crs, rows
+
+
+# ---------------------------------------------------------------------------
+# Pix4D inputs (history.p4mpl + extracted marks CSV)
+# ---------------------------------------------------------------------------
+
+def _load_pix4d_history(path: Path) -> List[dict]:
+    """Replay history.p4mpl via extract_pix4d_marks.parse_marks().
+
+    Returns row dicts in the same shape as _load_rows (subset of keys —
+    only img/lbl/px/py are populated; the rest are absent because the
+    .p4mpl carries no ground coords).
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from extract_pix4d_marks import parse_marks
+    except ImportError as e:
+        sys.exit(f"ERROR: cannot import extract_pix4d_marks ({e}); "
+                 f"required for .p4mpl input")
+    return [{"img": m.image, "lbl": m.label, "px": m.px, "py": m.py}
+            for m in parse_marks(path)]
+
+
+def _load_pix4d_marks_csv(path: Path) -> List[dict]:
+    """Read a Pix4D-format marks CSV (Filename,Label,PixelX,PixelY).
+
+    Tolerant header detection — accepts any case + 'PixelX'/'X'/'px'.
+    """
+    rows: List[dict] = []
+    with open(path) as f:
+        r = _csv.DictReader(f)
+        # Map columns case-insensitively
+        cols = {h.strip().lower(): h for h in (r.fieldnames or [])}
+        col_img = cols.get('filename') or cols.get('image') or cols.get('image_name')
+        col_lbl = cols.get('label')    or cols.get('gcp_label') or cols.get('name')
+        col_px  = cols.get('pixelx')   or cols.get('px')         or cols.get('x')
+        col_py  = cols.get('pixely')   or cols.get('py')         or cols.get('y')
+        if not all([col_img, col_lbl, col_px, col_py]):
+            sys.exit(f"ERROR: marks CSV {path} missing one of "
+                     f"Filename/Label/PixelX/PixelY columns "
+                     f"(found: {list(r.fieldnames or [])})")
+        for row in r:
+            try:
+                rows.append({
+                    "img": row[col_img],
+                    "lbl": row[col_lbl],
+                    "px":  float(row[col_px]),
+                    "py":  float(row[col_py]),
+                })
+            except (ValueError, KeyError):
+                continue
+    return rows
+
+
+def _looks_like_marks_csv(path: Path) -> bool:
+    """Header sniff: Pix4D-format marks CSV.
+
+    Accepts both sight.py's _write_pix4d output (Filename,Label,PixelX,PixelY)
+    and extract_pix4d_marks.py's output (image_name,gcp_label,px,py) — must
+    have at least one synonym for each of the four required columns.
+    """
+    try:
+        with open(path) as f:
+            header_cols = [h.strip().lower() for h in f.readline().strip().split(',')]
+    except Exception:
+        return False
+    img_aliases = {'filename', 'image', 'image_name'}
+    lbl_aliases = {'label', 'gcp_label', 'name'}
+    px_aliases  = {'pixelx', 'px', 'x'}
+    py_aliases  = {'pixely', 'py', 'y'}
+    cols = set(header_cols)
+    return (cols & img_aliases) and (cols & lbl_aliases) and \
+           (cols & px_aliases)  and (cols & py_aliases)
+
+
+# ---------------------------------------------------------------------------
+# Mark-count tier check (the gate)
+# ---------------------------------------------------------------------------
+
+def count_marks_per_target(rows: List[dict],
+                            tagged_only: bool = False) -> Dict[str, int]:
+    """Count marks per target label.
+
+    `tagged_only`: when True (sight {job}_tagged.txt input), restricts to
+    rows with src=='tagged'. Pix4D marks have no src column; pass False.
+    """
+    counts: Dict[str, int] = defaultdict(int)
+    for r in rows:
+        if tagged_only and r.get('src') != 'tagged':
+            continue
+        counts[r['lbl']] += 1
+    return dict(counts)
+
+
+def count_visible_images_per_target(estimate_rows: List[dict]) -> Dict[str, int]:
+    """From sight estimates ({job}.txt), count distinct images per target.
+
+    Used as the fairness-clamp upper bound — a target visible in only 4
+    images can't possibly receive 7 marks.
+    """
+    by_lbl: Dict[str, set] = defaultdict(set)
+    for r in estimate_rows:
+        by_lbl[r['lbl']].add(r['img'])
+    return {lbl: len(imgs) for lbl, imgs in by_lbl.items()}
+
+
+def tier_classify(marks: int, visible: Optional[int] = None) -> str:
+    """Return 'green' | 'amber' | 'red' for one target.
+
+    When `visible` is known (sight mode), apply fairness clamp: green
+    threshold = min(TIER_GREEN_FLOOR, visible). Without `visible` (Pix4D
+    mode), use raw thresholds — over-strict for targets visible in <7
+    images, but the alternative requires Pix4D's image-coverage list
+    which we don't yet parse.
+    """
+    if visible is not None:
+        green_t = min(TIER_GREEN_FLOOR, visible)
+        amber_t = min(TIER_AMBER_FLOOR, visible)
+    else:
+        green_t = TIER_GREEN_FLOOR
+        amber_t = TIER_AMBER_FLOOR
+    if marks >= green_t: return 'green'
+    if marks >= amber_t: return 'amber'
+    return 'red'
+
+
+def run_tier_check(marks_counts: Dict[str, int],
+                    visible_counts: Optional[Dict[str, int]] = None) -> Tuple[int, int, int, List[Tuple[str, int, Optional[int], str]]]:
+    """Apply the 3-tier rule across all targets.
+
+    Returns (n_red, n_amber, n_green, per_target_rows) where each row is
+    (label, marks, visible_or_None, tier).
+    """
+    rows: List[Tuple[str, int, Optional[int], str]] = []
+    for lbl in sorted(marks_counts):
+        m = marks_counts[lbl]
+        v = visible_counts.get(lbl) if visible_counts else None
+        rows.append((lbl, m, v, tier_classify(m, v)))
+    n_red   = sum(1 for _, _, _, t in rows if t == 'red')
+    n_amber = sum(1 for _, _, _, t in rows if t == 'amber')
+    n_green = sum(1 for _, _, _, t in rows if t == 'green')
+    return n_red, n_amber, n_green, rows
+
+
+def _print_tier_table(rows: List[Tuple[str, int, Optional[int], str]],
+                       visible_known: bool) -> None:
+    """Pretty-print the per-target tier table, worst-tier first."""
+    tier_order = {'red': 0, 'amber': 1, 'green': 2}
+    rows_sorted = sorted(rows, key=lambda r: (tier_order[r[3]], -r[1] if r[3] == 'green' else r[1], r[0]))
+    if visible_known:
+        print(f"{'label':<14s} {'marks':>5s} {'visible':>7s} {'tier':>6s}")
+        for lbl, m, v, t in rows_sorted:
+            v_str = f"{v}" if v is not None else "-"
+            print(f"{lbl:<14s} {m:5d} {v_str:>7s} {t:>6s}")
+    else:
+        print(f"{'label':<14s} {'marks':>5s} {'tier':>6s}")
+        for lbl, m, _, t in rows_sorted:
+            print(f"{lbl:<14s} {m:5d} {t:>6s}")
 
 
 def _composite_score(
@@ -228,101 +372,162 @@ def analyse(
     return out
 
 
+def _resolve_inputs(args) -> Tuple[str, List[Path]]:
+    """Detect input mode from CLI args.
+
+    Returns (mode, paths) where mode is one of:
+      'sight'       — paths = [estimates ({job}.txt), tagged ({job}_tagged.txt)]
+      'pix4d_p4mpl' — paths = [history.p4mpl]
+      'pix4d_csv'   — paths = [marks.csv]
+    """
+    paths = [Path(p) for p in args.input]
+    for p in paths:
+        if not p.exists():
+            sys.exit(f"ERROR: input file not found: {p}")
+
+    if len(paths) == 2:
+        return 'sight', paths
+
+    p = paths[0]
+    if p.suffix.lower() == '.p4mpl':
+        return 'pix4d_p4mpl', paths
+    if p.suffix.lower() == '.csv' and _looks_like_marks_csv(p):
+        return 'pix4d_csv', paths
+    if p.name.endswith('_tagged.txt'):
+        # Auto-locate sibling estimates file: strip "_tagged" from stem
+        est = p.parent / (p.name[:-len('_tagged.txt')] + '.txt')
+        if not est.exists():
+            sys.exit(f"ERROR: cannot auto-locate estimates file. Expected: {est}\n"
+                     f"       Pass it explicitly: check_tags.py {est} {p}")
+        return 'sight', [est, p]
+    sys.exit(f"ERROR: cannot determine input mode for {p}.\n"
+             f"       Sight mode:  check_tags.py {{job}}.txt {{job}}_tagged.txt\n"
+             f"       Pix4D mode:  check_tags.py {{path/to/history.p4mpl|marks.csv}}")
+
+
 def main():
     ap = argparse.ArgumentParser(
-        description=__doc__.splitlines()[0],
+        description=__doc__.splitlines()[1],
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Modes:\n"
+            "  SIGHT (2 args, or 1 ending in _tagged.txt):\n"
+            "      check_tags.py {job}.txt {job}_tagged.txt\n"
+            "      check_tags.py {job}_tagged.txt   # auto-locates {job}.txt\n"
+            "  PIX4D (1 arg, .p4mpl or marks.csv):\n"
+            "      check_tags.py path/to/history.p4mpl\n"
+            "      check_tags.py path/to/{job}_marks.csv\n"
+        ),
     )
-    ap.add_argument("estimates", type=Path,
-                    help="sight.py output: {job}.txt")
-    ap.add_argument("tagged", type=Path,
-                    help="GCPEditorPro output: {job}_tagged.txt")
+    ap.add_argument("input", nargs='+', type=str,
+                    help="Input file(s). See modes in epilog.")
     ap.add_argument("--anchor-px", type=float, default=10.0,
                     help="Tag within this many px of a 'color'/'tri_color' "
-                         "estimate is treated as anchor (default 10).")
+                         "estimate is treated as anchor for consensus analysis "
+                         "(default 10). Sight mode only.")
     ap.add_argument("--suspect-px", type=float, default=50.0,
-                    help="Tags whose residual from consensus exceeds this "
-                         "are flagged (default 50).")
+                    help="Tag residual from consensus that flags it as "
+                         "informational suspect (default 50). Sight mode only.")
     ap.add_argument("--min-anchors", type=int, default=3,
-                    help="Minimum anchors needed for anchor-based consensus "
-                         "instead of median consensus (default 3).")
-    ap.add_argument("--gate-score", type=float, default=0.7,
-                    help="Exit non-zero if any target's suspicion score "
-                         "exceeds this (default 0.7; set 0 to disable gate).")
+                    help="Minimum anchors for anchor-based consensus instead "
+                         "of median consensus (default 3). Sight mode only.")
     ap.add_argument("--top", type=int, default=15,
-                    help="Show this many top-suspect targets in stdout "
-                         "(default 15).")
+                    help="Show this many top-suspect targets in the consensus "
+                         "table (default 15). Sight mode only.")
     ap.add_argument("--report", type=Path, default=None,
-                    help="Optionally write per-target metrics to this TSV.")
+                    help="Optionally write per-target consensus metrics to "
+                         "this TSV. Sight mode only.")
+    ap.add_argument("--no-consensus", action='store_true',
+                    help="Skip the consensus/anchor reviewer-aid analysis "
+                         "(sight mode only). Useful for fast tier-only checks.")
     args = ap.parse_args()
 
-    if not args.estimates.exists():
-        sys.exit(f"ERROR: estimates file not found: {args.estimates}")
-    if not args.tagged.exists():
-        sys.exit(f"ERROR: tagged file not found: {args.tagged}")
+    mode, paths = _resolve_inputs(args)
 
-    results = analyse(
-        args.estimates, args.tagged,
-        anchor_px=args.anchor_px,
-        suspect_px=args.suspect_px,
-        min_anchors=args.min_anchors,
-    )
+    # ------- Load marks + (sight mode) estimates -------
+    if mode == 'sight':
+        est_path, tag_path = paths
+        _, est_rows = _load_rows(est_path)
+        _, tag_rows = _load_rows(tag_path)
+        marks_counts   = count_marks_per_target(tag_rows, tagged_only=True)
+        visible_counts = count_visible_images_per_target(est_rows)
+        print(f"Input: SIGHT mode — estimates={est_path.name}, tagged={tag_path.name}")
+    elif mode == 'pix4d_p4mpl':
+        rows = _load_pix4d_history(paths[0])
+        marks_counts   = count_marks_per_target(rows, tagged_only=False)
+        visible_counts = None
+        print(f"Input: PIX4D mode — history={paths[0].name} ({len(rows)} marks)")
+    else:  # pix4d_csv
+        rows = _load_pix4d_marks_csv(paths[0])
+        marks_counts   = count_marks_per_target(rows, tagged_only=False)
+        visible_counts = None
+        print(f"Input: PIX4D mode — marks csv={paths[0].name} ({len(rows)} marks)")
 
-    if not results:
-        print("No targets with both tagged rows and matching estimates were found.")
+    if not marks_counts:
+        print("No marks found in input. Nothing to check.")
         return 0
 
-    n_total = len(results)
-    n_gated = sum(1 for r in results if r["score"] > args.gate_score) if args.gate_score > 0 else 0
+    # ------- CHECK 1: marks-per-target tier (the gate) -------
+    n_red, n_amber, n_green, tier_rows = run_tier_check(marks_counts, visible_counts)
+    n_total = len(tier_rows)
 
-    print(f"Analysed {n_total} target(s) with tagged data.  "
-          f"Anchor < {args.anchor_px:.0f} px from color/tri_color estimate.  "
-          f"Suspect tag > {args.suspect_px:.0f} px from consensus.")
-    if args.gate_score > 0:
-        print(f"Gate score = {args.gate_score:.2f}; {n_gated} target(s) exceed it.")
     print()
+    print(f"Marks-per-target check (GCPEditorPro 3-tier):  "
+          f"{n_green} green, {n_amber} amber, {n_red} red  "
+          f"of {n_total} target(s)")
+    if visible_counts is not None:
+        print(f"  Fairness clamp ON (sight mode): green threshold = "
+              f"min({TIER_GREEN_FLOOR}, visible_images_per_target)")
+    else:
+        print(f"  Fairness clamp OFF (Pix4D mode, no visibility data): "
+              f"green threshold = {TIER_GREEN_FLOOR} regardless of visibility")
+    print()
+    _print_tier_table(tier_rows, visible_known=visible_counts is not None)
 
-    print(f"{'rank':>4s}  {'label':<14s} {'n_tag':>5s} {'n_col':>5s} {'anc':>4s} "
-          f"{'frac':>5s} {'cons':>6s} {'#susp':>5s} {'med_r':>6s} {'max_r':>6s} "
-          f"{'cons_src':>11s} {'score':>5s}")
-    for i, r in enumerate(results[:args.top], 1):
-        print(f"{i:4d}  {r['label']:<14s} "
-              f"{r['n_tagged']:5d} {r['n_color']:5d} {r['n_anchor']:4d} "
-              f"{r['frac_anchor']:5.2f} {r['consensus_mag']:6.1f} {r['n_suspect']:5d} "
-              f"{r['med_resid']:6.1f} {r['max_resid']:6.1f} "
-              f"{r['consensus_src']:>11s} {r['score']:5.2f}")
+    # ------- CHECK 2: consensus / anchor analysis (reviewer aid) -------
+    if mode == 'sight' and not args.no_consensus:
+        results = analyse(
+            paths[0], paths[1],
+            anchor_px=args.anchor_px,
+            suspect_px=args.suspect_px,
+            min_anchors=args.min_anchors,
+        )
+        if results:
+            print()
+            print(f"Tag-vs-estimate consensus (reviewer aid; not gating):")
+            print(f"  Anchor < {args.anchor_px:.0f} px from color/tri_color estimate;  "
+                  f"suspect tag > {args.suspect_px:.0f} px from consensus.")
+            print()
+            print(f"{'rank':>4s}  {'label':<14s} {'n_tag':>5s} {'n_col':>5s} {'anc':>4s} "
+                  f"{'frac':>5s} {'cons':>6s} {'#susp':>5s} {'med_r':>6s} {'max_r':>6s} "
+                  f"{'cons_src':>11s} {'score':>5s}")
+            for i, r in enumerate(results[:args.top], 1):
+                print(f"{i:4d}  {r['label']:<14s} "
+                      f"{r['n_tagged']:5d} {r['n_color']:5d} {r['n_anchor']:4d} "
+                      f"{r['frac_anchor']:5.2f} {r['consensus_mag']:6.1f} {r['n_suspect']:5d} "
+                      f"{r['med_resid']:6.1f} {r['max_resid']:6.1f} "
+                      f"{r['consensus_src']:>11s} {r['score']:5.2f}")
+            if args.report is not None:
+                try:
+                    with open(args.report, "w") as f:
+                        f.write("label\tn_tagged\tn_color\tn_anchor\tfrac_anchor\t"
+                                "consensus_mag_px\tconsensus_src\tn_suspect\t"
+                                "med_resid_px\tmax_resid_px\tscore\n")
+                        for r in results:
+                            f.write(f"{r['label']}\t{r['n_tagged']}\t{r['n_color']}\t"
+                                    f"{r['n_anchor']}\t{r['frac_anchor']:.4f}\t"
+                                    f"{r['consensus_mag']:.3f}\t{r['consensus_src']}\t"
+                                    f"{r['n_suspect']}\t{r['med_resid']:.3f}\t"
+                                    f"{r['max_resid']:.3f}\t{r['score']:.4f}\n")
+                    print(f"\nWrote per-target consensus report: {args.report}")
+                except Exception as e:
+                    print(f"\nWARNING: could not write report ({e})", file=sys.stderr)
 
-    flagged_targets = [r for r in results if r["score"] > args.gate_score] if args.gate_score > 0 else []
-    if flagged_targets:
-        print()
-        print(f"Suspect tags in {len(flagged_targets)} flagged target(s) — review in GCPEditorPro:")
-        for r in flagged_targets:
-            print(f"  {r['label']} (score={r['score']:.2f}):")
-            for t in sorted(r["suspects"], key=lambda x: -x["residual"])[:10]:
-                print(f"    {t['img']:40s}  tag=({t['tag_px']:7.1f},{t['tag_py']:7.1f})  "
-                      f"est=({t['est_px']:7.1f},{t['est_py']:7.1f})  "
-                      f"src={t['src']:<11s} residual={t['residual']:6.1f} px")
-            extra = len(r["suspects"]) - 10
-            if extra > 0:
-                print(f"    ... and {extra} more suspect tag(s)")
-
-    if args.report is not None:
-        try:
-            with open(args.report, "w") as f:
-                f.write("label\tn_tagged\tn_color\tn_anchor\tfrac_anchor\t"
-                        "consensus_mag_px\tconsensus_src\tn_suspect\t"
-                        "med_resid_px\tmax_resid_px\tscore\n")
-                for r in results:
-                    f.write(f"{r['label']}\t{r['n_tagged']}\t{r['n_color']}\t"
-                            f"{r['n_anchor']}\t{r['frac_anchor']:.4f}\t"
-                            f"{r['consensus_mag']:.3f}\t{r['consensus_src']}\t"
-                            f"{r['n_suspect']}\t{r['med_resid']:.3f}\t"
-                            f"{r['max_resid']:.3f}\t{r['score']:.4f}\n")
-            print(f"\nWrote per-target report: {args.report}")
-        except Exception as e:
-            print(f"\nWARNING: could not write report ({e})")
-
-    if args.gate_score > 0 and n_gated > 0:
+    # ------- Exit code: red count from tier check -------
+    if n_red > 0:
+        print(file=sys.stderr)
+        print(f"FAIL: {n_red} target(s) have < {TIER_AMBER_FLOOR} marks "
+              f"(insufficient for bundle adjustment).", file=sys.stderr)
         return 1
     return 0
 
