@@ -1445,17 +1445,41 @@ def _write_gcp_list(gcps: List[dict],
     return proj + '\n' + '\n'.join(rows) + '\n'
 
 
-def _write_pix4d(estimates: Dict[str, Dict[str, dict]]) -> str:
+# Pix4D marks confidence ordering (lower index = higher quality):
+#   color      sub-pixel via colored-X refinement on EXIF projection (default coloredX)
+#   tri_color  sub-pixel via re-refinement on triangulated seed   (--iterative only)
+#   tri_proj   ~5-20 px triangulated 3D re-projected through EXIF (--iterative only)
+#   projection ~30-150 px raw EXIF projection (no refinement)     (always present)
+_CONFIDENCE_RANK = {'color': 0, 'tri_color': 1, 'tri_proj': 2, 'projection': 3}
+
+
+def _write_pix4d(estimates: Dict[str, Dict[str, dict]],
+                  min_confidence: str = 'color') -> str:
     """
-    Build pix4d.txt content: GCP image position file for Pix4D.
+    Build Pix4D marks-import content: per-image pixel positions for GCPs.
 
     Comma-separated with header; one row per (image, GCP) pair.
     Columns: Filename,Label,PixelX,PixelY
+
+    `min_confidence` filters which sight estimates qualify for Pix4D import.
+    Default 'color' = only sub-pixel-refined marks. Recommended because Pix4D
+    Matic does not distinguish imported marks from manually-clicked ones in
+    its UI — importing only color-quality marks means the absence of a mark
+    on a given (image, GCP) pair signals 'this needs your manual review'.
     """
+    max_rank = _CONFIDENCE_RANK.get(min_confidence, 0)
     rows = ['Filename,Label,PixelX,PixelY']
+    n_kept = n_dropped = 0
     for gcp_label, img_map in estimates.items():
         for img_name, est in img_map.items():
+            conf = est.get('confidence', 'projection')
+            if _CONFIDENCE_RANK.get(conf, 99) > max_rank:
+                n_dropped += 1
+                continue
             rows.append(f"{img_name},{gcp_label},{est['px']:.2f},{est['py']:.2f}")
+            n_kept += 1
+    print(f"  Pix4D marks: {n_kept} kept, {n_dropped} dropped "
+          f"(confidence ≤ '{min_confidence}')")
     return '\n'.join(rows) + '\n' if len(rows) > 1 else ''
 
 
@@ -2182,6 +2206,13 @@ if __name__ == '__main__':
                         help='Origin=Global rows within this many metres of any Origin=Local row '
                              'are classified as monument shots and skipped from the projection / '
                              'tagging path. Set to 0 to filter Origin=Local only. (default: 2.0)')
+    parser.add_argument('--pix4d-min-confidence',
+                        choices=['color', 'tri_color', 'tri_proj', 'projection'],
+                        default='color',
+                        help='Minimum sight confidence to include in the Pix4D marks file. '
+                             "Default 'color' = only sub-pixel-refined marks (recommended for "
+                             "Pix4D Matic import: absence of a mark signals 'needs your review'). "
+                             "tri_* values require --iterative. 'projection' = include everything.")
     parser.add_argument('--no-coloredX', dest='refine_pixels', action='store_false',
                         help='Disable color-based pixel refinement and marker bounding-box computation '
                              '(refinement runs by default; requires opencv-python and numpy)')
@@ -2301,6 +2332,7 @@ if __name__ == '__main__':
         _odm_crs     = None
         _design_grid = {}
         _job_name    = None
+        _survey_crs  = None
 
     if args.match_only:
         print(f'Parsing {args.survey_csv}...')
@@ -2355,6 +2387,22 @@ if __name__ == '__main__':
         _targets_csv        = out_dir / f"{_stem}_targets.csv"
         _targets_design_csv = out_dir / f"{_stem}_targets_design.csv"
         _quality_sidecar    = out_dir / f"{_stem}_quality_report.tsv"
+
+        # Pix4D marks file in survey CRS — Isaiah's Pix4D Matic project lives
+        # in the surveyed state-plane CRS (verified across aztec/redrocks/
+        # ghostrider). Naming the marks file with the survey EPSG keeps it
+        # paired with the corresponding survey-CRS GCP coords file
+        # (e.g. {job}_6529.csv from transform.py dc, or _emlid_6529.csv from
+        # the Emlid).
+        _survey_epsg = None
+        for src in (_survey_crs, args.crs):
+            if src:
+                _m = re.search(r'(\d+)', src)
+                if _m: _survey_epsg = _m.group(1); break
+        _marks_name = (f"{_stem}_{_survey_epsg}_{args.pix4d_min_confidence}_marks.csv"
+                        if _survey_epsg
+                        else f"{_stem}_{args.pix4d_min_confidence}_marks.csv")
+        _marks_csv = out_dir / _marks_name
 
         # Auto-locate dc-derived {job}_{epsg}.csv next to the survey CSV for
         # the import-discrepancy quality check (geo-40vs Check 2b).
@@ -2414,11 +2462,9 @@ if __name__ == '__main__':
                 quality_sidecar_path=_quality_sidecar,
             )
 
-        gcp_out   = out_dir / args.out_name
-        pix4d_out = out_dir / 'marks_design.csv'
-
+        gcp_out = out_dir / args.out_name
         gcp_out.write_text(gcp_txt)
-        pix4d_out.write_text(_write_pix4d(estimates))
+        _marks_csv.write_text(_write_pix4d(estimates, args.pix4d_min_confidence))
 
         print(f'\nWrote {gcp_out}')
-        print(f'Wrote {pix4d_out}')
+        print(f'Wrote {_marks_csv}')

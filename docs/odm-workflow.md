@@ -15,7 +15,8 @@ flowchart TD
     all["{job}_emlid_6529.csv"]
     cameras["cameras.json"]
     sight(["sight.py"])
-    marks["marks_design.csv for Pix4D"]
+    marks["{job}_6529_color_marks.csv"]
+    pix4d(["Pix4D Matic"])
     pretag["{job}.txt"]
     gcpeditor(["GCPEditorPro"])
     tagged["{job}_tagged.txt"]
@@ -51,7 +52,6 @@ flowchart TD
     subgraph "Customer Design Grid"
         cust_dc
         extract
-        marks
         points_design
         targets_design
         deliverables
@@ -64,6 +64,8 @@ flowchart TD
         points_6529
         emlid
         all
+        marks
+	pix4d
     end
 
     subgraph "Drone (WGS84)"
@@ -117,7 +119,7 @@ flowchart TD
     drone --> images
     emlid --> all --> sight
     sight --> pretag
-    sight --> marks
+    sight --> marks --> pix4d
     sight --> targets
     sight --> targets_design
     pretag --> gcpeditor
@@ -280,7 +282,7 @@ conda run -n geo python TargetSighter/sight.py \
 # → {job}/{job}.txt                 (paint targets only — ODM metric CRS, for GCPEditorPro)
 # → {job}/{job}_targets.csv         (all surveyed points incl. monuments — ODM CRS, for QGIS)
 # → {job}/{job}_targets_design.csv  (same, design grid — for customer QGIS)
-# → {job}/marks_design.csv          (Pix4D parallel workflow — not used in ODM path)
+# → {job}/{job}_6529_color_marks.csv   (color-confidence marks only, in survey CRS — for Pix4D Matic)
 ```
 
 **Monument filter (geo-s074):** sight.py classifies each Emlid row as
@@ -319,6 +321,22 @@ plus a sidecar `{job}_quality_report.tsv`:
 3. **RTK quality** — per-row check on Origin=Global targets: Solution
    status, Easting/Northing/Elevation RMS, Samples, PDOP. Catches FLOAT
    shots, low sample averaging, and high-DOP geometry.
+
+**Pix4D Matic import workflow.** sight.py also writes
+`{job}_6529_color_marks.csv` — a Pix4D-format marks file
+(`Filename,Label,PixelX,PixelY`) in the **survey CRS**, since Pix4D Matic
+projects typically live in state-plane ftUS rather than design grid
+(verified across aztec/redrocks/ghostrider). Pairs with the existing
+`{job}_6529.csv` GCP coordinate file from `transform.py dc`.
+
+The `color` in the filename is the default `--pix4d-min-confidence` —
+only sub-pixel-refined marks pass through. Pix4D Matic does not natively
+distinguish imported marks from manually-clicked ones, so the absence of
+an imported mark on a given (image, target) pair becomes the implicit
+"needs your manual review" indicator. Use `--pix4d-min-confidence` to
+relax: `tri_color` (requires `--iterative`) includes triangulation-refined
+sub-pixel marks; `projection` includes every estimate. The confidence
+appears in the filename so multiple versions can coexist.
 
 By default, sight.py names the ten most-dispersed targets as GCP and the remainder as CHK, then ranks the targets and their images by tagging value — tagging in order produces the best accuracy for the least effort. Near-duplicate targets (within `--dup-tolerance` metres of another, default 1 m) inherit the role of their closest primary and get a `-dup` suffix (`GCP-104-dup`, `CHK-119-dup2`, ...), and are placed immediately after their primary in the file so they can be reviewed side-by-side. Target names are **recommendations** — the user has final say on role assignment in GCPEditorPro (step 3).
 
