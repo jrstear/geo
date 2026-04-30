@@ -207,7 +207,7 @@ display without on-the-fly reprojection overhead.
 {job}.csv Easting/Northing  (EPSG:6529 ft  ≈  EPSG:3618)
     ↓ sight.py + GCPEditorPro
 {job}_confirmed.txt  (EPSG:6529 ft, NAVD88 Z ft)
-    ↓ transform.py split  [project + geoid; reads transform.yaml for field_crs and odm_crs]
+    ↓ transform.py split  [project + geoid; reads transform.yaml for survey_crs and odm_crs]
 gcp_list.txt / chk_list.txt  (EPSG:6528 m — NM Central metric, ellipsoidal Z m)
     ↓ ODM
 odm_orthophoto.original.tif  (EPSG:6528 m)

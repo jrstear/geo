@@ -1811,7 +1811,7 @@ if __name__ == '__main__':
     parser.add_argument('--transform-yaml', default=None, metavar='FILE',
                         help='Path to transform.yaml written by transformer.py dc. '
                              'Auto-located in the survey CSV directory or cwd if omitted. '
-                             'Provides field_crs (fallback for --crs) and job name (fallback for --out-name).')
+                             'Provides survey_crs (fallback for --crs) and job name (fallback for --out-name).')
     parser.add_argument('--cameras', default=None, metavar='FILE',
                         help='Path to cameras.json (ODM Brown model). When provided, '
                              'replaces the EXIF-derived pinhole model with the calibrated '
@@ -1884,14 +1884,16 @@ if __name__ == '__main__':
             print(f'WARNING: could not read transform.yaml ({_e}); ignoring')
             _transform = {}
 
-        _field_crs   = _transform.get('field_crs')
+        _survey_crs = _transform.get('survey_crs') or _transform.get('field_crs')
+        if not _transform.get('survey_crs') and _transform.get('field_crs'):
+            print("  DEPRECATION: transform.yaml uses 'field_crs'; rename to 'survey_crs'")
         _odm_crs     = _transform.get('odm_crs')
         _job_name    = _transform.get('job')
         _design_grid = _transform.get('design_grid') if isinstance(_transform.get('design_grid'), dict) else {}
 
-        if _field_crs and not args.crs:
-            args.crs = _field_crs
-            print(f'  field_crs → --crs {_field_crs}')
+        if _survey_crs and not args.crs:
+            args.crs = _survey_crs
+            print(f'  survey_crs → --crs {_survey_crs}')
         if _job_name and args.out_name == 'targets.txt':
             args.out_name = f'{_job_name}.txt'
             print(f'  job → --out-name {args.out_name}')

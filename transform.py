@@ -10,7 +10,7 @@ split  Split GCPEditorPro {job}_tagged.txt → gcp_list.txt (GCP- tagged, for OD
        + chk_list.txt (CHK- tagged, for rmse_calc.py)
        + {job}_targets.csv (one row/target, EPSG:32613, tagged=GCP-/CHK- prefix, untagged=bare label)
        + {job}_targets_design.csv (same, design-grid ft, if transform.yaml present).
-       Reads transform.yaml (written by dc) to get field_crs and odm_crs automatically.
+       Reads transform.yaml (written by dc) to get survey_crs and odm_crs automatically.
 
 Typical sequence
 ----------------
@@ -27,7 +27,7 @@ Typical sequence
 transform.yaml — written by dc, read by split (and sight.py and package.py --transform-yaml)
 ---------------------------------------------------------------------------
 job: <job_name>
-field_crs: EPSG:XXXX      # Emlid RS3 output CRS; also the GCPEditorPro header CRS
+survey_crs: EPSG:XXXX     # Emlid RS3 output CRS (the surveyor's coordinate system)
 odm_crs: EPSG:XXXX        # ODM gcp/chk input CRS (metric counterpart of delivery_crs)
 delivery_crs: EPSG:XXXX   # State-plane CRS for QGIS review and delivery (auto-detected)
 design_grid:
@@ -736,7 +736,7 @@ def cmd_dc(args) -> int:
     # Write transform.yaml
     transform = {
         "job":          job_name,
-        "field_crs":    delivery_crs,   # Emlid uses same zone; override if different
+        "survey_crs":   delivery_crs,   # Emlid uses same zone; override if different
         "odm_crs":      odm_crs,
         "delivery_crs": delivery_crs,
         "design_grid": {
@@ -752,8 +752,8 @@ def cmd_dc(args) -> int:
     yaml_path = out_dir / "transform.yaml"
     write_yaml(yaml_path, transform)
     print(f"\nWrote {yaml_path.name}")
-    print("  Review field_crs — it should match your Emlid RS3 output CRS.")
-    print("  If the Emlid is in a different zone, update field_crs manually.")
+    print("  Review survey_crs — it should match your Emlid RS3 output CRS.")
+    print("  If the Emlid is in a different zone, update survey_crs manually.")
 
     return 0
 
@@ -784,6 +784,23 @@ def _crs_is_feet(epsg_str: str) -> bool:
         return False
 
 
+def _read_survey_crs(transform: dict) -> Optional[str]:
+    """Read survey CRS from transform.yaml, accepting deprecated field_crs key.
+
+    Prefers `survey_crs`. Falls back to `field_crs` (the pre-rename name)
+    with a one-line deprecation notice so existing yamls keep working.
+    """
+    survey = transform.get("survey_crs")
+    if survey:
+        return survey
+    legacy = transform.get("field_crs")
+    if legacy:
+        print("DEPRECATION: transform.yaml uses 'field_crs'; rename to 'survey_crs' "
+              "(field_crs will stop being read in a future release)")
+        return legacy
+    return None
+
+
 def cmd_split(args) -> int:
     import csv as _csv
     in_path = Path(args.confirmed)
@@ -799,21 +816,27 @@ def cmd_split(args) -> int:
     if yaml_path:
         print(f"Loaded: {yaml_path}")
 
+    survey_crs = _read_survey_crs(transform)
+    odm_crs    = transform.get("odm_crs")
+
     # Parse tagged file
     with open(in_path, encoding="utf-8") as f:
         lines = f.readlines()
     if not lines:
         sys.exit(f"ERROR: empty file: {in_path}")
 
-    file_crs_header = lines[0].strip()   # e.g. "EPSG:6529"
+    file_crs_header = lines[0].strip()   # e.g. "EPSG:6528"
 
-    # Determine source CRS: file header is authoritative; fall back to transform.yaml field_crs
-    src_crs = file_crs_header or transform.get("field_crs")
-    if transform.get("field_crs") and file_crs_header and transform["field_crs"].upper() != file_crs_header.upper():
-        print(f"INFO: file header CRS ({file_crs_header}) differs from transform.yaml field_crs "
-              f"({transform.get('field_crs')}); using file header")
+    # The tagged file is in odm_crs (sight.py projects to odm_crs and writes
+    # that as the file header; GCPEditorPro round-trips it). A mismatch with
+    # transform.yaml's odm_crs is actionable — file likely came from a
+    # different yaml or was hand-edited.
+    src_crs = file_crs_header or odm_crs or survey_crs
+    if odm_crs and file_crs_header and odm_crs.upper() != file_crs_header.upper():
+        print(f"INFO: file header CRS ({file_crs_header}) differs from transform.yaml odm_crs "
+              f"({odm_crs}); using file header")
 
-    dst_crs = transform.get("odm_crs") or args.target_crs
+    dst_crs = odm_crs or args.target_crs
     print(f"Input:  {in_path.name}  (CRS: {src_crs})")
     print(f"Output: {dst_crs}")
 

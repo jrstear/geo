@@ -274,7 +274,7 @@ conda run -n geo python TargetSighter/sight.py \
     {job}/{job}_emlid_6529.csv \
     {job}/images/
 # If transform.yaml is present in {job}/, sight.py auto-loads it:
-#   field_crs → used as fallback CRS for the survey CSV
+#   survey_crs → used as fallback CRS for the survey CSV
 #   odm_crs   → target CRS for {job}.txt (metric counterpart of survey CRS, e.g. EPSG:6528)
 #   job name  → used as output filename ({job}.txt)
 # Without transform.yaml, pass explicitly: --crs EPSG:XXXX --out-name "{job}"
