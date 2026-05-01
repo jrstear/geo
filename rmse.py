@@ -1154,6 +1154,8 @@ def generate_html_report(
     ortho_rmse: Optional[dict] = None,
     ortho_tags_path: Optional[str] = None,
     pix4d_qr: Optional[dict] = None,
+    tin=None,
+    tin_source: Optional[str] = None,
 ) -> None:
     """Generate HTML accuracy report with optional ortho crop images."""
 
@@ -1161,6 +1163,9 @@ def generate_html_report(
     ortho_only = result.get("ortho_only", False)
     qr_by_norm = _build_qr_lookup(pix4d_qr) if pix4d_qr else {}
     has_qr = bool(qr_by_norm)
+    has_tin = tin is not None
+    has_tin_odm   = has_tin and tin_source == 'odm'
+    has_tin_pix4d = has_tin and tin_source == 'pix4d'
 
     # Parse ortho-tagged pixel positions per label (for cyan crosshair overlay)
     ortho_tag_px: Dict[str, Tuple[float, float]] = {}  # label → (crop_px, crop_py)
@@ -1193,6 +1198,41 @@ def generate_html_report(
             for p in ortho_rmse.get(group_key, {}).get("points", []):
                 ortho_dh_by_label[p["label"]] = p["dH"]
 
+    # TIN sampling — reproject each point's surveyed (x, y) from the survey CRS
+    # to the TIN's horizontal CRS, sample Z, convert TIN units to metres,
+    # and store tin_dZ = tin_z_m - survey_z_m. Datum-vintage offsets between
+    # NAD83(2011) and NAD83(86) realizations show as systematic mean_dZ;
+    # geo-xzds will fix that empirically once it lands.
+    tin_dz_by_label: Dict[str, float] = {}
+    if has_tin:
+        survey_crs = result.get("survey_crs")
+        tin_h_epsg = tin.crs_epsg_horizontal
+        xfm = None
+        if survey_crs and tin_h_epsg:
+            try:
+                from pyproj import Transformer as _Transformer
+                xfm = _Transformer.from_crs(survey_crs, f"EPSG:{tin_h_epsg}", always_xy=True)
+            except Exception as e:
+                print(f"WARNING: TIN CRS transform setup failed ({e}); "
+                      f"skipping per-point TIN sampling.", file=sys.stderr)
+                xfm = None
+        if xfm is not None:
+            from tin import sample_z as _sample_z
+            for group_key in ("gcp", "chk"):
+                for p in result.get(group_key, {}).get("points", []):
+                    sx = p.get("survey_x"); sy = p.get("survey_y"); sz = p.get("survey_z")
+                    if sx is None or sy is None or sz is None:
+                        continue
+                    try:
+                        xq, yq = xfm.transform(sx, sy)
+                    except Exception:
+                        continue
+                    tz_native = _sample_z(tin, xq, yq)
+                    if tz_native is None:
+                        continue
+                    tz_m = tz_native * FT_TO_M if tin.units == 'ft' else tz_native
+                    tin_dz_by_label[p["label"]] = tz_m - sz
+
     # Collect all points sorted worst-first
     obs_counts = result.get("obs_counts", {})
     all_points = []
@@ -1203,7 +1243,8 @@ def generate_html_report(
             all_points.append({**p, "group": group_key.upper(),
                                "n_images": obs_counts.get(p["label"], 0),
                                "ortho_dH": ortho_dh_by_label.get(p["label"]),
-                               "qr": qr_row})
+                               "qr": qr_row,
+                               "tin_dZ": tin_dz_by_label.get(p["label"])})
 
     # Sort: when ortho-tags present, sort by ortho dH (worst first),
     # points without ortho measurement sort to bottom
@@ -1338,6 +1379,44 @@ are an independent measure of accuracy.</p>
         for name, axis in (('RMS_H', 'h'), ('RMS_Z', 'z')):
             gv = _qr_rms(qr_gcp_summ, axis)
             cv = _qr_rms(qr_cp_summ, axis)
+            summary_rows += (f"<tr><td>{name}</td>"
+                             f"<td>{_fmt_val(gv)}</td><td>{_fmt_val(gv, True)}</td>"
+                             f"<td>{_fmt_val(cv)}</td><td>{_fmt_val(cv, True)}</td></tr>\n")
+
+    # --- TIN sub-section (under producing tool) ---
+    # tin_dZ summary stats: RMS_dZ, mean_dZ. Computed over the points where
+    # the TIN had a sample (some targets may fall outside the TIN bbox).
+    if has_tin and tin_source in ('odm', 'pix4d'):
+        tin_gcp_dz = [p['tin_dZ'] for p in all_points
+                      if p['group'] == 'GCP' and p.get('tin_dZ') is not None]
+        tin_chk_dz = [p['tin_dZ'] for p in all_points
+                      if p['group'] == 'CHK' and p.get('tin_dZ') is not None]
+
+        def _rms_dz(vs):
+            return math.sqrt(sum(v ** 2 for v in vs) / len(vs)) if vs else None
+        def _mean_dz(vs):
+            return (sum(vs) / len(vs)) if vs else None
+
+        # If tin_source is ODM, this section sits inside the ODM super-block;
+        # but the ODM super-header was emitted earlier — we just append the
+        # 'TIN' sub-section header. Same logic for Pix4D side. The user reads
+        # the table top-to-bottom and the sub-section follows the previously-
+        # opened tool section.
+        tin_section_owner = tin_source.upper() if tin_source == 'odm' else 'Pix4D'
+        # Standalone tool block when source ≠ ODM and no Pix4D super-section
+        # exists: emit a new super-header so the TIN section has a parent.
+        emitted_super = (
+            (tin_source == 'odm' and (not ortho_only or has_ortho_rmse)) or
+            (tin_source == 'pix4d' and has_qr)
+        )
+        if not emitted_super:
+            summary_rows += (
+                f'<tr><th colspan="5" class="tool-header">{tin_section_owner}</th></tr>\n'
+            )
+        summary_rows += '<tr><th colspan="5" class="section-header">TIN</th></tr>\n'
+        for name, fn in (('RMS_dZ', _rms_dz), ('mean_dZ', _mean_dz)):
+            gv = fn(tin_gcp_dz)
+            cv = fn(tin_chk_dz)
             summary_rows += (f"<tr><td>{name}</td>"
                              f"<td>{_fmt_val(gv)}</td><td>{_fmt_val(gv, True)}</td>"
                              f"<td>{_fmt_val(cv)}</td><td>{_fmt_val(cv, True)}</td></tr>\n")
@@ -1541,71 +1620,91 @@ are an independent measure of accuracy.</p>
                    f'<td>{d3d_ft:.4f}</td>')
             if has_ortho_rmse:
                 row += f'<td>{ortho_cell}</td>'
+            if has_tin_odm:
+                tin_dz = p.get('tin_dZ')
+                row += f'<td>{tin_dz * M_TO_FT:+.4f}</td>' if tin_dz is not None else '<td>—</td>'
             if has_qr:
                 row += _qr_cells_html(p)
+            if has_tin_pix4d:
+                tin_dz = p.get('tin_dZ')
+                row += f'<td>{tin_dz * M_TO_FT:+.4f}</td>' if tin_dz is not None else '<td>—</td>'
             row += '</tr>\n'
         detail_rows += row
 
     # Headers — nested toolchain hierarchy:
-    #   row 1: ODM | Pix4D                            (super-tool grouping)
-    #   row 2: Reconstruction | Orthophoto | Recon.   (sub-section grouping)
-    #   row 3: column labels                          (actual fields)
+    #   row 1: ODM | Pix4D                                       (tool grouping)
+    #   row 2: Reconstruction | Orthophoto | TIN | ...           (sub-sections)
+    #   row 3: column labels                                     (actual fields)
+    #
+    # TIN is a sub-section under the producing tool (--tin-source).
+    _tin_section_html = (
+        '<th class="section-header" style="text-align:center; padding-left:10px">TIN</th>'
+        if has_tin else ''
+    )
+    _tin_subheader = '<th>tin_dZ (ft)</th>' if has_tin else ''
+
     qr_subheaders = (
         '<th>Role</th><th>dH (ft)</th><th>dZ (ft)</th><th>Verif./Mark.</th>'
         if has_qr else ''
     )
-    qr_section_header = (
-        '<th colspan="4" class="section-header" style="text-align:center; padding-left:10px">Reconstruction</th>'
-        if has_qr else ''
+
+    # Pix4D side
+    pix4d_section_count = (4 if has_qr else 0) + (1 if has_tin_pix4d else 0)
+    pix4d_section_headers = ''
+    if has_qr:
+        pix4d_section_headers += (
+            '<th colspan="4" class="section-header" style="text-align:center; padding-left:10px">Reconstruction</th>'
+        )
+    if has_tin_pix4d:
+        pix4d_section_headers += _tin_section_html
+    pix4d_tool_span = pix4d_section_count
+    pix4d_tool_header = (
+        f'<th colspan="{pix4d_tool_span}" class="tool-header" style="text-align:center">Pix4D</th>'
+        if pix4d_tool_span > 0 else ''
     )
-    qr_tool_header = (
-        '<th colspan="4" class="tool-header" style="text-align:center">Pix4D</th>'
-        if has_qr else ''
-    )
+    pix4d_field_headers = qr_subheaders + (_tin_subheader if has_tin_pix4d else '')
 
     if ortho_only:
-        # Ortho-only mode: only Orthophoto under ODM.
-        odm_tool_span = 1
+        # ODM > Orthophoto only [+ TIN if has_tin_odm]
+        odm_tool_span = 1 + (1 if has_tin_odm else 0)
         odm_tool_header = f'<th colspan="{odm_tool_span}" class="tool-header" style="text-align:center">ODM</th>'
-        odm_section_headers = '<th class="section-header" style="text-align:center; padding-left:10px">Orthophoto</th>'
-        if has_qr:
+        odm_section_headers = (
+            '<th class="section-header" style="text-align:center; padding-left:10px">Orthophoto</th>'
+            + (_tin_section_html if has_tin_odm else '')
+        )
+        odm_field_headers = '<th>Ortho dH (ft)</th>' + (_tin_subheader if has_tin_odm else '')
+
+        if pix4d_tool_span > 0:
             detail_header = (
-                f'<tr><th colspan="2"></th>{odm_tool_header}{qr_tool_header}</tr>\n'
-                f'<tr><th colspan="2"></th>{odm_section_headers}{qr_section_header}</tr>\n'
-                f'<tr><th>Label</th><th>Group</th><th>Ortho dH (ft)</th>{qr_subheaders}</tr>'
+                f'<tr><th colspan="2"></th>{odm_tool_header}{pix4d_tool_header}</tr>\n'
+                f'<tr><th colspan="2"></th>{odm_section_headers}{pix4d_section_headers}</tr>\n'
+                f'<tr><th>Label</th><th>Group</th>{odm_field_headers}{pix4d_field_headers}</tr>'
             )
         else:
             detail_header = (
-                '<tr><th colspan="2"></th>'
-                '<th class="tool-header" style="text-align:center">ODM</th></tr>\n'
-                '<tr><th colspan="2"></th>'
-                '<th class="section-header" style="text-align:center; padding-left:10px">Orthophoto</th></tr>\n'
-                '<tr><th>Label</th><th>Group</th><th>Ortho dH (ft)</th></tr>'
+                f'<tr><th colspan="2"></th>{odm_tool_header}</tr>\n'
+                f'<tr><th colspan="2"></th>{odm_section_headers}</tr>\n'
+                f'<tr><th>Label</th><th>Group</th>{odm_field_headers}</tr>'
             )
     else:
-        # Reconstruction mode (with optional Orthophoto and Pix4D).
-        # ODM groups: Reconstruction (3 cols) [+ Orthophoto (1 col)]
-        if has_ortho_rmse:
-            odm_tool_span = 4
-            odm_section_headers = (
-                '<th colspan="3" class="section-header" style="text-align:center; padding-left:10px">Reconstruction</th>'
-                '<th class="section-header" style="text-align:center; padding-left:10px">Orthophoto</th>'
-            )
-        else:
-            odm_tool_span = 3
-            odm_section_headers = (
-                '<th colspan="3" class="section-header" style="text-align:center; padding-left:10px">Reconstruction</th>'
-            )
+        # ODM > Reconstruction (3) [+ Orthophoto (1)] [+ TIN (1) when has_tin_odm]
+        odm_tool_span = 3 + (1 if has_ortho_rmse else 0) + (1 if has_tin_odm else 0)
+        odm_section_headers = (
+            '<th colspan="3" class="section-header" style="text-align:center; padding-left:10px">Reconstruction</th>'
+            + ('<th class="section-header" style="text-align:center; padding-left:10px">Orthophoto</th>' if has_ortho_rmse else '')
+            + (_tin_section_html if has_tin_odm else '')
+        )
         odm_tool_header = f'<th colspan="{odm_tool_span}" class="tool-header" style="text-align:center">ODM</th>'
 
         recon_subheaders = '<th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th>'
         ortho_subheader = '<th>dH (ft)</th>' if has_ortho_rmse else ''
+        odm_field_headers = recon_subheaders + ortho_subheader + (_tin_subheader if has_tin_odm else '')
 
         detail_header = (
-            f'<tr><th colspan="3"></th>{odm_tool_header}{qr_tool_header}</tr>\n'
-            f'<tr><th colspan="3"></th>{odm_section_headers}{qr_section_header}</tr>\n'
+            f'<tr><th colspan="3"></th>{odm_tool_header}{pix4d_tool_header}</tr>\n'
+            f'<tr><th colspan="3"></th>{odm_section_headers}{pix4d_section_headers}</tr>\n'
             f'<tr><th>Label</th><th>Group</th><th>Tagged<br/>Images</th>'
-            f'{recon_subheaders}{ortho_subheader}{qr_subheaders}</tr>'
+            f'{odm_field_headers}{pix4d_field_headers}</tr>'
         )
 
     detail_table_html = f"""<table class="detail">
@@ -2139,6 +2238,20 @@ def main() -> None:
              "Role-disagreement (e.g. CHK-* by sight but used as control in "
              "Pix4D) is highlighted.",
     )
+    parser.add_argument(
+        "--tin",
+        default=None,
+        metavar="surface.xml",
+        help="LandXML TIN file (Pix4D-emitted, future ODM-emitted via geo-btcl, "
+             "or any LandXML 1.2 surface). Adds tin_dZ column (TIN-sampled Z "
+             "minus surveyed Z) under the producing tool's TIN sub-section.",
+    )
+    parser.add_argument(
+        "--tin-source",
+        default=None,
+        choices=["pix4d", "odm"],
+        help="Override auto-detected TIN producer (auto-detect from <Application>).",
+    )
     args = parser.parse_args()
 
     if args.test:
@@ -2205,6 +2318,33 @@ def main() -> None:
                   file=sys.stderr)
             pix4d_qr_data = None
 
+    # Parse LandXML TIN if provided (geo-hbxf — third accuracy axis: Z from TIN)
+    tin_data = None
+    tin_source = None
+    if args.tin:
+        try:
+            from pathlib import Path as _Path
+            sys_path_root = str(_Path(__file__).resolve().parent)
+            if sys_path_root not in sys.path:
+                sys.path.insert(0, sys_path_root)
+            from tin import parse_landxml_tin, detect_tool
+            tin_data = parse_landxml_tin(_Path(args.tin))
+            tin_source = args.tin_source or detect_tool(tin_data)
+            print(f"\nLoaded TIN: {len(tin_data.triangles):,} triangles, "
+                  f"app={tin_data.application} v{tin_data.application_version}, "
+                  f"source={tin_source}, "
+                  f"CRS h=EPSG:{tin_data.crs_epsg_horizontal} v=EPSG:{tin_data.crs_epsg_vertical}",
+                  file=sys.stderr)
+            if tin_source == 'unknown':
+                print(f"WARNING: TIN source not auto-detected (Application='{tin_data.application}'); "
+                      f"pass --tin-source pix4d|odm to control hierarchy placement.",
+                      file=sys.stderr)
+        except Exception as e:
+            print(f"WARNING: --tin load failed ({e}); continuing without TIN.",
+                  file=sys.stderr)
+            tin_data = None
+            tin_source = None
+
     if args.html:
         if result is None:
             parser.error("--html requires reconstruction or --ortho-tags.")
@@ -2220,6 +2360,8 @@ def main() -> None:
             ortho_rmse=ortho_rmse_result,
             ortho_tags_path=args.ortho_tags,
             pix4d_qr=pix4d_qr_data,
+            tin=tin_data,
+            tin_source=tin_source,
         )
 
     if args.emit_ortho_tags:
