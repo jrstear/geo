@@ -16,6 +16,7 @@ flowchart TD
     cameras["cameras.json"]
     sight(["sight.py"])
     marks["{job}_6529_color_marks.csv"]
+    tagged_marks["{job}_6529_tagged_marks.csv"]
     pix4d_targets["{job}_6529_targets.csv"]
     pix4d(["Pix4D Matic"])
     pretag["{job}.txt"]
@@ -66,6 +67,7 @@ flowchart TD
         emlid
         all
         marks
+        tagged_marks
         pix4d_targets
         pix4d
     end
@@ -121,7 +123,8 @@ flowchart TD
     drone --> images
     emlid --> all --> sight
     sight --> pretag
-    sight --> marks --> pix4d
+    sight --> marks
+    marks -.-> pix4d
     sight --> pix4d_targets --> pix4d
     sight --> targets
     sight --> targets_design
@@ -129,9 +132,12 @@ flowchart TD
     gcpeditor --> tagged
     tagged --> split
     tagged -.-> |refine| gcpeditor
+    transform_yaml --> packager
     transform_yaml --> sight
+    split --> tagged_marks
     split --> gcp_list
     split --> chk_list
+    tagged_marks -.-> pix4d
     gcp_list --> launch_odm
     gcp_list --> rmse
     odm --> model
@@ -162,7 +168,6 @@ flowchart TD
     pointcloud -.-> tin
     contours --> packager
     uncertainty_tif --> qgis_cloud
-    transform_yaml --> packager
     packager --> deliverables
     report --> deliverables
     deliverables --> customer
@@ -430,14 +435,25 @@ conda run -n geo python transform.py split \
     {job}/{job}_tagged.txt \
     --out-dir {job}/
 # Reads {job}/transform.yaml automatically (uses odm_crs from it, e.g. EPSG:6528)
-# → {job}/gcp_list.txt    (GCP- tagged tuples, ODM metric CRS; for ODM)
-# → {job}/chk_list.txt    (CHK- tagged tuples, ODM metric CRS; for rmse.py)
+# → {job}/gcp_list.txt                  (GCP- tagged tuples, ODM metric CRS; for ODM)
+# → {job}/chk_list.txt                  (CHK- tagged tuples, ODM metric CRS; for rmse.py)
+# → {job}/{job}_6529_tagged_marks.csv   (Pix4D format; same human-confirmed clicks
+#                                        as gcp+chk_list, paired with the survey-CRS
+#                                        GCP coords file for direct Pix4D import)
 ```
 
 `{job}_targets.csv` and `{job}_targets_design.csv` are produced earlier by
 sight.py (step 2) and contain all surveyed points incl. monuments — load
 either in QGIS for visual QC; categorize symbology on the `type` column to
 distinguish targets from monuments.
+
+**For Pix4D Matic re-import (geo-fcio).** `{job}_6529_tagged_marks.csv`
+emitted here is the human-confirmed counterpart to sight's
+`{job}_6529_color_marks.csv` from step 2. Use case: Jon hand-tagged in
+GCPEditorPro, Isaiah wants to bring those exact clicks into a Pix4D
+project without re-tagging in Pix4D's UI. Same `Filename,Label,PixelX,PixelY`
+schema; pair with `{job}_6529.csv` (or `{job}_emlid_6529.csv`) as the
+GCP coordinate input.
 
 ### 4.5. Pre-ODM tag-quality check (recommended)
 

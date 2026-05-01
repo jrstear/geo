@@ -945,6 +945,39 @@ def cmd_split(args) -> int:
     _write_odm(out_dir / "gcp_list.txt", gcp_rows)
     _write_odm(out_dir / "chk_list.txt", chk_rows)
 
+    # geo-fcio: also emit a Pix4D-format marks file from the tagged rows so
+    # the same human-confirmed clicks can feed the Pix4D Matic side of the
+    # workflow without a second tagging pass. Sight emits a parallel
+    # {job}_{epsg}_color_marks.csv from sight's color estimates (geo-qkip);
+    # this file has the same shape but reflects what the tagger confirmed.
+    job_name = in_path.stem[:-len("_tagged")] if in_path.stem.endswith("_tagged") \
+               else in_path.stem
+    survey_epsg = None
+    for cand in (survey_crs, file_crs_header):
+        if cand:
+            m = re.search(r"(\d+)", cand)
+            if m:
+                survey_epsg = m.group(1)
+                break
+    marks_name = (f"{job_name}_{survey_epsg}_tagged_marks.csv"
+                  if survey_epsg else f"{job_name}_tagged_marks.csv")
+    marks_path = out_dir / marks_name
+    import csv as _csv
+    n_marks = 0
+    with open(marks_path, "w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["Filename", "Label", "PixelX", "PixelY"])
+        for r in raw_rows:
+            if len(r) <= 7 or r[7] != "tagged":
+                continue
+            try:
+                px = float(r[3]); py = float(r[4])
+            except ValueError:
+                continue
+            w.writerow([r[5], r[6], f"{px:.2f}", f"{py:.2f}"])
+            n_marks += 1
+    print(f"  wrote {marks_path}  ({n_marks} marks, Pix4D format)")
+
     gcp_path = out_dir / "gcp_list.txt"
     chk_path = out_dir / "chk_list.txt"
     print(f"\nDone.  Run ODM with:  --gcp {gcp_path}")
