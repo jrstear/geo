@@ -1072,6 +1072,76 @@ def compute_ortho_rmse(
     return result
 
 
+def _norm_label_for_qr(label: str) -> str:
+    """Cross-toolchain label normalization: strip CHK-/GCP-/DUP- prefix and
+    -dup\\d* suffix and any non-alphanumerics. So 'CHK-131-2' and '131 2' and
+    'GCP-104-dup' all collide to a comparable key. Mirrors check_tags.py."""
+    import re as _re
+    s = label
+    for pfx in ('CHK-', 'GCP-', 'DUP-'):
+        if s.startswith(pfx):
+            s = s[len(pfx):]
+            break
+    s = _re.sub(r'-dup\d*$', '', s)
+    return _re.sub(r'[^A-Za-z0-9]', '', s).upper()
+
+
+def _qr_cells_html(point: dict) -> str:
+    """Render the four Pix4D-QR cells (Role | dH ft | dZ ft | Verified/Marked)
+    for one per-target row. '—' when QR has no row matching this label.
+
+    Role-disagreement (sight CHK-* but Pix4D treats as control, or vice versa)
+    is highlighted with a warning marker and color so the report surfaces the
+    operator's role override after Pix4D import.
+    """
+    qr = point.get('qr')
+    if qr is None:
+        return '<td>—</td><td>—</td><td>—</td><td>—</td>'
+    role = qr.get('role') or '—'
+    sight_role = 'control' if point['group'] == 'GCP' else 'checkpoint'
+    role_html = role
+    if role != sight_role:
+        role_html = f'<span style="color:#f44">⚠</span> {role}'
+    qr_dH_m = qr.get('qr_dH_m')
+    qr_dZ_m = qr.get('qr_dZ_m')
+    dH_cell = f'{qr_dH_m * M_TO_FT:+.4f}' if qr_dH_m is not None else '—'
+    dZ_cell = f'{qr_dZ_m * M_TO_FT:+.4f}' if qr_dZ_m is not None else '—'
+    v, m = qr.get('verified'), qr.get('marked')
+    if v is not None and m is not None:
+        vm = f'{v}/{m}'
+        if m > 0 and v < m:
+            vm = f'<span style="color:#fa3">{vm}</span>'  # solver rejected marks
+        elif m == 0:
+            vm = f'<span style="color:#888">{vm}</span>'
+    else:
+        vm = '—'
+    return f'<td>{role_html}</td><td>{dH_cell}</td><td>{dZ_cell}</td><td>{vm}</td>'
+
+
+def _build_qr_lookup(pix4d_qr: dict) -> Dict[str, dict]:
+    """From a parse_quality_report() dict, build {norm_label → qr_row} where
+    qr_row has role/dH_m/dZ_m/verified/marked. Untagged QR rows (verified=0,
+    marked=0) are still included so role/marked counts can be displayed."""
+    out: Dict[str, dict] = {}
+    for section, role in (('gcps', 'control'), ('cps', 'checkpoint')):
+        for r in pix4d_qr.get(section, []):
+            label = r.get('label')
+            if not label:
+                continue
+            dx, dy, dz = r.get('dx'), r.get('dy'), r.get('dz')
+            dH_m = (math.hypot(dx or 0.0, dy or 0.0) * FT_TO_M) if dx is not None else None
+            dZ_m = ((dz or 0.0) * FT_TO_M) if dz is not None else None
+            out[_norm_label_for_qr(label)] = {
+                'qr_label':  label,
+                'role':      role,
+                'qr_dH_m':   dH_m,
+                'qr_dZ_m':   dZ_m,
+                'verified':  r.get('verified'),
+                'marked':    r.get('marked'),
+            }
+    return out
+
+
 def generate_html_report(
     result: dict,
     output_path: str,
@@ -1083,11 +1153,14 @@ def generate_html_report(
     suspect_floor_ft: float = 0.5,
     ortho_rmse: Optional[dict] = None,
     ortho_tags_path: Optional[str] = None,
+    pix4d_qr: Optional[dict] = None,
 ) -> None:
     """Generate HTML accuracy report with optional ortho crop images."""
 
     has_ortho_rmse = ortho_rmse is not None
     ortho_only = result.get("ortho_only", False)
+    qr_by_norm = _build_qr_lookup(pix4d_qr) if pix4d_qr else {}
+    has_qr = bool(qr_by_norm)
 
     # Parse ortho-tagged pixel positions per label (for cyan crosshair overlay)
     ortho_tag_px: Dict[str, Tuple[float, float]] = {}  # label → (crop_px, crop_py)
@@ -1126,9 +1199,11 @@ def generate_html_report(
     for group_key in ("gcp", "chk"):
         group = result.get(group_key, {})
         for p in group.get("points", []):
+            qr_row = qr_by_norm.get(_norm_label_for_qr(p["label"])) if has_qr else None
             all_points.append({**p, "group": group_key.upper(),
                                "n_images": obs_counts.get(p["label"], 0),
-                               "ortho_dH": ortho_dh_by_label.get(p["label"])})
+                               "ortho_dH": ortho_dh_by_label.get(p["label"]),
+                               "qr": qr_row})
 
     # Sort: when ortho-tags present, sort by ortho dH (worst first),
     # points without ortho measurement sort to bottom
@@ -1201,7 +1276,15 @@ are an independent measure of accuracy.</p>
         return f"{v * M_TO_FT:.4f}" if to_ft else f"{v:.4f}"
 
     summary_rows = ""
-    # Reconstruction section (skip in ortho-only mode)
+
+    # --- ODM super-section ---
+    if not ortho_only or has_ortho_rmse:
+        summary_rows += (
+            f'<tr><th colspan="5" class="tool-header">'
+            f'ODM (GCP N={gcp["n"]}, CHK N={chk["n"]})</th></tr>\n'
+        )
+
+    # ODM > Reconstruction sub-section (skip in ortho-only mode)
     if not ortho_only:
         summary_rows += '<tr><th colspan="5" class="section-header">Reconstruction</th></tr>\n'
         for name, key in [("RMS_H", "rms_h"), ("RMS_Z", "rms_z"), ("RMS_3D", "rms_3d"),
@@ -1211,7 +1294,7 @@ are an independent measure of accuracy.</p>
                              f"<td>{_fmt_val(gv)}</td><td>{_fmt_val(gv, True)}</td>"
                              f"<td>{_fmt_val(cv)}</td><td>{_fmt_val(cv, True)}</td></tr>\n")
 
-    # Orthophoto section (only when ortho-tags present)
+    # ODM > Orthophoto sub-section (only when ortho-tags present)
     if has_ortho_rmse:
         ortho_n_gcp = ortho_gcp.get("n", 0)
         ortho_n_chk = ortho_chk.get("n", 0)
@@ -1221,9 +1304,47 @@ are an independent measure of accuracy.</p>
                          f"<td>{_fmt_val(ogv)}</td><td>{_fmt_val(ogv, True)}</td>"
                          f"<td>{_fmt_val(ocv)}</td><td>{_fmt_val(ocv, True)}</td></tr>\n")
 
+    # --- Pix4D super-section ---
+    # Pix4D's GCP/CHK set is not necessarily the same as ours — Isaiah may
+    # have used more or different points as control. The N counts reflect
+    # Pix4D's own classification.
+    if has_qr and pix4d_qr:
+        qr_n_gcp = sum(1 for g in pix4d_qr.get('gcps', []) if (g.get('marked') or 0) > 0)
+        qr_n_cp  = sum(1 for c in pix4d_qr.get('cps',  []) if (c.get('marked') or 0) > 0)
+
+        def _qr_rms(summary_dict, axis):
+            """Return RMS in metres for a given axis ('h' or 'z'). Pix4D RMS
+            row gives per-component dx/dy/dz in CRS units (ftUS); horizontal
+            is the quadrature of dx and dy."""
+            rms = (summary_dict or {}).get('rms') or {}
+            if axis == 'h':
+                dx, dy = rms.get('dx'), rms.get('dy')
+                if dx is None or dy is None:
+                    return None
+                return math.hypot(dx, dy) * FT_TO_M
+            dz = rms.get('dz')
+            return abs(dz) * FT_TO_M if dz is not None else None
+
+        qr_gcp_summ = pix4d_qr.get('gcp_summary', {}) or {}
+        qr_cp_summ  = pix4d_qr.get('cp_summary',  {}) or {}
+
+        summary_rows += (
+            f'<tr><th colspan="5" class="tool-header">'
+            f'Pix4D (GCP N={qr_n_gcp}, CHK N={qr_n_cp})</th></tr>\n'
+        )
+        # Pix4D > Reconstruction sub-section (only sub-section for now;
+        # geo-3ui Pix4D ortho would land alongside as a sibling)
+        summary_rows += '<tr><th colspan="5" class="section-header">Reconstruction</th></tr>\n'
+        for name, axis in (('RMS_H', 'h'), ('RMS_Z', 'z')):
+            gv = _qr_rms(qr_gcp_summ, axis)
+            cv = _qr_rms(qr_cp_summ, axis)
+            summary_rows += (f"<tr><td>{name}</td>"
+                             f"<td>{_fmt_val(gv)}</td><td>{_fmt_val(gv, True)}</td>"
+                             f"<td>{_fmt_val(cv)}</td><td>{_fmt_val(cv, True)}</td></tr>\n")
+
     summary_table = f"""<h3>Summary</h3>
 <table class="summary">
-<tr><th></th><th colspan="2">GCP (N={gcp['n']})</th><th colspan="2">CHK (N={chk['n']})</th></tr>
+<tr><th></th><th colspan="2">GCP</th><th colspan="2">CHK</th></tr>
 <tr><th>Metric</th><th>m</th><th>ft</th><th>m</th><th>ft</th></tr>
 {summary_rows}</table>"""
 
@@ -1396,7 +1517,10 @@ are an independent measure of accuracy.</p>
             else:
                 ortho_cell = "—"
             row = (f'<tr><td>{label_cell}{suspect_mark}</td><td>{p["group"]}</td>'
-                   f'<td>{ortho_cell}</td></tr>\n')
+                   f'<td>{ortho_cell}</td>')
+            if has_qr:
+                row += _qr_cells_html(p)
+            row += '</tr>\n'
         else:
             dh_ft = p["dH"] * M_TO_FT
             dz_ft = p["dZ"] * M_TO_FT
@@ -1417,17 +1541,72 @@ are an independent measure of accuracy.</p>
                    f'<td>{d3d_ft:.4f}</td>')
             if has_ortho_rmse:
                 row += f'<td>{ortho_cell}</td>'
+            if has_qr:
+                row += _qr_cells_html(p)
             row += '</tr>\n'
         detail_rows += row
 
+    # Headers — nested toolchain hierarchy:
+    #   row 1: ODM | Pix4D                            (super-tool grouping)
+    #   row 2: Reconstruction | Orthophoto | Recon.   (sub-section grouping)
+    #   row 3: column labels                          (actual fields)
+    qr_subheaders = (
+        '<th>Role</th><th>dH (ft)</th><th>dZ (ft)</th><th>Verif./Mark.</th>'
+        if has_qr else ''
+    )
+    qr_section_header = (
+        '<th colspan="4" class="section-header" style="text-align:center; padding-left:10px">Reconstruction</th>'
+        if has_qr else ''
+    )
+    qr_tool_header = (
+        '<th colspan="4" class="tool-header" style="text-align:center">Pix4D</th>'
+        if has_qr else ''
+    )
+
     if ortho_only:
-        detail_header = """<tr><th>Label</th><th>Group</th><th>Ortho dH (ft)</th></tr>"""
-    elif has_ortho_rmse:
-        detail_header = """<tr><th></th><th></th><th></th><th colspan="3">Reconstruction</th><th>Orthophoto</th></tr>
-<tr><th>Label</th><th>Group</th><th>Tagged<br/>Images</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th><th>dH (ft)</th></tr>"""
+        # Ortho-only mode: only Orthophoto under ODM.
+        odm_tool_span = 1
+        odm_tool_header = f'<th colspan="{odm_tool_span}" class="tool-header" style="text-align:center">ODM</th>'
+        odm_section_headers = '<th class="section-header" style="text-align:center; padding-left:10px">Orthophoto</th>'
+        if has_qr:
+            detail_header = (
+                f'<tr><th colspan="2"></th>{odm_tool_header}{qr_tool_header}</tr>\n'
+                f'<tr><th colspan="2"></th>{odm_section_headers}{qr_section_header}</tr>\n'
+                f'<tr><th>Label</th><th>Group</th><th>Ortho dH (ft)</th>{qr_subheaders}</tr>'
+            )
+        else:
+            detail_header = (
+                '<tr><th colspan="2"></th>'
+                '<th class="tool-header" style="text-align:center">ODM</th></tr>\n'
+                '<tr><th colspan="2"></th>'
+                '<th class="section-header" style="text-align:center; padding-left:10px">Orthophoto</th></tr>\n'
+                '<tr><th>Label</th><th>Group</th><th>Ortho dH (ft)</th></tr>'
+            )
     else:
-        detail_header = """<tr><th></th><th></th><th></th><th colspan="3">Reconstruction</th></tr>
-<tr><th>Label</th><th>Group</th><th>Tagged<br/>Images</th><th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th></tr>"""
+        # Reconstruction mode (with optional Orthophoto and Pix4D).
+        # ODM groups: Reconstruction (3 cols) [+ Orthophoto (1 col)]
+        if has_ortho_rmse:
+            odm_tool_span = 4
+            odm_section_headers = (
+                '<th colspan="3" class="section-header" style="text-align:center; padding-left:10px">Reconstruction</th>'
+                '<th class="section-header" style="text-align:center; padding-left:10px">Orthophoto</th>'
+            )
+        else:
+            odm_tool_span = 3
+            odm_section_headers = (
+                '<th colspan="3" class="section-header" style="text-align:center; padding-left:10px">Reconstruction</th>'
+            )
+        odm_tool_header = f'<th colspan="{odm_tool_span}" class="tool-header" style="text-align:center">ODM</th>'
+
+        recon_subheaders = '<th>dH (ft)</th><th>dZ (ft)</th><th>d3D (ft)</th>'
+        ortho_subheader = '<th>dH (ft)</th>' if has_ortho_rmse else ''
+
+        detail_header = (
+            f'<tr><th colspan="3"></th>{odm_tool_header}{qr_tool_header}</tr>\n'
+            f'<tr><th colspan="3"></th>{odm_section_headers}{qr_section_header}</tr>\n'
+            f'<tr><th>Label</th><th>Group</th><th>Tagged<br/>Images</th>'
+            f'{recon_subheaders}{ortho_subheader}{qr_subheaders}</tr>'
+        )
 
     detail_table_html = f"""<table class="detail">
 {detail_header}
@@ -1614,7 +1793,8 @@ points coincide with high-uncertainty regions.</p>
     .summary td:first-child {{ font-weight: bold; }}
     .summary th[colspan] {{ text-align: center; }}
     .detail th[colspan] {{ text-align: center; }}
-    .section-header {{ text-align: left; background: #3a3a3a; font-size: 13px; padding: 6px 10px; }}
+    .section-header {{ text-align: left; background: #3a3a3a; font-size: 13px; padding: 6px 10px; padding-left: 28px; }}
+    .tool-header {{ text-align: left; background: #1a3358; color: #cfe; font-size: 14px; padding: 8px 10px; font-weight: bold; }}
     .detail a {{ color: #6cf; }}
     .detail-with-map {{ display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }}
     .detail-with-map table {{ flex-shrink: 0; }}
@@ -1949,6 +2129,16 @@ def main() -> None:
         default=0.5,
         help="Thumbnail zoom radius in metres for ortho tagging crops (default: 0.5).",
     )
+    parser.add_argument(
+        "--pix4d-qr",
+        default=None,
+        metavar="quality_report.pdf",
+        help="Pix4Dmatic quality_report.pdf to cross-reference. Adds Pix4D-side "
+             "per-target columns (role, dH, dZ, verified/marked) to the HTML "
+             "report alongside our independent ODM/triangulation results. "
+             "Role-disagreement (e.g. CHK-* by sight but used as control in "
+             "Pix4D) is highlighted.",
+    )
     args = parser.parse_args()
 
     if args.test:
@@ -1996,6 +2186,25 @@ def main() -> None:
             parser.error("--ortho-tags requires --ortho.")
         ortho_rmse_result = compute_ortho_rmse(args.ortho_tags, args.ortho)
 
+    # Parse Pix4D quality_report.pdf if provided (geo-6gni cross-reference)
+    pix4d_qr_data = None
+    if args.pix4d_qr:
+        try:
+            from pathlib import Path as _Path
+            sys_path_root = str(_Path(__file__).resolve().parent)
+            if sys_path_root not in sys.path:
+                sys.path.insert(0, sys_path_root)
+            from pix4d_qr import parse_quality_report
+            pix4d_qr_data = parse_quality_report(_Path(args.pix4d_qr))
+            n_gcp = len(pix4d_qr_data.get('gcps', []))
+            n_cp  = len(pix4d_qr_data.get('cps', []))
+            print(f"\nLoaded Pix4D QR: {pix4d_qr_data.get('format')} — "
+                  f"{n_gcp} GCPs, {n_cp} CPs", file=sys.stderr)
+        except Exception as e:
+            print(f"WARNING: --pix4d-qr load failed ({e}); continuing without QR.",
+                  file=sys.stderr)
+            pix4d_qr_data = None
+
     if args.html:
         if result is None:
             parser.error("--html requires reconstruction or --ortho-tags.")
@@ -2010,6 +2219,7 @@ def main() -> None:
             suspect_floor_ft=args.suspect_floor,
             ortho_rmse=ortho_rmse_result,
             ortho_tags_path=args.ortho_tags,
+            pix4d_qr=pix4d_qr_data,
         )
 
     if args.emit_ortho_tags:
