@@ -116,9 +116,9 @@ flowchart TD
     images --> launch_odm
     launch_odm --> odm
     cust_dc --> extract
-    extract --> points_6529
     extract --> transform_yaml
     extract --> points_design
+    extract --> points_6529
     points_6529 --> emlid
     drone --> images
     emlid --> all --> sight
