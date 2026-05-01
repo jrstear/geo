@@ -240,12 +240,12 @@ def _short_image_id(img_name: str) -> str:
 
 
 def _format_suspects(suspects: List[dict], max_show: int = 5) -> str:
-    """Comma-separated list of suspect 'frame-id/residual' pairs, worst-first."""
+    """Comma-separated list of suspect 'image-id offset_px' pairs, worst-first."""
     if not suspects:
         return ''
     ranked = sorted(suspects, key=lambda x: -x['residual'])
     shown = ranked[:max_show]
-    items = [f"{_short_image_id(s['img'])}/{s['residual']:.0f}" for s in shown]
+    items = [f"{_short_image_id(s['img'])} {s['residual']:.1f}" for s in shown]
     extra = len(suspects) - len(shown)
     s = ', '.join(items)
     if extra > 0:
@@ -275,9 +275,9 @@ def _build_legend(anchor_px: float, suspect_px: float) -> str:
         "  cons_off   |consensus offset| in pixels. ~= 0 when you and sight agree;\n"
         "             larger values mean look at why they disagree (could be your\n"
         "             tagging OR sight's color refinement at fault).\n"
-        f"  image/offset  Color/tri_color marks whose residual from consensus exceeds\n"
-        f"             {suspect_px:.0f} px (tune with --suspect-px). Worst-first, formatted as\n"
-        "             frame-id/residual_px, comma-separated. '+N' = N more not shown.\n"
+        f"  image off  Color/tri_color marks whose residual from consensus exceeds\n"
+        f"             {suspect_px:.0f} px (tune with --suspect-px). Worst-first, each entry\n"
+        "             is 'image-id offset_px', comma-separated. '+N' = N more not shown.\n"
         "             Each entry points at one image to review for this target.\n"
         "\n"
         "Sort: tier (red -> amber -> green), then by suspiciousness within tier.\n"
@@ -311,7 +311,7 @@ def _print_consolidated_table(tier_rows: List[Tuple[str, int, Optional[int], str
     if have_consensus:
         print(f"{'rank':>4s}  {'label':<{label_w}s}  {'est':>3s} {'marks':>5s} {'tier':>5s}  "
               f"{'anc':>3s} {'col':>3s} {'frac':>4s}  {'cons_src':>8s} {'cons_off':>8s}  "
-              f"image/offset (worst first)")
+              f"image off (worst first)")
     elif have_estimates:
         print(f"{'rank':>4s}  {'label':<{label_w}s}  {'est':>3s} {'marks':>5s} {'tier':>5s}")
     else:
@@ -584,6 +584,145 @@ def _load_marks(mode: str, marks_path: Path) -> List[dict]:
     sys.exit(f"ERROR: unknown mode {mode}")
 
 
+def _detect_marks_mode(path: Path) -> str:
+    """Detect the marks-file mode for any single-file input.
+
+    Returns 'sight' / 'pix4d_p4mpl' / 'pix4d_csv'. Used by --vs comparison
+    mode to pick the right loader for either side independently.
+    """
+    if path.suffix.lower() == '.p4mpl':
+        return 'pix4d_p4mpl'
+    if path.suffix.lower() == '.csv':
+        if _looks_like_marks_csv(path):
+            return 'pix4d_csv'
+        sys.exit(f"ERROR: {path} is .csv but doesn't look like a marks CSV "
+                 f"(expected Filename/Label/PixelX/PixelY or "
+                 f"image_name/gcp_label/px/py columns)")
+    if path.suffix.lower() == '.txt':
+        return 'sight'
+    sys.exit(f"ERROR: cannot determine marks-file mode for {path}")
+
+
+# ---------------------------------------------------------------------------
+# Tagger-vs-tagger comparison (--vs OTHER)
+# ---------------------------------------------------------------------------
+
+def compare_tags(primary_rows: List[dict],
+                  primary_tagged_only: bool,
+                  other_rows: List[dict],
+                  other_tagged_only: bool,
+                  normalizer) -> Tuple[List[dict], List[str], List[str], List[str]]:
+    """Compare two marks sources by (image, normalized-label) intersection.
+
+    Returns:
+        results       — per-target dicts (only targets with >= 1 image-overlap),
+                        sorted by descending median pixel offset.
+        primary_only  — norm_labels tagged only in primary.
+        other_only    — norm_labels tagged only in other.
+        no_overlap    — norm_labels in BOTH but with no image overlap.
+    """
+    pri = [r for r in primary_rows
+           if (not primary_tagged_only) or r.get('src') == 'tagged']
+    oth = [r for r in other_rows
+           if (not other_tagged_only) or r.get('src') == 'tagged']
+
+    pri_by_il = {(r['img'], normalizer(r['lbl'])): r for r in pri}
+    oth_by_il = {(r['img'], normalizer(r['lbl'])): r for r in oth}
+
+    by_target: Dict[str, List[dict]] = defaultdict(list)
+    display_labels: Dict[str, str] = {}
+    for (img, norm), pr in pri_by_il.items():
+        ot = oth_by_il.get((img, norm))
+        if ot is None:
+            continue
+        dx = pr['px'] - ot['px']
+        dy = pr['py'] - ot['py']
+        by_target[norm].append({
+            'img':    img,
+            'pri_px': pr['px'], 'pri_py': pr['py'],
+            'oth_px': ot['px'], 'oth_py': ot['py'],
+            'dx':     dx, 'dy': dy,
+            'offset': math.hypot(dx, dy),
+        })
+        display_labels.setdefault(norm, pr['lbl'])
+
+    pri_count_by_norm: Dict[str, int] = defaultdict(int)
+    for r in pri:
+        pri_count_by_norm[normalizer(r['lbl'])] += 1
+    oth_count_by_norm: Dict[str, int] = defaultdict(int)
+    for r in oth:
+        oth_count_by_norm[normalizer(r['lbl'])] += 1
+
+    pri_set = set(pri_count_by_norm)
+    oth_set = set(oth_count_by_norm)
+    primary_only = sorted(pri_set - oth_set)
+    other_only   = sorted(oth_set - pri_set)
+    both_set     = pri_set & oth_set
+    no_overlap   = sorted(n for n in both_set if not by_target.get(n))
+
+    out: List[dict] = []
+    for norm in sorted(by_target):
+        matches = by_target[norm]
+        offsets = [m['offset'] for m in matches]
+        # Use display label from primary if available, else from other
+        disp = display_labels.get(norm)
+        if disp is None:
+            for r in oth:
+                if normalizer(r['lbl']) == norm:
+                    disp = r['lbl']; break
+        out.append({
+            'label':      disp or norm,
+            'norm_label': norm,
+            'n_pri':      pri_count_by_norm.get(norm, 0),
+            'n_cmp':      oth_count_by_norm.get(norm, 0),
+            'n_match':    len(matches),
+            'med_off':    statistics.median(offsets),
+            'max_off':    max(offsets),
+            'matches':    matches,
+        })
+    out.sort(key=lambda r: -r['med_off'])
+    return out, primary_only, other_only, no_overlap
+
+
+def _build_compare_legend() -> str:
+    return (
+        "Columns:\n"
+        "  n_pri        # of marks in PRIMARY file for this target.\n"
+        "  n_cmp        # of marks in --vs (OTHER) file for this target.\n"
+        "  n_match      # of (image, target) pairs where BOTH files placed marks.\n"
+        "               Lower than min(n_pri, n_cmp) means partial image overlap.\n"
+        "  med_off      median |primary_pixel - other_pixel| across matched pairs (px).\n"
+        "               Max appears in the image-off list as the first (worst) entry.\n"
+        "  image off    Worst matched image and its pixel offset between the two\n"
+        "               taggers, worst-first. Each entry is 'image-id offset_px',\n"
+        "               comma-separated. '+N' = N more not shown.\n"
+        "\n"
+        "Sort: descending median offset (most-disagreeing targets first).\n"
+        "Pixel offsets are image-space; ground CRS not relevant.\n"
+        "Label normalization (e.g. 'CHK-131-2' <-> '131 2') is always active in\n"
+        "comparison mode so cross-toolchain marks match.\n"
+    )
+
+
+def _print_comparison_table(results: List[dict],
+                             top: Optional[int]) -> None:
+    """Print the per-target comparison table (worst median offset first)."""
+    rows = results if top is None else results[:top]
+    label_w = max([len('label')] + [len(r['label']) for r in rows]) if rows else len('label')
+
+    print(f"{'rank':>4s}  {'label':<{label_w}s}  "
+          f"{'n_pri':>5s} {'n_cmp':>5s} {'n_match':>7s}  "
+          f"{'med_off':>7s}  image off (worst first)")
+    for i, r in enumerate(rows, 1):
+        ranked = sorted(r['matches'], key=lambda m: -m['offset'])[:5]
+        items = [f"{_short_image_id(m['img'])} {m['offset']:.1f}" for m in ranked]
+        extra = len(r['matches']) - len(ranked)
+        susp = ', '.join(items) + (f" +{extra}" if extra > 0 else '')
+        print(f"{i:4d}  {r['label']:<{label_w}s}  "
+              f"{r['n_pri']:5d} {r['n_cmp']:5d} {r['n_match']:7d}  "
+              f"{r['med_off']:7.1f}  {susp}")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.splitlines()[1],
@@ -605,6 +744,13 @@ def main():
     ap.add_argument("--estimates", type=Path, default=None,
                     help="Sight estimates file ({job}.txt) for consensus "
                          "analysis. Auto-located when omitted (Pix4D modes).")
+    ap.add_argument("--vs", type=Path, default=None, metavar='OTHER_MARKS',
+                    help="Tagger-vs-tagger comparison mode. Compare PRIMARY "
+                         "marks (positional input) against OTHER_MARKS. Both "
+                         "can be sight tagged.txt, .p4mpl, or marks.csv — any "
+                         "combination is supported. Skips tier check, "
+                         "consensus-with-sight, and --estimates auto-locate; "
+                         "outputs a per-target offset comparison table only.")
     ap.add_argument("--anchor-px", type=float, default=10.0,
                     help="Mark within this many px of a 'color'/'tri_color' "
                          "estimate is treated as anchor (default 10).")
@@ -627,7 +773,55 @@ def main():
                     help="Skip the column-legend block before the table.")
     args = ap.parse_args()
 
-    # ------- Resolve inputs -------
+    # ------- Comparison mode short-circuit -------
+    if args.vs is not None:
+        if not args.vs.exists():
+            sys.exit(f"ERROR: --vs file not found: {args.vs}")
+        if len(args.input) != 1:
+            sys.exit("ERROR: --vs requires exactly one positional PRIMARY input "
+                     "(sight tagged.txt, .p4mpl, or marks.csv).")
+        pri_path = Path(args.input[0])
+        if not pri_path.exists():
+            sys.exit(f"ERROR: input file not found: {pri_path}")
+
+        pri_mode = _detect_marks_mode(pri_path)
+        oth_mode = _detect_marks_mode(args.vs)
+        pri_rows = _load_marks(pri_mode, pri_path)
+        oth_rows = _load_marks(oth_mode, args.vs)
+        pri_tagged_only = (pri_mode == 'sight')
+        oth_tagged_only = (oth_mode == 'sight')
+
+        print(f"Comparison: {pri_path.name} ({pri_mode}, {len(pri_rows)} row(s))  "
+              f"vs  {args.vs.name} ({oth_mode}, {len(oth_rows)} row(s))")
+
+        results, pri_only, oth_only, no_overlap = compare_tags(
+            pri_rows, pri_tagged_only,
+            oth_rows, oth_tagged_only,
+            _normalize_label,
+        )
+
+        n_both = len(results) + len(no_overlap)
+        print()
+        print(f"  {n_both} target(s) tagged by both files; "
+              f"{len(results)} with image overlap, {len(no_overlap)} with none.")
+        if pri_only:
+            preview = ', '.join(pri_only[:5]) + (f", ...({len(pri_only)})"
+                                                  if len(pri_only) > 5 else '')
+            print(f"  {len(pri_only)} target(s) only in primary: {preview}")
+        if oth_only:
+            preview = ', '.join(oth_only[:5]) + (f", ...({len(oth_only)})"
+                                                  if len(oth_only) > 5 else '')
+            print(f"  {len(oth_only)} target(s) only in other:   {preview}")
+
+        if results:
+            print()
+            if not args.no_legend:
+                print(_build_compare_legend())
+            _print_comparison_table(results, args.top)
+
+        return 0  # comparison mode is informational; no exit-code semantics
+
+    # ------- Resolve inputs (single-file analysis modes) -------
     mode, paths = _resolve_inputs(args)
     marks_path = paths[-1]
     if mode == 'sight':
