@@ -2,7 +2,19 @@
 
 **Epic bead:** geo-qx4b
 **Spawned from:** 2026-04-29 prep for Jon ↔ Isaiah meeting on `~/stratus/redrocks/elevation/TIN_GCP_EVALUATION_RESPONSE.md`
-**Status:** Living planning doc — revise during/after the meeting.
+**Status:** Living planning doc — revised post-meeting.
+
+**Update 2026-05-01:** The Thread 1 P2 tools-layer set is shipped end-to-end.
+`geo-6gni` (Pix4D `quality_report.pdf` parser + rmse.py integration),
+`geo-hbxf` (rmse.py LandXML TIN axis), and `geo-y3j3` (check_tags
+toolchain-agnostic input + simplified gate) all closed. `geo-fcio` reframed
+and shipped via `transform.py split` emitting `{job}_6529_tagged_marks.csv`.
+The unified rmse.html report now renders three independent accuracy axes
+side-by-side under an `ODM | Pix4D × Reconstruction/Orthophoto/TIN`
+hierarchy — cross-validation on aztec13 already surfaced new findings
+worth investigating (`geo-0h61`, `geo-xzds`). The Thread 2 odium agent
+layer (geo-frmv / geo-seoj / geo-wsu1 / geo-vmdn) remains open. See bead
+status updates below.
 
 This document captures the threads worth supporting in geo and odium so that
 Isaiah's Pix4D process benefits from the same catch-errors-early discipline
@@ -19,20 +31,28 @@ three meeting threads.
 
 The honest separation between "ports cleanly" and "needs work":
 
-| Tool | Pix4D fit | Bead | Pri |
+| Tool | Pix4D fit | Bead | Status |
 |---|---|---|---|
-| `transform.py dc` → `transform.yaml` | **Ports today, toolchain-agnostic.** Run on every job's `.dc` regardless of Pix4D vs ODM. Mar-6 email chaos becomes structured data. | (already shipped) | – |
-| Pix4D `quality_report.json` parser → post-bundle accuracy + outlier checks | **~30 lines.** Post-run gate: `verified_marks_count` vs `marks_count` mismatch (catches mis-tagged marks the bundle rejected); per-GCP XYZ residuals; per-CHK RMS_H/RMS_Z. Different question than the pre-run marks-count check (which moves to geo-y3j3). | geo-6gni | **P2** |
-| Pre-run marks-count hard-stop (Pix4D marks file OR `_tagged.txt`) | Catches bigMem (50 GCPs, 0 marked) **before** the bundle runs, at $0 cost. Bundled with check_tags' toolchain-agnostic input refactor — same parser, both toolchains. Strictly cheaper than QR for this class of failure. | geo-y3j3 | **P2** |
-| `rmse.py` extended for TIN-sampled Z | **Needs work.** Replaces the Flask app in `~/stratus/redrocks/elevation/` and the duplicated `examine_tins*.py` analysis. Toolchain-agnostic. **Confirmed direct interest.** | geo-hbxf | **P2** |
-| `check_tags` toolchain-agnostic input + simplify gate | **Newly elevated.** Isaiah's observation: `{job}_tagged.txt` and a Pix4D marks file carry similar information, so check_tags can serve both toolchains if it accepts either input. Bundle with the gate-simplification (drop the magic 0.7 score, replace with the `≥ 3 anchor-quality marks` rule that mirrors `marks_count >= 3` for Pix4D). | geo-y3j3 | **P2** |
-| Surveyor-handoff CSV validator | **Deprioritised.** Stratus plans to require `.dc` files going forward — the `.dc` carries CRS/datum/geoid metadata explicitly, so the CSV validator becomes a fallback rather than a primary gate. | geo-vtc0 | P3 |
-| LandXML metadata-vs-data validator | **Deprioritised.** If `.dc` is required and CRS is locked at survey-handoff time, the declared-vs-actual mismatch becomes much harder to produce. Residual risk is Pix4D project-CRS misconfig (the original `Red Rocks TIN.xml` mode), but it's no longer the highest-leverage gate. | geo-75sw | P3 |
-| `sight.py` → Pix4D marks CSV exporter | **Reframed.** Isaiah: Pix4D doesn't distinguish external-process estimates from human-tagged marks — exactly the gap the geo *confidence* attribute (`color`/`tri_color`/`tri_proj`/`projection`/`tagged`) was created to fill. Feeding raw sight estimates to Pix4D would erase that distinction Pix4D doesn't make in the first place. **Reframe**: use sight + GCPEditorPro as the *tagging frontend* (where confidence is meaningful), then export the human-confirmed result to Pix4D's marks CSV format. Pix4D treats every input mark as ground truth — correct, because they are. Isaiah skips Pix4D's GUI tagging step. Pending his decision on whether he'd actually tag in GCPEditorPro vs Pix4D's GUI. | geo-fcio | P3 |
+| `transform.py dc` → `transform.yaml` | **Ports today, toolchain-agnostic.** Run on every job's `.dc` regardless of Pix4D vs ODM. Mar-6 email chaos becomes structured data. | (already shipped) | ✅ shipped |
+| Pix4D `quality_report.pdf` parser → post-bundle accuracy + outlier checks | Pix4Dmatic v2.0.x does not emit a JSON QR — pdfplumber over the PDF tables is the practical path. Post-bundle checks: `verified_marks_count` vs `marks_count` mismatch (solver rejected operator marks), per-GCP XYZ residuals, per-CHK RMS_H/RMS_Z, severity-classified quality checks (matches/dataset/camera_opt/gcps/checkpoints/atps). Standalone `pix4d_qr.py` + `rmse.py --pix4d-qr` flag wires it into the unified report. | geo-6gni | ✅ **closed 2026-05-01** (b828af0, 89cb0e7) |
+| Pre-run marks-count hard-stop (Pix4D marks file OR `_tagged.txt`) | Catches bigMem (50 GCPs, 0 marked) **before** the bundle runs, at $0 cost. Bundled with check_tags' toolchain-agnostic input refactor — same parser, both toolchains. Strictly cheaper than QR for this class of failure. | geo-y3j3 | ✅ **closed 2026-04-30** (282cabd) |
+| `rmse.py` extended for TIN-sampled Z | New `tin.py` standalone module (LandXML 1.2 parsing, barycentric sampling, `<Application>`-based tool detection). `rmse.py --tin PATH [--tin-source pix4d|odm]` adds `tin_dZ` column under producing tool's TIN sub-section. | geo-hbxf | ✅ **closed 2026-05-01** (7b35c91) |
+| `check_tags` toolchain-agnostic input + simplify gate | Three input modes (sight tagged.txt, Pix4D `history.p4mpl`, Pix4D marks CSV). 3-tier rule (red/amber/green at <3, 3-6, ≥7) replaces the heuristic 0.7 gate. Fairness clamp on visible-image count when sight estimates available. Auto-locates sibling sight estimates from filename pattern. Plus `--vs OTHER` for tagger-vs-tagger comparison. | geo-y3j3 | ✅ **closed** (see above; same bead) |
+| Surveyor-handoff CSV validator | **Deprioritised.** Stratus plans to require `.dc` files going forward — the `.dc` carries CRS/datum/geoid metadata explicitly, so the CSV validator becomes a fallback rather than a primary gate. | geo-vtc0 | open, P3 |
+| LandXML metadata-vs-data validator | **Deprioritised.** If `.dc` is required and CRS is locked at survey-handoff time, the declared-vs-actual mismatch becomes much harder to produce. Residual risk is Pix4D project-CRS misconfig (the original `Red Rocks TIN.xml` mode), but it's no longer the highest-leverage gate. | geo-75sw | open, P3 |
+| `sight.py` → Pix4D marks CSV exporter | **Reframed.** Isaiah: Pix4D doesn't distinguish external-process estimates from human-tagged marks — exactly the gap the geo *confidence* attribute (`color`/`tri_color`/`tri_proj`/`projection`/`tagged`) was created to fill. Reframe: tag in GCPEditorPro (where confidence is meaningful), then export human-confirmed marks to Pix4D's CSV format. `transform.py split` now emits `{job}_6529_tagged_marks.csv` from a tagged file, paired with sight's `{job}_6529_color_marks.csv` (color-only pre-marks) and `{job}_6529_targets.csv` (GCP coords with monument dedup). See `docs/plans/sight-to-pix4d-import.md` for the joint workflow doc. | geo-fcio | ✅ **closed 2026-04-30** (fab751e); **geo-qkip** ✅ closed (62bf575) for the targets-CSV sibling |
 
 **Question for Isaiah after this discussion:** of the P2 set (QR parser,
 rmse-vs-TIN, agnostic check_tags), which would actually save the most pain
 on the next job? That's your "ship first" candidate.
+
+> **Resolved 2026-05-01:** ship-first question is moot — all three P2 items
+> shipped. The unified `rmse.html` (with `--pix4d-qr` and `--tin`) renders
+> three independent accuracy axes per target side-by-side, and on the first
+> dataset run (aztec13) already surfaced a 3× CHK RMS_Z disagreement between
+> ODM and Pix4D worth investigating (`geo-0h61`) plus a NAD83 datum-vintage
+> offset visible in `mean_dZ` (`geo-xzds`). Next-job benefit is now baked in
+> rather than a choice.
 
 ### Thread 2 — odium with two state-paths
 
@@ -205,27 +225,56 @@ Honest carry-over from the original doubt:
 
 ## Beads created from this prep
 
-(Priority reflects post-Isaiah-feedback adjustments.)
+(Status as of 2026-05-01. Priority reflects post-Isaiah-feedback
+adjustments and subsequent revisions.)
+
+### Tools layer (Thread 1) — shipped
+
+| ID | Title | Status |
+|---|---|---|
+| geo-6gni | Pix4Dmatic `quality_report.pdf` parser + `rmse.py --pix4d-qr` integration | ✅ closed |
+| geo-hbxf | `rmse.py --tin`: LandXML TIN-sampled Z as third accuracy axis | ✅ closed |
+| geo-y3j3 | `check_tags` toolchain-agnostic input + 3-tier gate + `--vs` comparison | ✅ closed |
+| geo-fcio | `transform.py split` emits `{job}_6529_tagged_marks.csv` for Pix4D import | ✅ closed |
+| geo-qkip | sight emits `{job}_6529_targets.csv` (Pix4D-import GCP coords, monument dedup) | ✅ closed (added during impl, not in original plan) |
+
+### Tools layer — open
+
+| ID | Pri | Title | Notes |
+|---|---|---|---|
+| geo-3ui | P2 | `rmse.py` independent triangulation on Pix4D camera params + marks | Demoted from P1; gated by root.p4m CBOR schema discovery |
+| geo-z9u0 | P2 | packager: per-deliverable `lineage.json` writer | Tier 4, toolchain-agnostic |
+| geo-4j6p | P2 | `docs/odm-workflow.md` diagram: add rmse.py's Pix4D consumption | Filed 2026-05-01 |
+| geo-vtc0 | P3 | Surveyor-handoff CSV validator | Deprioritised — `.dc` required |
+| geo-75sw | P3 | LandXML metadata-vs-data validator | Deprioritised — `.dc` required |
+
+### Odium agent layer (Thread 2) — open
+
+| ID | Pri | Title |
+|---|---|---|
+| geo-frmv | P2 | odium: CRS / transform recovery from `.dc` (Taos use case) |
+| geo-seoj | P2 | odium: substitute control-point recommender (field-side, novel) |
+| geo-wsu1 | P3 | odium two-path state machine: common upstream forks to ODM/Pix4D |
+| geo-vmdn | P3 | odium: flight-planning advisor (AGL ↔ GSD ↔ accuracy) |
+
+### Investigations / follow-ups surfaced by the unified report
+
+| ID | Pri | Title |
+|---|---|---|
+| geo-0h61 | P1 | Investigate ODM vs Pix4D CHK accuracy gap on aztec (3× dZ disagreement) |
+| geo-xzds | P1 | NAD83 realization-aware Helmert recovery from monument deltas |
+| geo-1tz1 | P1 | GCPEditorPro: RETURN on tag screen saves and advances to next target |
+
+### Epic
 
 | ID | Pri | Title |
 |---|---|---|
 | geo-qx4b | P2 | Pix4D process support: geo tool ports + odium two-path (this epic) |
-| geo-6gni | **P2** | Pix4D `quality_report.json` parser with marks_count hard-stop |
-| geo-hbxf | **P2** | `rmse.py` extension: TIN-sampled Z as third accuracy axis |
-| geo-y3j3 | **P2** | `check_tags`: toolchain-agnostic input + simplify gate (raised) |
-| geo-z9u0 | P2 | packager: per-deliverable `lineage.json` writer |
-| geo-frmv | **P2** | odium: CRS / transform recovery from `.dc` with missing or wrong-frame CRS (Taos use case) |
-| geo-seoj | **P2** | odium: substitute control-point recommender when monument is disturbed/missing (field-side, novel) |
-| geo-vtc0 | P3 | Surveyor-handoff CSV validator (deprioritised — `.dc` required) |
-| geo-75sw | P3 | LandXML metadata-vs-data validator (deprioritised — `.dc` required) |
-| geo-fcio | P3 | `sight.py` → Pix4D marks CSV exporter (reframed; pending Isaiah's tagging-tool decision) |
-| geo-wsu1 | P3 | odium two-path state machine: common upstream forks to ODM or Pix4D |
-| geo-vmdn | P3 | odium: flight-planning advisor (AGL ↔ GSD ↔ accuracy) |
 
 Dependencies wired:
-- geo-qx4b (epic) depends on all 9 children.
+- geo-qx4b (epic) depends on the original 9 children.
 - geo-wsu1 (odium two-path) depends on geo-vmdn (flight advisor) and geo-6gni
-  (QR parser) — those are concrete prerequisites for the Pix4D fork.
+  (QR parser, now closed) — wsu1's QR-parser prerequisite is satisfied.
 
 ---
 
@@ -261,17 +310,35 @@ simplification with the agnostic input refactor.
 
 ### Open questions for follow-up
 
-- Would Isaiah tag in GCPEditorPro instead of Pix4D's GUI? (gates fcio scope)
-- Has anyone tested whether Pix4DMatic accepts pre-marked image-coordinate
-  CSV input? Mapper does. (still relevant if fcio proceeds)
-- For check_tags toolchain-agnostic input: what does a Pix4D marks export
-  actually look like? Format spec needed before geo-y3j3 implementation.
+- ~~Would Isaiah tag in GCPEditorPro instead of Pix4D's GUI? (gates fcio scope)~~
+  **Resolved.** fcio shipped with both directions: `{job}_6529_color_marks.csv`
+  (sight estimates as Pix4D pre-marks, color-confidence only) and
+  `{job}_6529_tagged_marks.csv` (human-confirmed GCPEditorPro tags). Isaiah
+  picks per job. See `docs/plans/sight-to-pix4d-import.md`.
+- ~~Has anyone tested whether Pix4DMatic accepts pre-marked image-coordinate
+  CSV input? Mapper does.~~ **Pending Isaiah's first import test on a real
+  job; the Matic API path is documented in the joint-review plan.**
+- ~~For check_tags toolchain-agnostic input: what does a Pix4D marks export
+  actually look like?~~ **Resolved.** `extract_pix4d_marks.py` parses
+  `history.p4mpl` directly (replaying `MarkTiePoint` / `RemoveTiePoints`
+  blocks); check_tags consumes either that, the extracted CSV, or a sight
+  `_tagged.txt` interchangeably.
+- **New:** what's the root cause of the 3× CHK RMS_Z gap between ODM and
+  Pix4D on aztec13? Tracked as **geo-0h61** with hypothesis list.
+- **New:** does pyproj's 6529↔2258 transform leave a NAD83 datum-realization
+  residual large enough to confound `rmse --tin` comparisons? The aztec13
+  TIN `mean_dZ = -0.16 ft` suggests yes, but small. Tracked as **geo-xzds**.
 
 ### Action items
 
-- _Ship-first candidate: _
-- _Decision pending from Isaiah on fcio: _
-- _Other open threads: _
+- ~~Ship-first candidate~~ — **moot; all three Thread 1 P2 items shipped 2026-04-30 / 2026-05-01.**
+- ~~Decision pending from Isaiah on fcio~~ — **resolved; both pre-mark and
+  tagged-mark exporters ship.**
+- **Open threads:** odium agent layer (frmv, seoj, wsu1, vmdn) is the next
+  major front; no Thread 2 work has begun. The 3× ODM-vs-Pix4D CHK Z gap
+  (geo-0h61) and the realization-vintage Helmert (geo-xzds) are the two
+  highest-value follow-ups uncovered by the cross-validation in the unified
+  rmse.html report.
 
 ---
 
