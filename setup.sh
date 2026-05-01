@@ -23,9 +23,14 @@ fi
 echo "Creating 'geo' environment..."
 conda create -n geo -c conda-forge gdal flask tk pyproj scipy numpy opencv python=3.10 -y
 
+echo "Installing pip-only packages..."
+# pdfplumber: parse Pix4Dmatic quality_report.pdf (geo-6gni). Pure-Python; pip
+# is fine alongside conda-forge.
+conda run -n geo pip install pdfplumber
+
 echo ""
 echo "Done! Activate the environment with:"
 echo "    conda activate geo"
 echo ""
 echo "Verify key packages:"
-echo "    conda activate geo && python -c \"from osgeo import gdal; import flask, pyproj, scipy, numpy, cv2; print('OK')\""
+echo "    conda activate geo && python -c \"from osgeo import gdal; import flask, pyproj, scipy, numpy, cv2, pdfplumber; print('OK')\""
