@@ -17,6 +17,9 @@ flowchart TD
     sight(["sight.py"])
     marks["{job}_6529_color_marks.csv"]
     tagged_marks["{job}_6529_tagged_marks.csv"]
+    check_tags(["check_tags.py"])
+    tagged_pix4d["history.p4mpl"]
+    check_tags_pix4d(["check_tags.py"])
     pix4d_targets["{job}_6529_targets.csv"]
     pix4d(["Pix4D Matic"])
     pretag["{job}.txt"]
@@ -70,6 +73,8 @@ flowchart TD
         tagged_marks
         pix4d_targets
         pix4d
+        tagged_pix4d
+        check_tags_pix4d
     end
 
     subgraph "Drone (WGS84)"
@@ -82,6 +87,7 @@ flowchart TD
         sight
         gcpeditor
         tagged
+        check_tags
         split
         gcp_list
         chk_list
@@ -125,6 +131,8 @@ flowchart TD
     sight --> pretag
     sight --> marks
     marks -.-> pix4d
+    pix4d --> tagged_pix4d --> check_tags_pix4d
+    marks --> check_tags_pix4d
     sight --> pix4d_targets --> pix4d
     sight --> targets
     sight --> targets_design
@@ -132,6 +140,8 @@ flowchart TD
     gcpeditor --> tagged
     tagged --> split
     tagged -.-> |refine| gcpeditor
+    pretag --> check_tags
+    tagged --> check_tags
     transform_yaml --> packager
     transform_yaml --> sight
     split --> tagged_marks
