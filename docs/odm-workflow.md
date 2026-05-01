@@ -138,8 +138,8 @@ flowchart TD
     split --> gcp_list
     split --> chk_list
     tagged_marks -.-> pix4d
-    gcp_list --> launch_odm
     gcp_list --> rmse
+    gcp_list --> launch_odm
     odm --> model
     cameras -.-> |recycle| launch_odm
     cameras -.-> |recycle| sight
@@ -156,14 +156,14 @@ flowchart TD
     tin -.-> packager
     contours_gpkg --> packager_contours --> contours
     contours --> qgis_cloud
-    orthophoto --> uncertainty
-    orthophoto --> qgis_cloud
     orthophoto --> rmse
+    orthophoto --> uncertainty
     chk_list --> rmse
     orthophoto --> packager
+    orthophoto --> qgis_cloud
     qgis_cloud -.-> packager
-    model --> uncertainty
     model --> rmse
+    model --> uncertainty
     uncertainty --> uncertainty_tif
     pointcloud -.-> tin
     contours --> packager
