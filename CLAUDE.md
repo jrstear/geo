@@ -2,7 +2,7 @@
 - All local file reads are pre-approved (Read, Glob, Grep, cat, head, etc.)
 - All git read commands are pre-approved (log, diff, show, blame, status, branch, etc.)
 - All read-only Bash commands are pre-approved (ls, cat, head, tail, wc, find, grep, awk, sed for reading, python one-liners for data inspection, etc.)
-- `bd` (beads) commands are pre-approved: list, show, ready, stats, sync, create, update, close, dep, etc.
+- `bd` (beads) commands are pre-approved: list, show, ready, stats, export, create, update, close, dep, etc.
 
 # Workflow
 
@@ -19,10 +19,9 @@
   - Test script: `accuracy_study/compare_refinement.py <confirmed> <baseline> [variants...]`
   - Run in conda geo env: `conda run -n geo python ...`
 - If no automated test is possible, ask the user to test and confirm first.
-- After confirmation, in this order:
-  1. `bd sync` — commit bead state
-  2. `git commit` — commit code changes
-  3. `git push` — push everything
+- After confirmation:
+  1. `git commit` — bead state in `.beads/issues.jsonl` is auto-exported by bd 1.0.3+ (throttled ~60s), so `git add .beads/issues.jsonl` alongside code changes is enough. No separate `bd sync` step.
+  2. `git push` — push everything
 
 ## Repositories
 - `geo` (this repo) — push to `main`

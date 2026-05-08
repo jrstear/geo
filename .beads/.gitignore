@@ -5,6 +5,15 @@
 *.db-wal
 *.db-shm
 
+# Embedded Dolt store (bd 1.0.3+) — local-only, analogous to *.db above
+embeddeddolt/
+
+# Local backup snapshots (bd 1.0.3+)
+backup/
+
+# Auto-export internal state (bd 1.0.3+)
+export-state.json
+
 # Daemon runtime files
 daemon.lock
 daemon.log
