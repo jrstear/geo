@@ -1,0 +1,549 @@
+---
+title: "Geodesy & CRS Cheat Sheet"
+subtitle: "Quick reference for swapping the topic back into working memory"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+  pdf:
+    toc: true
+    number-sections: true
+---
+
+> Terse on purpose. Each section is a single concept, with the precise
+> definition first and the "why it matters in photogrammetry" tucked
+> beneath it. Add diagrams alongside the prose as needed.
+
+> For a one-page summary of just the coordinate-system landscape, see
+> `coordinate-systems.qmd` in this directory. The rest of this document
+> is the long-form reference: how the pieces are built, how they break,
+> and what the photogrammetry workflows actually do with them.
+
+## Ellipsoid parameters: a, f, and friends
+
+An Earth ellipsoid is specifically an **oblate spheroid** — an
+ellipsoid of revolution about its *short* axis. Earth's rotation flings
+mass outward at the equator, so the equatorial radius is longer than
+the polar radius.
+
+- **Semi-major axis** `a` — equatorial radius. Every direction in the equatorial plane is `a`; the equatorial cross-section is a circle.
+- **Semi-minor axis** `b` — polar radius. Coincides with the **rotation axis**. Shorter than `a` by ~21 km for Earth.
+- **Flattening** `f = (a − b)/a` — dimensionless. Says the polar radius is shorter than the equatorial by a fraction `f` of `a`. For GRS80, `f ≈ 1/298.2572 ≈ 0.00335` (the polar radius is ~0.335 % shorter). Usually quoted as `1/f` because the inverse is a nicer number to write.
+
+Given `a` and `f`, the rest follows:
+
+$$b = a(1 - f) \qquad \frac{x^2 + y^2}{a^2} + \frac{z^2}{b^2} = 1$$
+
+with `z` along the rotation axis.
+
+You'll also see these derived shape parameters in PROJ / NGS output:
+
+- **First eccentricity** `e`: `e² = (a² − b²)/a² = 2f − f²`
+- **Second eccentricity** `e'`: `e'² = (a² − b²)/b²`
+
+`e` shows up in the formulas for meridian arc length, radius of
+curvature in the prime vertical, and most projection math — it's the
+natural "ovalness" parameter for that geometry.
+
+## The geoid, more precisely
+
+The geoid is an **equipotential surface of Earth's gravity field** — a
+level set of gravitational potential Φ. Stand anywhere on it and you
+feel the same Φ; nudge water sideways along it and gravity does no
+work. The specific level chosen is the one that, on average,
+coincides with mean ocean surface.
+
+It's a real surface that passes *under* continents — through rock, not
+over it. Under Albuquerque, the geoid is about a mile below your feet,
+at roughly sea-level elevation. The "transparent continents" framing
+just says: that's where water would sit if you bored a frictionless
+trench.
+
+Two consequences worth holding:
+
+- **The geoid is defined by all of Earth's mass.** The mile of rock under ABQ contributes to the local gravity potential and therefore shifts the local equipotential surface. Topography is not ignored — it's *included*.
+- **But isostasy mostly cancels topographic effects.** Mountains float on the mantle on low-density "roots" that counterweight them from below. At long wavelengths, gravity sees topography + root as nearly zero, which is why CONUS geoid undulations (~–22 m around NM) are dominated by *deep mantle structure*, not by the surface terrain. If isostasy were perfect, the geoid would essentially ignore the visible landscape.
+
+The reason geoid models are awkward to compute is a third point:
+classical Stokes theory assumes all mass is *below* the geoid. For
+continents that's wrong — there's rock above sea level. Geodesists use
+tricks like **Helmert condensation** (mathematically collapse the
+topographic mass into a thin layer on the geoid, integrate, then
+restore) to get a valid result.
+
+## Ellipsoid vs Geoid: heights
+
+Two different "elevations" for the same point on the ground:
+
+- **Ellipsoidal height** *h*: normal distance from the ellipsoid surface up to the point. This is what GPS/GNSS receivers natively give you.
+- **Orthometric height** *H*: distance from the geoid up to the point along the local plumb line. This is what surveyors mean when they say "elevation above sea level."
+
+The two relate through the **geoid undulation** *N* (height of the
+geoid above the ellipsoid, signed):
+
+$$h = H + N$$
+
+In CONUS *N* is mostly negative (geoid below ellipsoid), so *H* ends up
+larger than *h*. At Arroyo Hondo, NM: *N* ≈ −19.1 m, so orthometric
+ground is ~19 m *higher* than the same point's ellipsoidal h.
+
+Practical consequence: **if you mix `h` and `H` values into one
+project, every elevation is off by *N***. That's almost always the
+source of "my drone heights are way off" stories.
+
+## Datum
+
+A **datum** is a choice of:
+
+1. A reference surface (ellipsoid for horizontal datums; geoid model + benchmarks for vertical datums)
+2. An origin and orientation tying that surface to physical points on Earth
+3. (For modern datums) an epoch, because plates drift
+
+So a datum is **the realization** of an idealized surface. The same
+ellipsoid (e.g. GRS80) underlies multiple datums (NAD83, ITRF, etc.).
+They differ in *how it's anchored*.
+
+Datums split into **horizontal** and **vertical** for historical
+reasons: horizontal positions were established by triangulation
+networks (angles + distances measured on the surface), while vertical
+positions were established by spirit leveling (plumb-line measurements
+between benchmarks). Different instruments, different error structures,
+different reference surfaces — so they got named and standardized
+separately. They correlate with ellipsoid/geoid (horizontal datums
+reference an ellipsoid; orthometric vertical datums reference a geoid)
+but the terms aren't synonyms: vertical datums can also be purely
+ellipsoidal.
+
+Common datums you'll see:
+
+| Datum        | Type       | Ellipsoid | Notes                                                                              |
+|--------------|------------|-----------|------------------------------------------------------------------------------------|
+| WGS84        | Horizontal | WGS84     | Global. What GPS broadcasts. Periodic refinements (G2139 etc.).                    |
+| NAD83(2011)  | Horizontal | GRS80     | North America, plate-fixed, epoch 2010.0. ≈WGS84 to ~1-2 m today.                  |
+| ITRF2014     | Horizontal | GRS80     | Geocentric, plate-velocity tracked. Basis of WGS84.                                |
+| NAVD88       | Vertical   | —         | CONUS (contiguous US, lower 48) orthometric, defined by tide gauges + leveling network. |
+| NGVD29       | Vertical   | —         | Pre-NAVD88. Older deliverables sometimes still in this. Offset varies by location. |
+| GEOID18      | Geoid model| —         | Grid that ties NAD83(2011) ellipsoidal h to NAVD88 H.                              |
+
+GRS80 and the WGS84 ellipsoid are numerically identical to <1 mm; the
+*datums* WGS84 and NAD83 are not (they drift apart by ~1 cm/year, now
+~1.5 m apart in CONUS).
+
+## Projection
+
+A **projection** is a function from the ellipsoid surface to a flat
+plane. Every projection distorts at least one of {distance, angle,
+area}; the trick is picking what to preserve.
+
+Three families you'll meet:
+
+- **Transverse Mercator (TM)** — preserves angles, scale ~1 along a chosen central meridian, distortion grows east/west. Used by UTM and most narrow N–S state plane zones (incl. NM Central).
+- **Lambert Conformal Conic (LCC)** — preserves angles, scale is preserved along two standard parallels. Used by wide E–W state plane zones.
+- **Web Mercator / Mercator** — preserves angles only, gross distortion at high latitudes. Tile maps only; not for surveying.
+
+Each **State Plane** zone is a specific projection (TM or LCC) bound
+to a specific datum (NAD27, NAD83, NAD83(2011) — pick the right one),
+with parameters tuned so distortion stays small *inside* the zone
+(NM Central holds scale distortion under ~1 part in 10 000, i.e.
+~0.3 ft per mile). Outside the zone, scale error blows up.
+
+## CRS = datum + projection (+ vertical datum)
+
+A **Coordinate Reference System** is the full recipe: pick a datum,
+pick a projection, optionally pick a vertical datum.
+
+- **2D CRS** (`EPSG:6529` = NAD83(2011) / NM Central ftUS): datum + projection. Z is undefined; whatever Z value rides along is interpreted as ellipsoidal h on the underlying ellipsoid by default.
+- **3D CRS** (`EPSG:6319` = NAD83(2011) lat/lon/Ellh) or a **compound CRS** like NAD83(2011) / NM Central ftUS + NAVD88 height: datum + projection + vertical datum. Z is unambiguous.
+
+In tools like Pix4D Matic and Emlid Flow, **picking a 2D CRS for a job
+where the user thinks in NAVD88 is the #1 way to silently introduce a
+geoid-sized vertical offset**. The tool is doing exactly what you told
+it; you just told it nothing about the vertical reference.
+
+**Why 2D CRSs exist if nothing on Earth is flat.** Two honest reasons:
+
+1. *Many deliverables have no Z to begin with.* Orthomosaics, vector
+   maps, parcel boundaries, GIS layers. A 2D raster genuinely has no
+   height — a 2D CRS is the correct description. Adding a vertical
+   datum would be a lie.
+2. *Within one well-chosen projection zone, the Earth's curvature is
+   small enough that 2D math is usable.* You're not pretending the
+   Earth is flat; you're using a projection that contains the
+   distortion to a tolerable level (NM Central: <1:10 000) so
+   `(E, N)` can be treated as Cartesian for that area.
+
+The vertical question is orthogonal. The trap is shipping data that
+*does* contain a Z column under a 2D CRS — the tool stores the Z
+without a declared vertical reference and downstream consumers guess
+(badly).
+
+### Three distances: slope, ground, grid
+
+Between two points on a hill there are *three* distances. A 2D CRS
+captures only the third and is silent about the other two — but that's
+usually the right answer, not a bug.
+
+1. **Slope distance** — what a tape, EDM, or laser rangefinder physically measures from A to B along the slope.
+2. **Horizontal ground distance** — distance with the elevation difference taken out: `hor² = slope² − Δh²`. The "footprint" distance, what a plumb-bobbed tape gives.
+3. **Grid distance** — `√(ΔE² + ΔN²)` from the projected `(E, N)` coordinates. What a 2D CRS gives.
+
+Two corrections sit between them:
+
+- **Slope correction** (slope ↔ horizontal): pure Pythagoras with `Δh`.
+- **Combined scale factor** (horizontal ↔ grid): the projection's scale factor at this point, times the elevation factor `R/(R+h)` because grid lives at the ellipsoid and ground is at your elevation. For NM Central at ABQ's elevation: combined ≈ **0.99986** — 10 000 ft of ground becomes 9 998.6 ft of grid.
+
+Why a 2D CRS is practically useful despite "throwing away" the other two:
+
+- 2D maps care about **horizontal footprint**, not slope. Property lines, road centerlines, parcels, building outlines — none of these care that the ground is tilted under them.
+- Scale errors are small inside a zone (~1:10 000); invisible at map scale.
+- For GIS overlay you need *one* consistent reference plane; layers in the same projected CRS overlay correctly regardless of terrain.
+- Surveyors who need ground distances either apply the combined factor explicitly or use a **Low Distortion Projection (LDP)** — a custom state-plane-like CRS tuned to a project elevation so grid distance ≈ ground distance to within ~10 ppm.
+
+Read a 2D CRS as a *declaration* that the dataset is about horizontal
+position only. If you need slope or ground distance, bring the height
+back in from a DEM — the CRS isn't trying and failing to do 3D math,
+it's deliberately scoped to 2D.
+
+## Worked example: NM Central (ftUS)
+
+The CRS this project lives in:
+
+- EPSG code: **6529** (NAD83(2011) / New Mexico Central (ftUS))
+- Datum: NAD83(2011), epoch 2010.0
+- Ellipsoid: GRS80 (a = 6 378 137 m, 1/f = 298.257222101)
+- Projection: Transverse Mercator
+  - Latitude of origin: 31°00′N
+  - Central meridian: 106°15′W
+  - Scale factor at central meridian: 0.9999
+  - False easting: 1 640 416.667 ftUS
+  - False northing: 0 ftUS
+- Linear unit: US survey foot (1 ftUS = 0.3048006096… m, *not* the international foot)
+- Vertical reference: **none** — this is a 2D CRS. Add NAVD88 height (`EPSG:6360`) for a compound 3D CRS.
+
+A point at (35.60°N, 106.00°W) ends up roughly at (E ≈ 1 714 000 ft, N ≈ 1 674 000 ft).
+
+## Heights, again, with names
+
+A glossary of every "height" word that ever appears in a dataset:
+
+- **Ellipsoidal height (h, Ellh)** — normal distance from the ellipsoid surface to the point. What GNSS gives. **Synonyms: geodetic height, height above ellipsoid (HAE).** GNSS docs prefer "ellipsoidal"; surveying texts sometimes prefer "geodetic" (since it's the height component of geodetic coordinates `(lat, lon, h)`).
+- **Orthometric height (H)** — distance from the geoid to the point along the local **plumb line** (a curve everywhere parallel to gravity, *perpendicular to every equipotential it crosses*). The plumb line is **curved** (gravity direction varies with local mass) and does **not** aim at Earth's centroid — only on a homogeneous sphere would it. The angle between the plumb line and the ellipsoid normal is the **deflection of the vertical** (arcseconds, more in mountains). What surveyors call "elevation."
+- **Normal height (H\*)** — along a normal-gravity plumb line. Used in Europe (e.g. EVRF). Rare in US.
+- **AGL (Above Ground Level)** — height above the local ground surface, not a datum. Drones use AGL for terrain following.
+- **MSL (Mean Sea Level)** — colloquially used for orthometric, but technically MSL ≠ geoid (varies by tide gauge / region). Treat as informal.
+- **"Elevation"** — undefined unless the dataset tells you. Always check.
+
+A geoid model (GEOID18, EGM2008) is a grid `N(lat, lon)` that lets you
+convert: `H = h − N(lat, lon)`.
+
+## The Arroyo Hondo gotcha in one paragraph
+
+The May flight produced ellipsoidal `h` on the camera positions
+(RTK-corrected). The customer's GCP CSV had a column called
+"Elevation" with no vertical datum declared. Emlid Flow's selected CRS
+was the 2D NAD83(2011) / NM Central (ftUS), so it treated the input Z
+as ellipsoidal h and matched it to the RTK measurements happily —
+residuals near zero. If the customer actually intended NAVD88
+orthometric, every deliverable Z is biased by approximately the local
+geoid undulation, *N* ≈ −19.1 m here. The fix is either re-running the
+project with a compound CRS that includes NAVD88 + GEOID18, or
+post-correcting by adding *N(lat, lon)* from the GEOID18 grid.
+
+## Photogrammetry deliverables: ortho / DSM / point cloud
+
+One SfM run (Pix4D Matic, WebODM, etc.) emits three related products
+sitting at different points on the 2D ↔ 3D spectrum.
+
+| Product           | Dim    | Stores                                  | CRS needed                                |
+|-------------------|--------|-----------------------------------------|-------------------------------------------|
+| **Point cloud**   | 3D     | many `(X, Y, Z, R, G, B, …)`            | 3D / compound CRS                         |
+| **DSM / DTM**     | 2.5D   | raster, one Z per (E, N) cell           | horizontal + vertical CRS                 |
+| **Orthophoto**    | 2D     | raster, R/G/B per (E, N), no Z          | 2D CRS                                    |
+
+Information sheds at each step. Point cloud → DSM collapses to one Z
+per cell (loses overhanging structure: caves, balconies, tree
+understory). DSM → ortho drops Z entirely; Z is used *internally* to
+look up "what 3D point does this output pixel correspond to" but isn't
+stored.
+
+### Orthophoto, specifically
+
+An **orthophoto** is the image you'd get if the camera were infinitely
+far away, shooting **orthographically** (parallel rays) with the rays
+**normal to the projection plane**. No perspective. Every pixel `(i,j)`
+maps to one ground location `(E, N)` at a fixed scale; a ruler across
+the image gives map distance directly.
+
+Compare a raw aerial frame: perspective from one specific camera pose;
+objects lean away from nadir; tall things (buildings, trees) appear
+displaced from their actual footprint, growing with height and with
+distance from the principal point. Orthorectification removes that by
+ray-tracing each output pixel through the DSM back to the source
+photos and picking the best color (or blending several).
+
+- **Regular ortho** — DEM-driven (bare earth). Buildings still lean a bit; the DEM doesn't know they're there.
+- **True ortho** — DSM-driven (includes buildings and trees). Each pixel is genuinely straight-down on whatever's on top. Needs more image overlap to avoid occlusion holes where tall things hide ground behind them.
+
+Modern photogrammetry tools default to DSM-driven, so most deliverables
+are closer to true-ortho than to historical bare-earth orthos.
+
+### Which products care about the vertical datum
+
+| Product       | Affected by an ellipsoidal-vs-orthometric mix-up?    |
+|---------------|------------------------------------------------------|
+| Point cloud   | Yes — every Z biased by ~*N* at this site (~19 m NM) |
+| DSM           | Yes — same                                           |
+| Orthophoto    | No — purely 2D, has no Z to be wrong                 |
+
+This is why the existing `Orroyo Hondo All Images Matic_ortho_cog.tif`
+in `dunno/` ships fine in a 2D CRS even though the project's Zs are
+off — the ortho has no Z column to lie about. The horizontal accuracy
+(driven by GCPs + RTK on lat/lon) is independent of the vertical
+datum question.
+
+## GNSS, RTK, and where the cm-level accuracy comes from
+
+A GNSS receiver picks up the continuous carrier wave from each visible
+satellite. The GPS L1 carrier (used by every GNSS receiver) sits at
+1.57542 GHz, so its wavelength is
+
+$$\lambda_{L1} = \frac{c}{f_{L1}} = \frac{3 \times 10^8 \text{ m/s}}{1.57542 \times 10^9 \text{ Hz}} \approx 0.1904 \text{ m} \approx 19 \text{ cm}$$
+
+Modern receivers track that wave to about **1 % of a cycle**, i.e.
+**~1.9 mm**. That sub-mm-per-observation precision is the raw material
+for cm-level GNSS — *if* you can solve the integer ambiguity below.
+
+### Two kinds of range measurement
+
+Every receiver produces *two* distance measurements to every satellite
+it sees:
+
+| Measurement              | Precision per epoch | Ambiguous? |
+|--------------------------|---------------------|------------|
+| **Pseudorange (code)**   | ~1 m                | No         |
+| **Carrier phase**        | ~1.9 mm             | Yes — by an unknown integer N of wavelengths |
+
+The pseudorange comes from cross-correlating a digital code (the C/A
+code on GPS L1) modulated onto the carrier. Codes are unique per
+satellite and known to the receiver, so timing the code's arrival
+gives an absolute range — noisy, but ambiguity-free.
+
+The carrier phase comes from tracking where in the underlying sine
+wave the receiver currently sits. Precise to ~1 % of 19 cm (≈ 1.9 mm)
+per observation, but the receiver cannot directly count the ~10⁸ full
+cycles that physically separate it from the satellite. That unknown
+integer N is the **carrier-phase ambiguity**.
+
+The observation equation is:
+
+$$\text{range} = (N + \varphi)\,\lambda + (\text{clock} + \text{atmosphere} + \text{multipath} + \text{noise})$$
+
+Solve for N and the carrier phase becomes a true mm-precision range.
+
+### Why N is solvable at all
+
+Four constraints, layered:
+
+1. **Code measurements narrow N.** The ~1 m pseudorange divided by the 19 cm wavelength gives a starting estimate for N accurate to ±~5 cycles. N is now an unknown integer in a window of ~10, not 10⁸.
+2. **Multiple satellites.** The rover sees ~10–15 satellites at any instant. Each gives one observation with one unknown N. The rover's 3D position is only 3 unknowns (+1 clock bias). For any candidate integer vector, you can check whether all satellites agree on one consistent position.
+3. **Time and satellite motion.** Satellites move ~3.9 km/s; geometry shifts visibly over seconds. Your N is constant while you stay locked; the true range is changing. Each new epoch adds equations that share the same integers, over-determining the system. Float → Fix typically takes seconds to a couple of minutes.
+4. **Differencing against a base.** Single-difference (rover − base for the same satellite) cancels the satellite clock and orbit errors. Double-difference (across two satellites) also cancels both receiver clock biases. The remaining *double-differenced* integers ∇ΔN are still integers, but solving for them gives the **baseline vector** between rover and base, with residuals dominated by uncorrelated noise rather than atmosphere.
+
+The actual integer search uses **LAMBDA** (Least-squares AMBiguity
+Decorrelation Adjustment): compute a "float" solution treating N as
+real-valued, then run an integer-least-squares search constrained by
+the float estimate's covariance. When the runner-up integer vector has
+residuals notably worse than the best (the "ratio test," typically
+>3:1), the receiver declares **Fix**. Until then it stays in **Float**.
+
+Once fixed, the carrier phase becomes a **mm-precision range *per
+observation***. Combined across satellites the **3D position fix** is
+**~cm horizontally, ~2–3 cm vertically** — about 10× looser than the
+per-observation precision would suggest. The gap is real-world error
+that doesn't fully cancel in differencing:
+
+| Source after Fix                       | Magnitude     | Cancels in differencing? |
+|----------------------------------------|---------------|--------------------------|
+| Carrier-phase observation noise        | ~1.9 mm/obs   | n/a (the floor)          |
+| Multipath at rover                     | 5–30 mm/sat   | **No** (site-specific)   |
+| Residual ionosphere + troposphere      | 1–10 mm/sat   | Partially, grows with baseline length |
+| Antenna phase-center variation         | 2–10 mm       | Partially                |
+| Geometric dilution (DOP)               | ×1.5 H / ×2.5 V | n/a — multiplier on residuals |
+| Lever arm antenna → camera             | 5–10 mm       | Doesn't apply            |
+| Time sync GPS pulse ↔ shutter × drone speed | ~10 mm at 10 m/s | No                |
+
+RSS to ~15 mm horizontal / ~30 mm vertical — matches what the M3E
+reports in EXIF (`RtkStdHgt` ≈ 24 mm on the Arroyo Hondo May images).
+
+Vertical is worse than horizontal because **all visible satellites are
+above you** — there's no "satellite from below" to constrain the
+vertical component, so the vertical DOP is structurally ~1.5–2× the
+horizontal DOP. This is independent of multipath etc.
+
+### What the base actually does for absolute accuracy
+
+Differencing cancels common-mode errors, giving you a cm-precise
+baseline vector. The rover's *absolute* position is then
+`base_position + baseline_vector`. Therefore:
+
+- **Relative accuracy: cm**, set by carrier-phase integer fixing.
+- **Absolute accuracy: matches the asserted base position.** Tied to CORS or post-processed PPK: cm. Averaged-single-point: m to dm.
+
+For Isaiah's Reach RS3 base not tied to CORS, the second number is
+m-level. The localization against customer GCPs (see [the Arroyo Hondo
+gotcha](#the-arroyo-hondo-gotcha-in-one-paragraph)) is what carries the
+project into an absolute customer-CRS frame.
+
+### Bandwidth: why it fits on a low-use cell card
+
+A typical RTCM3 stream from a base is **2–5 kbps**, occasionally
+~10 kbps for a multi-constellation base broadcasting all signals. For
+a one-hour flight that's ~2 MB. Reasons:
+
+- **One-way, base → rover.** No acks, no retries.
+- **Dense bit-packing.** MSM (Multiple Signal Message) format is highly compressed — ~5–15 bytes per satellite per epoch.
+- **Slow-changing things rarely.** Base position every few seconds. Ephemerides only when they update (hours). Antenna info once per session.
+- **No bulky data.** No images, no logs — just satellite observations and one fixed point on the ground.
+
+The hard part of RTK is what the rover does *with* those numbers
+(LAMBDA at 5–10 Hz over 10–15 satellites in real time), not the
+network traffic.
+
+## Bundle adjustment: what's left after RTK Fix
+
+RTK gives you the camera's **translation** (where it was) at cm
+precision. It tells you nothing about **rotation** (where it was
+pointing) — that comes from the IMU, which is much sloppier. Several
+other things are also unknown going into the solve:
+
+| Unknown                              | Source before SfM                  | Precision before SfM                                              |
+|--------------------------------------|------------------------------------|-------------------------------------------------------------------|
+| Camera **position** (X, Y, Z)        | RTK GNSS + lever-arm correction    | ~2 cm at Fixed                                                    |
+| Camera **orientation** (ω, φ, κ)     | Drone IMU                          | **0.5°–2°** — `tan(0.5°)·100 m ≈ 0.87 m` projected at 100 m AGL |
+| **Focal length** (refined)           | Factory calibration                | ~0.5–1 % — drifts with temperature / age                          |
+| **Principal point** offset           | Factory calibration                | a few pixels                                                      |
+| **Lens distortion** coefficients     | Factory calibration                | up to several pixels at the image corners                         |
+| **Time sync** GPS pulse ↔ shutter   | Drone firmware                     | ms-level; matters because drone moves ~5–10 m/s                  |
+| **3D positions** of ground points    | Nothing yet                        | n/a — that's the output                                           |
+
+**Orientation is by far the largest leftover error.** A 0.5° pose
+error at 100 m AGL is ~0.87 m on the ground — vastly worse than the
+2 cm RTK position. Without solving orientation, your cm-accurate
+camera positions don't buy you cm-accurate maps.
+
+### What bundle adjustment is doing
+
+Bundle adjustment is a giant non-linear least-squares optimization
+that solves for every unknown in that table *simultaneously*, using
+image features as the data.
+
+- **Tie points** — features (SIFT / SURF / learned descriptors) detected and matched across overlapping images. A typical 600-image project has tens of thousands of tie points, each visible in 4–20 images.
+- **Each tie point in each image** is one observation: "this 3D world point projects to *this* pixel `(u, v)` in *that* image."
+- **Sub-pixel matching precision.** Modern matchers achieve 0.1–0.3 px of matching precision. At a 1.5 cm GSD, that's **1.5–5 mm of ground-level matching precision per tie point per image** — actually finer than the RTK on the camera.
+
+The solver minimizes the sum of squared **reprojection errors** (the
+gap between where each tie point's predicted projection lands and
+where the matcher found it):
+
+$$\min_{\theta} \sum_{ij} \left\| \pi(\mathbf{P}_i, \mathbf{R}_i, \mathbf{K}, \mathbf{X}_j) - \mathbf{u}_{ij} \right\|^2$$
+
+over camera positions $\mathbf{P}_i$ (with RTK as priors, not hard
+constraints), orientations $\mathbf{R}_i$, interior parameters
+$\mathbf{K}$ (focal length, principal point, distortion), and 3D
+tie-point positions $\mathbf{X}_j$.
+
+The math is tractable because of **sparse block structure**: every tie
+point only touches a handful of images, every image only touches a few
+thousand tie points. Levenberg–Marquardt with the Schur complement on
+the reduced camera system solves hundreds of thousands of unknowns in
+seconds to minutes.
+
+### What BA converges to in practice
+
+For an M3E flight with good RTK + well-distributed GCPs:
+
+| Quantity                | Typical post-BA precision                              |
+|-------------------------|--------------------------------------------------------|
+| Camera position         | 0.5–1 cm (slightly better than the raw RTK)            |
+| Camera orientation      | 0.01°–0.05° (down from 0.5°+ from IMU alone)           |
+| Tie-point 3D position   | ~1 × GSD horizontal; ~2–3 × GSD vertical               |
+| Reprojection RMSE       | 0.3–0.7 px (~5–10 mm on the ground at 1.5 cm GSD)      |
+
+Camera positions get *slightly better* than the raw RTK because BA
+pulls them toward the multi-view consensus, which (via sub-pixel
+matching) is inherently more precise than the GNSS prior.
+**Orientation improves by ~50–100×** — that's the lion's share of what
+BA earns you.
+
+### Role of GCPs in the solve
+
+When surveyed GCPs (ground control points marked in images) are
+included they enter the optimization as additional constraints:
+
+- **Absolute frame.** They tell the solver "this pixel is *that* world coordinate." Without GCPs, your absolute frame is set by the RTK + base position; with GCPs, they override or augment that.
+- **Vertical specifically.** Critical because GNSS is geometrically weaker vertically and the IMU is biased vertically (gravity is exactly the axis the IMU can't disambiguate from pitch/roll error at rest). GCPs hold the project's Z down.
+- **CRS / vertical-datum anchor.** This is where the geoid issue from [the Arroyo Hondo gotcha](#the-arroyo-hondo-gotcha-in-one-paragraph) bites — if you tell the solver the GCPs are ellipsoidal and they're orthometric, every output Z shifts by `N(lat, lon)`.
+
+Pix4D Matic's quality report separates residuals on camera positions
+vs GCPs vs withheld checkpoints — read all three before trusting an
+output.
+
+### Direct georeferencing — the road not taken
+
+Survey-grade airborne mapping (aircraft lidar, photogrammetric
+systems with INS-grade IMU costing $100k+) can skip bundle adjustment:
+the IMU is precise enough (~0.005°) that pose is known directly to
+mm-level on the ground, and you build a map from GNSS + IMU pose
+alone. This is **direct georeferencing**.
+
+For drones it doesn't fly:
+
+- Drone IMU pose precision is 100–500× worse than survey-grade INS.
+- Camera calibration drifts shot-to-shot more than survey gear.
+- Time sync between GPS pulse and shutter is less precise.
+
+So even with RTK Fixed, bundle adjustment is doing essential work on a
+drone — and most of it is solving for **orientation from image
+content**.
+
+### One line
+
+**RTK Fix solves *where* the camera was. Bundle adjustment solves
+*which way it was pointing*, refines the lens model, and lets
+sub-pixel image matching give you ground precision better than the
+RTK alone — at the cost of a large but tractable sparse non-linear
+least-squares problem.**
+
+## Tooling
+
+- **EPSG database** — the canonical registry of CRSs. Look up codes at <https://epsg.org> or `projinfo EPSG:6529`.
+- **PROJ** — the library that does the math. Pipelines describe transformations explicitly. Example used in this project:
+  ```
+  PROJ_NETWORK=ON cct +proj=pipeline \
+    +step +proj=axisswap +order=2,1 \
+    +step +proj=unitconvert +xy_in=deg +xy_out=rad \
+    +step +inv +proj=vgridshift +grids=us_noaa_g2018u0.tif +multiplier=1 \
+    +step +proj=unitconvert +xy_in=rad +xy_out=deg \
+    +step +proj=axisswap +order=2,1
+  ```
+  `PROJ_NETWORK=ON` lets it fetch the GEOID18 grid from cdn.proj.org on
+  demand (caches under `$HOME/Library/Application Support/proj` on macOS).
+- **GDAL / `gdalinfo`** — read CRS metadata out of GeoTIFFs and friends.
+- **WKT2** — the verbose textual description of a CRS that gets embedded in modern GeoTIFFs / GeoPackages.
+- **GeoTIFF tags** — older, terser CRS metadata. Most ortho deliverables ship both.
+
+## Common confusions worth flagging
+
+- **WGS84 vs NAD83**: ~1-2 m apart in CONUS today. Treating them as equal is fine for navigation, never fine for surveying.
+- **ftUS vs international foot**: differ by 2 ppm (~6 mm per 3 km). Picking the wrong one is a classic state-plane mistake.
+- **Geoid undulation sign**: PROJ and NGS use different conventions in different docs. Always sanity-check direction against a known point.
+- **"2D CRS with elevations stuffed into the Z column"**: legal in PROJ, lethal in workflows. Always declare the vertical datum explicitly.
+- **AGL is not a datum**: drone "altitude" displays are usually AGL from takeoff, *not* MSL or HAE. EXIF `RelativeAltitude` = AGL from takeoff; `AbsoluteAltitude` = ellipsoidal h from the GNSS solution.
+
+## References
+
+- NGS GEOID18 documentation: <https://geodesy.noaa.gov/GEOID/GEOID18/>
+- PROJ documentation: <https://proj.org>
+- EPSG registry: <https://epsg.org>
+- NOAA's "What is a datum?": <https://oceanservice.noaa.gov/facts/datum.html>

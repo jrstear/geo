@@ -1,0 +1,112 @@
+---
+title: "Coordinate Systems"
+format:
+  pdf:
+    fontsize: 9pt
+    geometry: [margin=0.5in]
+    pagestyle: empty
+    documentclass: scrartcl
+    classoption: [parskip=half-]
+    include-in-header:
+      text: |
+        \usepackage{multicol}
+        \setlength{\parskip}{0.15em}
+        \setlength{\parindent}{0pt}
+        \setlength{\columnsep}{1.2em}
+        \RedeclareSectionCommand[beforeskip=0.4em,afterskip=0.1em]{section}
+        \RedeclareSectionCommand[beforeskip=0.25em,afterskip=0.05em]{subsection}
+        \RedeclareSectionCommand[beforeskip=0.2em,afterskip=0.05em]{subsubsection}
+  html:
+    toc: false
+---
+
+Three encodings of "where" a point is on Earth: Geocentric, Geographic, Projected.
+
+**Ellipsoid → Datum → CRS.** An *ellipsoid* is a math shape. A
+**datum** anchors it to Earth (origin, axis orientation, epoch). A
+**CRS** = datum + encoding (+ optional projection / vertical datum /
+units). One ellipsoid underlies many datums (GRS80 → both NAD83(2011)
+and ITRF2014); one datum underlies many CRSes (NAD83(2011) →
+EPSG:6319 lat/lon/h, EPSG:6529 NM Central ftUS, etc.).
+
+**Origin = the geocenter** (Earth's center of mass). ITRF2020 / WGS84 G2139 share it to ~1 cm; NAD83(2011) is plate-fixed and offset ~1.5 m in CONUS. Geocenter drifts mm/year from mass redistribution (ice melt, rebound, hydrology); datums re-realized every few years. In any geocentric datum, $a$ lies along $X$ and $b$ along $Z$.
+
+```{=latex}
+\begin{multicols}{2}
+\noindent\rule{\linewidth}{0.4pt}\par\vspace{-0.4em}
+```
+
+## Geocentric (ECEF - Earth centered earth fixed)
+
+Cartesian `(X, Y, Z)` in metres. Used internally by GNSS and for datum transforms; rare in deliverables.
+
+- **Origin:** the geocenter (see intro).
+- **Z-axis:** along Earth's mean rotation axis, toward north pole.
+- **X-axis:** through Greenwich–equator intersection.
+- **Y-axis:** 90° E on the equator (right-handed).
+
+#### Typical values
+
+ITRF2014 ECEF (EPSG:7789); NAD83(2011) ECEF (EPSG:6317).
+
+```{=latex}
+\noindent\rule{\linewidth}{0.4pt}\par\vspace{-0.4em}
+```
+
+## Geographic
+
+Curvilinear `(lat, lon, vertical)`. `lat`/`lon` are angles measured
+against an ellipsoid; the vertical column is a separate choice —
+ellipsoidal `h` *or* orthometric `H`.
+
+### Ellipsoidal height `h` (a.k.a. geodetic, HAE)
+
+Distance from the ellipsoid surface to the point, **normal to it**. The ellipsoid is a smoothed math model fit to global MSL (locally off by up to ~100 m); its surface satisfies $(x^2 + y^2)/a^2 + z^2/b^2 = 1$, where `a` = equatorial (semi-major) radius, `b` = polar (semi-minor) radius, $f = (a-b)/a$. **GRS80:** $a = 6{,}378{,}137$ m, $b \approx 6{,}356{,}752$ m, $a - b \approx 21$ km.
+
+#### Typical values
+
+WGS84 (M3E EXIF). GRS80 (same shape, NAD83-anchored). EPSG:4979 = WGS84 3D. EPSG:6319 = NAD83(2011) 3D.
+
+### Orthometric height `H` (geoid-based)
+
+Distance from the geoid surface ($H=0$) to the point, **along the local plumb line** at that point — *not* radial to Earth's center.
+
+The geoid is the lumpy **equipotential surface of Earth's gravity field** that best fits global MSL (better than the ellipsoid). Local water surfaces settle to a constant H, which relates to the ellipsoid via $h = H + N(\text{lat}, \text{lon})$, where `N` is the **geoid undulation**.
+
+#### Typical values
+
+NAVD88 (US orthometric vertical datum). GEOID18 (hybrid grid tying NAD83(2011) `h` to NAVD88 `H` in CONUS). EGM2008 (global gravimetric model).
+
+```{=latex}
+\noindent\rule{\linewidth}{0.4pt}\par\vspace{-0.4em}
+```
+
+## Projected
+
+Cartesian `(E, N)` after projecting from the ellipsoid surface onto a
+flat plane. Optional Z column carries either `h` or `H`. Projections
+distort at least one of {distance, angle, area}. State Plane zones
+tuned so scale distortion stays < 1:10 000 inside the zone.
+
+- **2D projected CRS** = datum + projection only. No declared vertical reference; any Z that rides along is implicitly ellipsoidal `h`.
+- **3D / compound projected CRS** = adds a vertical datum (e.g. NAVD88) and geoid model on top.
+
+#### Typical values (NM)
+
+**2D:** NAD83(2011) / NM Central (ftUS), **EPSG:6529**.
+**3D / compound:** NAD83(2011) / NM Central (ftUS) + NAVD88 height (ftUS). EPSG codes exist for many such compounds; check your tool's CRS picker.
+
+```{=latex}
+\end{multicols}
+```
+
+---
+
+**The four "geo" terms** (different concepts, shared Greek root *gē* = earth):
+
+| Term           | "Geo" sense        | Meaning here                                                |
+|----------------|--------------------|-------------------------------------------------------------|
+| **Geocentric** | earth-*centered*   | Cartesian frame with origin at the geocenter                |
+| **Geographic** | of-the-earth       | Position by `lat`/`lon`                                     |
+| **Geodetic**   | earth-measuring    | Synonym for "ellipsoidal" when applied to heights           |
+| **Geoid**      | earth-shaped       | The specific gravity-equipotential surface near MSL         |
