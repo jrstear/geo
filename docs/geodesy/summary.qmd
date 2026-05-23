@@ -21,42 +21,37 @@ format:
 ---
 
 
-**Ellipsoid --<< Datum --<< CRS.** An *ellipsoid* is used to approximate the shape of the earth. A **(horizontal) datum** anchors it to Earth (origin, axis orientation, epoch; determines *frame*: lat/lon, X,Y,Z, projected (E,N)). A
+**Ellipsoid --<< Datum --<< CRS.** An *ellipsoid* is used to approximate the shape of the earth. A **(horizontal) datum** anchors it to Earth (origin, axis orientation, epoch/date; determines *frame*: lat/lon, X,Y,Z, projected (E,N)). A
 **CRS** = datum + encoding (+ optional projection / vertical datum (for H) /
 units). One ellipsoid underlies many datums (GRS80 → both NAD83(2011)
 and ITRF2014); one datum underlies many CRSes (NAD83(2011) →
 EPSG:6319 lat/lon/h, EPSG:6529 NM Central ftUS, etc.).
 
-**Origin = the geocenter** (Earth's center of mass). ITRF2020 / WGS84 G2139 share it to ~1 cm; NAD83(2011) is plate-fixed and offset ~1.5 m in CONUS. Geocenter drifts mm/year from mass redistribution (ice melt, rebound, hydrology); datums re-realized every few years. In any geocentric datum, $a$ lies along $X$ and $b$ along $Z$.
+**Origin = the geocenter** (Earth's center of mass). ITRF2020 / WGS84 G2139 share it to ~1 cm; NAD83(2011) is plate-fixed and offset ~1.5 m in CONUS. Geocenter drifts mm/year from mass redistribution (ice melt, rebound, hydrology); datums re-realized every few years. 
 
-Three encodings of "where" a point is on Earth: Geocentric, Geographic, Projected:
+Three encodings of "where" a point is on Earth: Geographic, Projected, and Geocentric.
 
 ```{=latex}
 \begin{multicols}{2}
-\noindent\rule{\linewidth}{0.4pt}\par\vspace{-0.4em}
 ```
 
 ## Geographic
 
 Curvilinear `(lat, lon, vertical)`. `lat` is the angle *between* the equatorial plane and the ellipsoid normal (north/south), and `lon` is the angle *in* the equatorial plane from Greenwich (east/west); the vertical is a separate choice — ellipsoidal `h` *or* orthometric `H`.
 
-### Ellipsoidal height `h` (a.k.a. geodetic, HAE)
+### Ellipsoidal height `h` (a.k.a. geodetic, HAE; drones use it)
 
 Distance from the ellipsoid surface to the point, **along the ellipsoid normal**. The ellipsoid is a smoothed math model fit to global MSL (locally off by up to ~100 m); its surface satisfies $(x^2 + y^2)/a^2 + z^2/b^2 = 1$, where `a` = equatorial (semi-major) radius, `b` = polar (semi-minor) radius, $f = (a-b)/a$. **GRS80:** $a = 6{,}378{,}137$ m, $b \approx 6{,}356{,}752$ m, $a - b \approx 21$ km.
 
 **Typical values:** WGS84 (M3E EXIF). GRS80 (same shape, NAD83-anchored). EPSG:4979 = WGS84 3D. EPSG:6319 = NAD83(2011) 3D.
 
-### Orthometric height `H` (geoid-based)
+### Orthometric height `H` (geoid-based; surveyors use it)
 
 Distance from the geoid surface ($H=0$) to the point, **along the local plumb line** at that point — *not* radial to Earth's center.
 
 The geoid is the lumpy **equipotential surface of Earth's gravity field** that best fits global MSL (better than the ellipsoid). Local water surfaces settle to a constant H, which relates to the ellipsoid via $h = H + N(\text{lat}, \text{lon})$, where `N` is the **geoid undulation**.
 
 **Typical values:** NAVD88 (US orthometric vertical datum). GEOID18 (hybrid grid tying NAD83(2011) `h` to NAVD88 `H` in CONUS). EGM2008 (global gravimetric model).
-
-```{=latex}
-\noindent\rule{\linewidth}{0.4pt}\par\vspace{-0.4em}
-```
 
 ## Projected
 
@@ -76,7 +71,7 @@ tuned so scale distortion stays < 1:10 000 inside the zone.
 
 ## Geocentric (ECEF - Earth Centered Earth Fixed)
 
-Cartesian `(X, Y, Z)` in metres. Used internally by GNSS and for datum transforms; rare in deliverables.
+Cartesian `(X, Y, Z)` in metres. Used internally by GNSS and for datum transforms; rare in deliverables.  ECEF origin = ellipsoid center, $a$ lies along $X$, and $b$ along $Z$.
 
 - **Origin:** the geocenter (see intro).
 - **Z-axis:** along Earth's mean rotation axis, toward north pole.
