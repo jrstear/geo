@@ -1,5 +1,5 @@
 ---
-title: "Coordinate Systems"
+title: "Geodesy Coordinate Systems"
 format:
   pdf:
     fontsize: 9pt
@@ -21,7 +21,7 @@ format:
 ---
 
 
-**Ellipsoid → Datum → CRS.** An *ellipsoid* is a math shape. A **(horizontal) datum** anchors it to Earth (origin, axis orientation, epoch; determines *frame*: lat/lon, X,Y,Z, projected (E,N)). A
+**Ellipsoid --<< Datum --<< CRS.** An *ellipsoid* is used to approximate the shape of the earth. A **(horizontal) datum** anchors it to Earth (origin, axis orientation, epoch; determines *frame*: lat/lon, X,Y,Z, projected (E,N)). A
 **CRS** = datum + encoding (+ optional projection / vertical datum (for H) /
 units). One ellipsoid underlies many datums (GRS80 → both NAD83(2011)
 and ITRF2014); one datum underlies many CRSes (NAD83(2011) →
@@ -95,7 +95,7 @@ Cartesian `(X, Y, Z)` in metres. Used internally by GNSS and for datum transform
 
 | Term           | "Geo" sense        | Meaning here                                                |
 |----------------|--------------------|-------------------------------------------------------------|
-| **Geocentric** | earth-*centered*   | Cartesian frame with origin at the geocenter                |
 | **Geographic** | of-the-earth       | Position by `lat`/`lon`                                     |
 | **Geodetic**   | earth-measuring    | Synonym for "ellipsoidal" when applied to heights           |
 | **Geoid**      | earth-shaped       | The specific gravity-equipotential surface near MSL         |
+| **Geocentric** | earth-*centered*   | Cartesian frame with origin at the geocenter                |
