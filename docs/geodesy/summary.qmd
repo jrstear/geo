@@ -23,11 +23,11 @@ format:
 
 **Ellipsoid --<< Datum --<< CRS.** An *ellipsoid* is used to approximate the shape of the earth. A **(horizontal) datum** anchors it to Earth (origin, axis orientation, epoch/date; determines *frame*: lat/lon, X,Y,Z, projected (E,N)). A
 **CRS** = datum + encoding (+ optional projection / vertical datum (for H) /
-units). One ellipsoid underlies many datums (GRS80 → both NAD83(2011)
-and ITRF2014); one datum underlies many CRSes (NAD83(2011) →
+units). One ellipsoid underlies many datums (GRS80 --<< both NAD83(2011)
+and ITRF2014); one datum underlies many CRSes (NAD83(2011) --<<
 EPSG:6319 lat/lon/h, EPSG:6529 NM Central ftUS, etc.).
 
-**Origin = the geocenter** (Earth's center of mass). ITRF2020 / WGS84 G2139 share it to ~1 cm; NAD83(2011) is plate-fixed and offset ~1.5 m in CONUS. Geocenter drifts mm/year from mass redistribution (ice melt, rebound, hydrology); datums re-realized every few years. 
+**Origin = the geocenter** (Earth's center of mass). ITRF2020 / WGS84 G2139 share it to ~1 cm; NAD83(2011) is plate-fixed and offset ~1.5 m in CONUS. Geocenter drifts mm/year from mass redistribution (ice melt, rebound, hydrology); datums are re-realized every few years. 
 
 Three encodings of "where" a point is on Earth: Geographic, Projected, and Geocentric.
 
@@ -47,7 +47,7 @@ Distance from the ellipsoid surface to the point, **along the ellipsoid normal**
 
 ### Orthometric height `H` (geoid-based; surveyors use it)
 
-Distance from the geoid surface ($H=0$) to the point, **along the local plumb line** at that point — *not* radial to Earth's center.
+Distance from the geoid surface to the point, **along the plumb line** at that point (which  may *not* be radial to the geocenter).
 
 The geoid is the lumpy **equipotential surface of Earth's gravity field** that best fits global MSL (better than the ellipsoid). Local water surfaces settle to a constant H, which relates to the ellipsoid via $h = H + N(\text{lat}, \text{lon})$, where `N` is the **geoid undulation**.
 
