@@ -20,23 +20,23 @@ format:
     toc: false
 ---
 
-Three encodings of "where" a point is on Earth: Geocentric, Geographic, Projected.
 
-**Ellipsoid → Datum → CRS.** An *ellipsoid* is a math shape. A
-**datum** anchors it to Earth (origin, axis orientation, epoch). A
-**CRS** = datum + encoding (+ optional projection / vertical datum /
+**Ellipsoid → Datum → CRS.** An *ellipsoid* is a math shape. A **(horizontal) datum** anchors it to Earth (origin, axis orientation, epoch; determines *frame*: lat/lon, X,Y,Z, projected (E,N)). A
+**CRS** = datum + encoding (+ optional projection / vertical datum (for H) /
 units). One ellipsoid underlies many datums (GRS80 → both NAD83(2011)
 and ITRF2014); one datum underlies many CRSes (NAD83(2011) →
 EPSG:6319 lat/lon/h, EPSG:6529 NM Central ftUS, etc.).
 
 **Origin = the geocenter** (Earth's center of mass). ITRF2020 / WGS84 G2139 share it to ~1 cm; NAD83(2011) is plate-fixed and offset ~1.5 m in CONUS. Geocenter drifts mm/year from mass redistribution (ice melt, rebound, hydrology); datums re-realized every few years. In any geocentric datum, $a$ lies along $X$ and $b$ along $Z$.
 
+Three encodings of "where" a point is on Earth: Geocentric, Geographic, Projected:
+
 ```{=latex}
 \begin{multicols}{2}
 \noindent\rule{\linewidth}{0.4pt}\par\vspace{-0.4em}
 ```
 
-## Geocentric (ECEF - Earth centered earth fixed)
+## Geocentric (ECEF - Earth Centered Earth Fixed)
 
 Cartesian `(X, Y, Z)` in metres. Used internally by GNSS and for datum transforms; rare in deliverables.
 
@@ -55,13 +55,11 @@ ITRF2014 ECEF (EPSG:7789); NAD83(2011) ECEF (EPSG:6317).
 
 ## Geographic
 
-Curvilinear `(lat, lon, vertical)`. `lat`/`lon` are angles measured
-against an ellipsoid; the vertical column is a separate choice —
-ellipsoidal `h` *or* orthometric `H`.
+Curvilinear `(lat, lon, vertical)`. `lat` is the angle *between* the equatorial plane and the ellipsoid normal (north/south), and `lon` is the angle *in* the equatorial plane from Greenwich (east/west); the vertical column is a separate choice — ellipsoidal `h` *or* orthometric `H`.
 
 ### Ellipsoidal height `h` (a.k.a. geodetic, HAE)
 
-Distance from the ellipsoid surface to the point, **normal to it**. The ellipsoid is a smoothed math model fit to global MSL (locally off by up to ~100 m); its surface satisfies $(x^2 + y^2)/a^2 + z^2/b^2 = 1$, where `a` = equatorial (semi-major) radius, `b` = polar (semi-minor) radius, $f = (a-b)/a$. **GRS80:** $a = 6{,}378{,}137$ m, $b \approx 6{,}356{,}752$ m, $a - b \approx 21$ km.
+Distance from the ellipsoid surface to the point, **along the ellipsoid normal**. The ellipsoid is a smoothed math model fit to global MSL (locally off by up to ~100 m); its surface satisfies $(x^2 + y^2)/a^2 + z^2/b^2 = 1$, where `a` = equatorial (semi-major) radius, `b` = polar (semi-minor) radius, $f = (a-b)/a$. **GRS80:** $a = 6{,}378{,}137$ m, $b \approx 6{,}356{,}752$ m, $a - b \approx 21$ km.
 
 #### Typical values
 
